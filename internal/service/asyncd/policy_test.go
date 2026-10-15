@@ -40,12 +40,15 @@ func TestBackoff(t *testing.T) {
 func TestNextOccurrence(t *testing.T) {
 	now := time.Date(2026, 10, 13, 4, 0, 0, 0, time.UTC)
 
-	interval := NextOccurrence(repository.AsyncdJob{ScheduleKind: repository.ScheduleKindInterval, IntervalSeconds: 3600}, now)
+	interval, err := NextOccurrence(repository.AsyncdJob{ScheduleKind: repository.ScheduleKindInterval, IntervalSeconds: 3600}, now)
+	if err != nil {
+		t.Fatalf("interval 不应报错: %v", err)
+	}
 	if got := interval.Sub(now); got != time.Hour {
 		t.Fatalf("interval 调度应为 1 小时后，实际 %s", got)
 	}
 
-	daily := NextOccurrence(repository.AsyncdJob{
+	daily, _ := NextOccurrence(repository.AsyncdJob{
 		ScheduleKind: repository.ScheduleKindDaily, DailyTimes: []string{"03:00", "05:00"}, WindowMinutes: 30,
 	}, now)
 	if daily.Hour() != 5 || daily.Day() != 13 {
@@ -53,7 +56,7 @@ func TestNextOccurrence(t *testing.T) {
 	}
 
 	// 4:10 距 03:00 已超过 30 分钟窗口 → 下一个时刻为当天 05:00
-	late := NextOccurrence(repository.AsyncdJob{
+	late, _ := NextOccurrence(repository.AsyncdJob{
 		ScheduleKind: repository.ScheduleKindDaily, DailyTimes: []string{"03:00", "05:00"}, WindowMinutes: 30,
 	}, time.Date(2026, 10, 13, 4, 10, 0, 0, time.UTC))
 	if late.Hour() != 5 {
@@ -61,7 +64,7 @@ func TestNextOccurrence(t *testing.T) {
 	}
 
 	// 4:05 仍在 03:00 的窗口内 → 命中当天 03:00（窗口内补跑一次）
-	inWindow := NextOccurrence(repository.AsyncdJob{
+	inWindow, _ := NextOccurrence(repository.AsyncdJob{
 		ScheduleKind: repository.ScheduleKindDaily, DailyTimes: []string{"03:00", "05:00"}, WindowMinutes: 30,
 	}, time.Date(2026, 10, 13, 3, 20, 0, 0, time.UTC))
 	if inWindow.Hour() != 3 {
@@ -69,7 +72,7 @@ func TestNextOccurrence(t *testing.T) {
 	}
 
 	// 当天时刻都已过 → 顺延到次日第一个时刻
-	tomorrow := NextOccurrence(repository.AsyncdJob{
+	tomorrow, _ := NextOccurrence(repository.AsyncdJob{
 		ScheduleKind: repository.ScheduleKindDaily, DailyTimes: []string{"03:00", "05:00"}, WindowMinutes: 30,
 	}, time.Date(2026, 10, 13, 23, 0, 0, 0, time.UTC))
 	if tomorrow.Day() != 14 || tomorrow.Hour() != 3 {
@@ -91,5 +94,25 @@ func TestRegistryRejectsUnknownType(t *testing.T) {
 	}
 	if len(registry.Types()) != 1 || registry.Types()[0] != "demo.task" {
 		t.Fatalf("类型清单错误: %v", registry.Types())
+	}
+}
+
+// 回归：cron 走 5 段表达式（分 时 日 月 周）；非法表达式返回 error（调度器据此如实记 failed，而不是静默不跑）。
+func TestNextOccurrenceCron(t *testing.T) {
+	now := time.Date(2026, 10, 15, 3, 30, 0, 0, time.UTC)
+	next, err := NextOccurrence(repository.AsyncdJob{
+		ScheduleKind: repository.ScheduleKindCron, CronExpr: "0 4 * * *",
+	}, now)
+	if err != nil {
+		t.Fatalf("合法 cron 不应报错: %v", err)
+	}
+	if next.Hour() != 4 || next.Day() != 15 {
+		t.Fatalf("0 4 * * * 应命中当天 04:00，实际 %s", next)
+	}
+
+	if _, err := NextOccurrence(repository.AsyncdJob{
+		ScheduleKind: repository.ScheduleKindCron, CronExpr: "not a cron",
+	}, now); err == nil {
+		t.Fatal("非法 cron 表达式必须返回 error")
 	}
 }

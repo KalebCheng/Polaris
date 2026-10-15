@@ -793,6 +793,7 @@ const (
 const (
 	ScheduleKindInterval = "interval" // 每 N 秒
 	ScheduleKindDaily    = "daily"    // 每天若干时刻（HH:MM），配合执行窗口
+	ScheduleKindCron     = "cron"     // 标准 5 段 Cron 表达式（分 时 日 月 周），见 internal/service/cron
 )
 
 // 任务定义的上次调度结果（asyncd_jobs.last_status）
@@ -812,16 +813,27 @@ type AsyncdJob struct {
 	Name     string `db:"name" json:"name"`           // 定义名（历史记录按它归属）
 	TaskType string `db:"task_type" json:"task_type"` // 处理器注册名（asyncd.Registry）
 	Kind     string `db:"kind" json:"kind"`           // async | scheduled
-	// ScheduleKind 调度规则：'' | interval | daily
+	// ScheduleKind 调度规则：'' | interval | daily | cron
 	ScheduleKind    string   `db:"schedule_kind" json:"schedule_kind"`
 	IntervalSeconds int      `db:"interval_seconds" json:"interval_seconds"`
 	DailyTimes      []string `db:"daily_times" json:"daily_times"`
+	// CronExpr schedule_kind=cron 时的 5 段表达式
+	CronExpr string `db:"cron_expr" json:"cron_expr"`
 	// WindowMinutes 执行窗口：到点后该窗口内入队一次（窗口内已有任务则跳过）
 	WindowMinutes int `db:"window_minutes" json:"window_minutes"`
 	// Payload 调度入队时的载荷模板（异步任务的载荷由调用方给出）
 	Payload []byte `db:"payload" json:"payload"` // JSONB
 	// Enabled 仅 kind=scheduled 可停用（异步任务停用会变成静默丢任务）
-	Enabled   bool       `db:"enabled" json:"enabled"`
+	Enabled bool `db:"enabled" json:"enabled"`
+	// UniqueKey 声明式单飞键（空 = 调度器回落 job:<name>）。
+	// 身份连接的计划写 syncer:<id>，与手工「立即同步」共用同一个键——两者不会并发跑同一连接。
+	UniqueKey string `db:"unique_key" json:"unique_key"`
+	// OwnerSyncerID 归属的身份连接（非空 = 该定义由连接持有；界面不提供启停，改由连接的计划控制）
+	OwnerSyncerID *int64 `db:"owner_syncer_id" json:"owner_syncer_id,omitempty"`
+	// RetiredAt 代码声明退役时间（保留历史执行记录；任务目录默认不列）
+	RetiredAt *time.Time `db:"retired_at" json:"retired_at,omitempty"`
+	// OwnerName 归属连接名：由查询 join syncers 带出（**不是 asyncd_jobs 的列**），供界面显示"来源"
+	OwnerName string     `db:"-" json:"owner_name,omitempty"`
 	NextRunAt time.Time  `db:"next_run_at" json:"next_run_at"`
 	LastRunAt *time.Time `db:"last_run_at" json:"last_run_at,omitempty"`
 	// LastStatus idle | queued | skipped | failed

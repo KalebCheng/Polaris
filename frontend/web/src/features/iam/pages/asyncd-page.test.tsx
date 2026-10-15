@@ -18,6 +18,7 @@ function scheduleOf(over: Partial<NonNullable<AsyncdJob['schedule']>> = {}): Non
     kind: 'interval',
     interval_seconds: 3600,
     daily_times: [],
+    cron_expr: '',
     window_minutes: 30,
     enabled: true,
     next_run_at: '2026-10-15T04:00:00Z',
@@ -53,8 +54,8 @@ const jobs: AsyncdJob[] = [
   },
   {
     id: 4,
-    name: 'syncer.schedule',
-    task_type: 'syncer.schedule',
+    name: 'maintenance.asyncd_cleanup',
+    task_type: 'maintenance.asyncd_cleanup',
     kind: 'scheduled',
     schedule: scheduleOf({
       kind: 'daily',
@@ -63,6 +64,17 @@ const jobs: AsyncdJob[] = [
       last_status: 'skipped',
     }),
     stats: { total: 0, by_status: {}, last_queued_at: null },
+  },
+  // 归属身份连接的定时任务：cron 表达式 + 来源徽标 + **不提供启停开关**
+  {
+    id: 5,
+    name: 'syncer.schedule:12',
+    task_type: 'syncer.run',
+    kind: 'scheduled',
+    owner_syncer_id: 12,
+    owner_name: 'corp-ldap',
+    schedule: scheduleOf({ kind: 'cron', cron_expr: '0 3 * * *', interval_seconds: 0 }),
+    stats: { total: 2, by_status: { succeeded: 2 }, last_queued_at: '2026-10-15T03:00:00Z' },
   },
 ]
 
@@ -225,12 +237,25 @@ describe('任务中心（任务维度 + 执行记录 + 执行器）', () => {
     expect(within(cleanup).getByText('周期调度')).toBeInTheDocument()
     expect(within(cleanup).getByText('每 3600 秒')).toBeInTheDocument()
     // 停用的调度项：不再显示"下次执行"时间，而是如实说"已停用"
-    const scan = jobCard('syncer.schedule')
+    const scan = jobCard('maintenance.asyncd_cleanup')
     expect(within(scan).getByText('每天 03:00 · 窗口 30 分钟')).toBeInTheDocument()
     expect(within(scan).getByText('已停用')).toBeInTheDocument()
 
     await user.click(within(cleanup).getByRole('switch'))
     await waitFor(() => expect(asyncdApi.setJobEnabled).toHaveBeenCalledWith(3, false))
+
+    // 身份连接持有的计划任务：显示 cron 表达式与来源，且不提供启停开关（启停跟随连接）
+    const plan = jobCard('syncer.schedule:12')
+    expect(within(plan).getByText('Cron · 0 3 * * *')).toBeInTheDocument()
+    expect(within(plan).getByText('身份连接 · corp-ldap')).toBeInTheDocument()
+    expect(within(plan).getByText('由身份连接「corp-ldap」的同步计划控制')).toBeInTheDocument()
+    expect(within(plan).queryByRole('switch')).toBeNull()
+
+    // 来源过滤：只看平台任务时连接的计划不出现；只连接时只剩它
+    await user.click(screen.getByRole('tab', { name: '平台' }))
+    await waitFor(() => expect(screen.queryByText('syncer.schedule:12')).toBeNull())
+    await user.click(screen.getByRole('tab', { name: '身份连接' }))
+    await waitFor(() => expect(screen.getByText('syncer.schedule:12')).toBeInTheDocument())
   })
 
   it('执行记录：按任务过滤、死信可重试、可展开尝试明细', async () => {

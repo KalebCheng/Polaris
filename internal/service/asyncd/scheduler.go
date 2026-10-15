@@ -79,17 +79,29 @@ func (s *Scheduler) tick(ctx context.Context) {
 		return
 	}
 	for _, job := range due {
-		next := NextOccurrence(*job, now)
-		// 单飞键按任务定义唯一：窗口内已有待执行/执行中的实例时不重复入队，且**如实记 skipped**
-		// （旧实现把跳过也记成 enqueued，界面上"跳过"与"已入队"无法区分）
+		next, nextErr := NextOccurrence(*job, now)
 		status := repository.AsyncdJobStatusQueued
-		if _, existing, enqueueErr := s.service.Enqueue(ctx, job.Name, decodePayload(job.Payload),
-			"job:"+job.Name, now, WithMaxAttempts(DefaultMaxAttempts)); enqueueErr != nil {
+		switch {
+		case nextErr != nil:
+			// 规则非法（历史脏数据/手改的行）：不调度，如实记 failed，并把下次时间推到 1 小时后避免热循环
 			status = repository.AsyncdJobStatusFailed
-			logWarn("enqueue scheduled job failed", "job", job.Name, "error", enqueueErr)
-		} else if existing {
-			status = repository.AsyncdJobStatusSkipped
-			logWarn("scheduled job already queued, skipped", "job", job.Name)
+			next = now.Add(time.Hour)
+			logWarn("next occurrence failed", "job", job.Name, "error", nextErr)
+		default:
+			// 单飞键来自定义：代码声明的任务回落 job:<name>；身份连接的计划写 syncer:<id>，
+			// 于是"手工点立即同步"与"定时到点"共用同一个键，不会并发跑同一连接。
+			uniqueKey := job.UniqueKey
+			if uniqueKey == "" {
+				uniqueKey = "job:" + job.Name
+			}
+			if _, existing, enqueueErr := s.service.Enqueue(ctx, job.Name, decodePayload(job.Payload),
+				uniqueKey, now, WithMaxAttempts(DefaultMaxAttempts)); enqueueErr != nil {
+				status = repository.AsyncdJobStatusFailed
+				logWarn("enqueue scheduled job failed", "job", job.Name, "error", enqueueErr)
+			} else if existing {
+				status = repository.AsyncdJobStatusSkipped
+				logWarn("scheduled job already queued, skipped", "job", job.Name)
+			}
 		}
 		if markErr := s.service.jobs.MarkRun(ctx, job.ID, status, next, now); markErr != nil {
 			logWarn("mark job run failed", "job", job.Name, "error", markErr)

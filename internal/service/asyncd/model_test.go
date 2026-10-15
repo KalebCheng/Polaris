@@ -12,13 +12,38 @@ import (
 // ── 仓库桩：只记录任务中心真正用到的输入 ─────────────────────────────────────────
 
 type fakeJobRepo struct {
-	definitions []*repository.AsyncdJob
-	upserted    []*repository.AsyncdJob
-	marked      []struct {
+	definitions    []*repository.AsyncdJob
+	upserted       []*repository.AsyncdJob
+	owned          []*repository.AsyncdJob
+	ownedReset     []bool
+	includeRetired bool
+	retired        []string
+	byOwner        []struct {
+		Owner   int64
+		Enabled bool
+	}
+	marked []struct {
 		ID     int64
 		Status string
 	}
 	enabledCalls []int64
+}
+
+func (f *fakeJobRepo) UpsertOwned(_ context.Context, job *repository.AsyncdJob, resetNextRunAt bool) error {
+	f.owned = append(f.owned, job)
+	f.ownedReset = append(f.ownedReset, resetNextRunAt)
+	return nil
+}
+func (f *fakeJobRepo) SetEnabledByOwner(_ context.Context, ownerSyncerID int64, enabled bool) error {
+	f.byOwner = append(f.byOwner, struct {
+		Owner   int64
+		Enabled bool
+	}{ownerSyncerID, enabled})
+	return nil
+}
+func (f *fakeJobRepo) RetireUndeclared(_ context.Context, activeNames []string, _ time.Time) (int64, error) {
+	f.retired = activeNames
+	return 0, nil
 }
 
 func (f *fakeJobRepo) Upsert(_ context.Context, job *repository.AsyncdJob) error {
@@ -51,7 +76,8 @@ func (f *fakeJobRepo) MarkRun(_ context.Context, id int64, status string, _ time
 	}{id, status})
 	return nil
 }
-func (f *fakeJobRepo) List(context.Context) ([]*repository.AsyncdJob, error) {
+func (f *fakeJobRepo) List(_ context.Context, includeRetired bool) ([]*repository.AsyncdJob, error) {
+	f.includeRetired = includeRetired
 	return f.definitions, nil
 }
 func (f *fakeJobRepo) SetEnabled(_ context.Context, id int64, _ bool) error {
@@ -262,9 +288,11 @@ func TestJobsCatalogIncludesNeverRunDefinition(t *testing.T) {
 
 // 回归：只有定时任务可以停用（异步任务停用会变成静默丢任务）。
 func TestSetJobEnabledOnlyForScheduled(t *testing.T) {
+	owner := int64(9)
 	jobs := &fakeJobRepo{definitions: []*repository.AsyncdJob{
-		{ID: 1, Name: "syncer.schedule", Kind: repository.AsyncdJobKindScheduled},
+		{ID: 1, Name: "syncer.schedule.reconcile", Kind: repository.AsyncdJobKindScheduled},
 		{ID: 2, Name: "syncer.run", Kind: repository.AsyncdJobKindAsync},
+		{ID: 3, Name: "syncer.schedule:9", Kind: repository.AsyncdJobKindScheduled, OwnerSyncerID: &owner},
 	}}
 	svc := newTestService(jobs, &fakeRunRepo{}, &fakeAttemptRepo{}, &fakeWorkerRepo{})
 
@@ -276,6 +304,9 @@ func TestSetJobEnabledOnlyForScheduled(t *testing.T) {
 	}
 	if err := svc.SetJobEnabled(context.Background(), 2, false); err == nil {
 		t.Fatal("异步任务不允许停用")
+	}
+	if err := svc.SetJobEnabled(context.Background(), 3, false); err == nil {
+		t.Fatal("归属身份连接的计划任务不接受界面启停（启停跟随连接）")
 	}
 	if err := svc.SetJobEnabled(context.Background(), 99, false); err == nil {
 		t.Fatal("不存在的定义必须报错")
@@ -356,5 +387,93 @@ func TestPurgeUsesRetentionCutoff(t *testing.T) {
 	}
 	if deletedRuns != 3 || deletedWorkers != 1 {
 		t.Fatalf("应回传删除条数: runs=%d workers=%d", deletedRuns, deletedWorkers)
+	}
+}
+
+// 回归：归属任务定义（身份连接的计划）在**规则或启用态变化时重置 next_run_at**——
+// 否则把"每天 03:00"改成"每 10 分钟"要等到旧的下次时间才生效（又一次"配了不生效"）。
+func TestUpsertOwnedJobResetsNextRunOnRuleChange(t *testing.T) {
+	ctx := context.Background()
+	jobs := &fakeJobRepo{definitions: []*repository.AsyncdJob{}}
+	svc := newTestService(jobs, &fakeRunRepo{}, &fakeAttemptRepo{}, &fakeWorkerRepo{})
+	svc.registry.Register("syncer.run", func(context.Context, *repository.AsyncdJobRun, map[string]any) error { return nil })
+
+	owner := int64(3)
+	base := OwnedJob{
+		Name: "syncer.schedule:3", TaskType: "syncer.run", OwnerSyncerID: owner,
+		Schedule: Schedule{Kind: repository.ScheduleKindCron, Cron: "0 3 * * *"},
+		Payload:  map[string]any{"syncer_id": 3}, Enabled: true, UniqueKey: "syncer:3",
+	}
+	if err := svc.UpsertOwnedJob(ctx, base); err != nil {
+		t.Fatalf("首次写入失败: %v", err)
+	}
+	if !jobs.ownedReset[0] {
+		t.Fatal("首次写入应初始化 next_run_at（reset=true）")
+	}
+
+	// 规则没变 → 不动 next_run_at；改 cron → 必须重置
+	jobs.definitions = []*repository.AsyncdJob{{
+		ID: 9, Name: base.Name, OwnerSyncerID: &owner, Enabled: true,
+		ScheduleKind: repository.ScheduleKindCron, CronExpr: "0 3 * * *",
+		WindowMinutes: 30, UniqueKey: "syncer:3", Payload: []byte(`{"syncer_id":3}`),
+	}}
+	if err := svc.UpsertOwnedJob(ctx, base); err != nil {
+		t.Fatalf("幂等写入失败: %v", err)
+	}
+	if jobs.ownedReset[1] {
+		t.Fatal("规则未变化时不应重置 next_run_at（避免无谓抖动）")
+	}
+
+	changed := base
+	changed.Schedule = Schedule{Kind: repository.ScheduleKindCron, Cron: "*/10 * * * *"}
+	if err := svc.UpsertOwnedJob(ctx, changed); err != nil {
+		t.Fatalf("改规则失败: %v", err)
+	}
+	if !jobs.ownedReset[2] {
+		t.Fatal("规则变化必须重置 next_run_at")
+	}
+
+	// 从停用恢复启用也要重置（否则会带着旧时间一次性触发）
+	jobs.definitions[0].Enabled = false
+	reEnabled := base
+	reEnabled.Enabled = true
+	if err := svc.UpsertOwnedJob(ctx, reEnabled); err != nil {
+		t.Fatalf("重新启用失败: %v", err)
+	}
+	if !jobs.ownedReset[3] {
+		t.Fatal("从停用恢复启用必须重置 next_run_at")
+	}
+}
+
+// 回归：连接计划任务的定义必须归属该连接（界面上隐藏启停、连接删了级联删）
+func TestUpsertOwnedJobKeepsOwner(t *testing.T) {
+	jobs := &fakeJobRepo{}
+	svc := newTestService(jobs, &fakeRunRepo{}, &fakeAttemptRepo{}, &fakeWorkerRepo{})
+	svc.registry.Register("syncer.run", func(context.Context, *repository.AsyncdJobRun, map[string]any) error { return nil })
+	err := svc.UpsertOwnedJob(context.Background(), OwnedJob{
+		Name: "syncer.schedule:8", TaskType: "syncer.run", OwnerSyncerID: 8,
+		Schedule: Schedule{Kind: repository.ScheduleKindInterval, IntervalSeconds: 900},
+		Enabled:  true, UniqueKey: "syncer:8",
+	})
+	if err != nil {
+		t.Fatalf("写入失败: %v", err)
+	}
+	if jobs.owned[0].OwnerSyncerID == nil || *jobs.owned[0].OwnerSyncerID != 8 {
+		t.Fatalf("定义必须带上 owner_syncer_id: %+v", jobs.owned[0])
+	}
+	if jobs.owned[0].UniqueKey != "syncer:8" {
+		t.Fatalf("单飞键必须落库（与手工触发共用）: %+v", jobs.owned[0])
+	}
+}
+
+// 回归：代码里删掉的任务声明走"退役"而不是 DELETE（删定义会级联删掉历史执行记录）
+func TestRetireUndeclaredPassesActiveNames(t *testing.T) {
+	jobs := &fakeJobRepo{}
+	svc := newTestService(jobs, &fakeRunRepo{}, &fakeAttemptRepo{}, &fakeWorkerRepo{})
+	if _, err := svc.RetireUndeclared(context.Background(), []string{"a", "b"}); err != nil {
+		t.Fatalf("退役失败: %v", err)
+	}
+	if len(jobs.retired) != 2 || jobs.retired[0] != "a" {
+		t.Fatalf("应把已声明的名单透传给仓库: %+v", jobs.retired)
 	}
 }

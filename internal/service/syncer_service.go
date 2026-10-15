@@ -6,11 +6,11 @@ import (
 	"strings"
 	"time"
 
-	"polaris/internal/service/asyncd"
 	"polaris/internal/service/cron"
 
 	"polaris/internal/auth"
 	bizerrors "polaris/internal/errors"
+	"polaris/internal/logger"
 	"polaris/internal/repository"
 	"polaris/internal/service/syncer"
 )
@@ -23,15 +23,15 @@ type SyncerService struct {
 	orgs        repository.InstitutionRepository
 	cipher      *auth.SecretCipher
 	audits      *AuditRecorder
-	// asyncd 任务入队（异步执行）；由 app 装配，避免同步执行阻塞 HTTP 请求
-	asyncd *asyncd.Service
+	// asyncd 任务底盘（入队 + 连接持有的计划任务）；由 app 装配，避免同步执行阻塞 HTTP 请求
+	asyncd asyncdScheduler
 }
 
 // TaskTypeSyncerRun 同步器运行任务类型（asyncd 处理器注册名）
 const TaskTypeSyncerRun = "syncer.run"
 
 // SetAsyncd 注入 asyncd（装配期调用；避免构造顺序上的循环依赖）
-func (s *SyncerService) SetAsyncd(service *asyncd.Service) { s.asyncd = service }
+func (s *SyncerService) SetAsyncd(service asyncdScheduler) { s.asyncd = service }
 
 // NewSyncerService 创建同步器服务
 func NewSyncerService(
@@ -81,6 +81,10 @@ func (s *SyncerService) Create(ctx context.Context, actor string, in SyncerInput
 		return nil, err
 	}
 	sy.ID = id
+	// 保存即接线：把「同步计划」变成 asyncd 的定时任务（失败会返回错误并由对账任务自愈）
+	if err := s.applyScheduleJob(ctx, sy); err != nil {
+		return nil, err
+	}
 	s.audits.Record(ctx, actor, sy.InstitutionID, "syncer.create", sy.Name, nil)
 	return sy, nil
 }
@@ -107,6 +111,9 @@ func (s *SyncerService) Update(ctx context.Context, actor string, in SyncerInput
 		return err
 	}
 	if err := s.syncers.Update(ctx, sy); err != nil {
+		return err
+	}
+	if err := s.applyScheduleJob(ctx, sy); err != nil {
 		return err
 	}
 	s.audits.Record(ctx, actor, sy.InstitutionID, "syncer.update", sy.Name, nil)
@@ -274,6 +281,28 @@ func SyncerTypes() []string {
 }
 
 var _ = fmt.Sprintf
+
+// applyScheduleJob 把连接的「同步计划」同步进 asyncd（保存路径；对账任务 ReconcileScheduleJobs 是它的自愈兜底）。
+//
+// 计划为空（「不自动」）→ 停用而不是删除：删定义会级联删掉它的历史执行记录。
+func (s *SyncerService) applyScheduleJob(ctx context.Context, sy *repository.Syncer) error {
+	if s.asyncd == nil {
+		return nil // 未装配（测试/裁剪装配）：计划不生效但不阻断保存
+	}
+	spec, hasPlan := syncerScheduleJob(sy)
+	var err error
+	if !hasPlan {
+		err = s.asyncd.SetOwnedJobEnabled(ctx, sy.ID, false)
+	} else {
+		err = s.asyncd.UpsertOwnedJob(ctx, spec)
+	}
+	if err != nil {
+		// 连接本身已写入；如实报错（而不是"看起来保存成功、其实计划没生效"），对账任务会在 1 分钟内纠正
+		logger.Error("同步计划任务写入失败（等待对账自愈）", "syncer", sy.Name, "error", err)
+		return bizerrors.New(bizerrors.CodeInternalError, "schedule job not applied; it will be retried automatically")
+	}
+	return nil
+}
 
 // NameByID 按主键解析资源标识（对外 HTTP 路径统一用 id；内部仍以 name 语义访问存储）。
 // 同时校验租户归属，避免跨组织按 id 越权读取。

@@ -5,7 +5,22 @@ import { cn } from '@/shared/lib/utils'
 import { formatRelative } from '@/shared/lib/format'
 import type { AsyncdJob } from '../api'
 import { ASYNCD_RUN_STATUS_KEYS, ASYNCD_RUN_STATUS_ORDER } from '../lib/asyncd-status'
+import type { TFunction } from 'i18next'
 import { RESOURCE_CARD_CLASS } from './resource-cards'
+
+/** 调度规则的展示口径（interval / daily 窗口 / cron 表达式），任务卡与测试共用一处 */
+export function scheduleFrequency(schedule: NonNullable<AsyncdJob['schedule']>, t: TFunction): string {
+  if (schedule.kind === 'cron') {
+    return t('asyncd.scheduleCron', { expr: schedule.cron_expr || '-' })
+  }
+  if (schedule.kind === 'daily') {
+    return t('asyncd.scheduleDaily', {
+      times: (schedule.daily_times ?? []).join(' / ') || '-',
+      window: schedule.window_minutes,
+    })
+  }
+  return t('asyncd.scheduleInterval', { seconds: schedule.interval_seconds })
+}
 
 interface AsyncdJobCardProps {
   job: AsyncdJob
@@ -24,14 +39,9 @@ interface AsyncdJobCardProps {
 export function AsyncdJobCard({ job, onOpenRuns, onToggle }: AsyncdJobCardProps) {
   const { t } = useTranslation()
   const schedule = job.schedule
-  const frequency = schedule
-    ? schedule.kind === 'daily'
-      ? t('asyncd.scheduleDaily', {
-          times: (schedule.daily_times ?? []).join(' / ') || '-',
-          window: schedule.window_minutes,
-        })
-      : t('asyncd.scheduleInterval', { seconds: schedule.interval_seconds })
-    : ''
+  const frequency = schedule ? scheduleFrequency(schedule, t) : ''
+  // 归属身份连接的任务：启停跟随连接的计划（这里不提供开关，避免两处真相）
+  const ownedByConnection = job.owner_syncer_id != null
 
   return (
     <article className={RESOURCE_CARD_CLASS}>
@@ -45,10 +55,16 @@ export function AsyncdJobCard({ job, onOpenRuns, onToggle }: AsyncdJobCardProps)
             <Badge variant="secondary">
               {job.kind === 'scheduled' ? t('asyncd.kindScheduled') : t('asyncd.kindAsync')}
             </Badge>
+            {ownedByConnection ? (
+              <Badge variant="outline">
+                {t('asyncd.sourceSyncer')}
+                {job.owner_name ? ` · ${job.owner_name}` : ''}
+              </Badge>
+            ) : null}
             {frequency ? <span className="text-muted-foreground text-[11px]">{frequency}</span> : null}
           </div>
         </div>
-        {schedule ? (
+        {schedule && !ownedByConnection ? (
           <Switch
             checked={schedule.enabled}
             onCheckedChange={onToggle}
@@ -78,6 +94,14 @@ export function AsyncdJobCard({ job, onOpenRuns, onToggle }: AsyncdJobCardProps)
       </dl>
 
       <dl className="space-y-1 text-[11px]">
+        {schedule && ownedByConnection ? (
+          <div className="flex items-center gap-2">
+            <dt className="text-muted-foreground shrink-0">{t('asyncd.sourceLabel')}</dt>
+            <dd className="truncate">
+              {t('asyncd.ownedByConnection', { name: job.owner_name || `#${job.owner_syncer_id}` })}
+            </dd>
+          </div>
+        ) : null}
         {schedule ? (
           <div className="flex items-center gap-2">
             <dt className="text-muted-foreground shrink-0">{t('asyncd.nextRunLabel')}</dt>

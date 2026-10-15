@@ -492,9 +492,12 @@ export interface ReconcileReport {
 
 /** 定时任务的调度规则（异步任务没有这一段） */
 export interface AsyncdSchedule {
+  /** interval | daily | cron */
   kind: string
   interval_seconds: number
   daily_times: string[]
+  /** kind='cron' 时的 5 段表达式（分 时 日 月 周） */
+  cron_expr: string
   window_minutes: number
   enabled: boolean
   next_run_at: string
@@ -521,6 +524,9 @@ export interface AsyncdJob {
   task_type: string
   kind: 'async' | 'scheduled'
   schedule?: AsyncdSchedule
+  /** 非空 = 该定义由身份连接的「同步计划」持有（界面显示来源、不提供启停开关） */
+  owner_syncer_id?: number
+  owner_name?: string
   stats: AsyncdJobStats
 }
 

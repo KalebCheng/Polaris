@@ -434,9 +434,20 @@ type AsyncdWorkerStat struct {
 }
 
 // AsyncdJobRepository 任务定义仓库接口（存储: PostgreSQL asyncd_jobs）
+//
+// 定义有两类来源：
+//   - 代码声明（owner_syncer_id 为空）：启动时 upsert，运维可在界面启停；
+//   - 数据声明（owner_syncer_id 非空，目前只有身份连接的「同步计划」）：由连接保存/对账写入，启停跟随连接。
 type AsyncdJobRepository interface {
-	// Upsert 注册/更新任务定义（启动时按代码声明对齐，幂等；next_run_at 仅在新建时初始化）
+	// Upsert 注册/更新**代码声明**的任务定义（启动时对齐，幂等；next_run_at 与 enabled 仅在新建时初始化）
 	Upsert(ctx context.Context, job *AsyncdJob) error
+	// UpsertOwned 写入**数据声明**的任务定义（覆盖规则/payload/enabled/unique_key/owner；
+	// resetNextRunAt=true 时按新规则重置 next_run_at，避免"改了计划要等旧的下次时间才生效"）
+	UpsertOwned(ctx context.Context, job *AsyncdJob, resetNextRunAt bool) error
+	// SetEnabledByOwner 按归属连接启停其计划任务
+	SetEnabledByOwner(ctx context.Context, ownerSyncerID int64, enabled bool) error
+	// RetireUndeclared 把"本次启动未声明且无归属"的定义标记退役（保留历史，不再被调度）
+	RetireUndeclared(ctx context.Context, activeNames []string, at time.Time) (int64, error)
 	// GetByName 按定义名取（入队时解析处理器与默认策略）
 	GetByName(ctx context.Context, name string) (*AsyncdJob, error)
 	// GetByID 按主键取（对外路径统一用主键，见 handler/util.go 的约定）
@@ -445,8 +456,8 @@ type AsyncdJobRepository interface {
 	ClaimDue(ctx context.Context, now time.Time, limit int) ([]*AsyncdJob, error)
 	// MarkRun 记录本次调度结果（queued|skipped|failed）并推进 next_run_at
 	MarkRun(ctx context.Context, id int64, status string, nextRunAt time.Time, at time.Time) error
-	// List 列出全部任务定义（任务目录）
-	List(ctx context.Context) ([]*AsyncdJob, error)
+	// List 列出任务定义（includeRetired=true 时含已退役的，供执行记录的归属解析）
+	List(ctx context.Context, includeRetired bool) ([]*AsyncdJob, error)
 	// SetEnabled 启停定时任务（异步任务不可停用；按主键）
 	SetEnabled(ctx context.Context, id int64, enabled bool) error
 }

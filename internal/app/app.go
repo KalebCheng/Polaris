@@ -523,8 +523,10 @@ func (a *Application) initServer() {
 	registry.Register("maintenance.asyncd_cleanup", func(ctx context.Context, _ *repository.AsyncdJobRun, payload map[string]any) error {
 		return a.cleanupAsyncd(ctx, payload)
 	}, asyncd.HandlerMaxAttempts(3))
-	registry.Register("syncer.schedule", func(ctx context.Context, _ *repository.AsyncdJobRun, _ map[string]any) error {
-		return a.runScheduledSyncers(ctx)
+	// 同步计划对账：连接的「同步计划」现在就是 asyncd 的定时任务（一条定义），
+	// 这个任务只负责让"库里的定义"与"连接的真实状态"保持一致（自愈），不再做"到点判定"。
+	registry.Register("syncer.schedule.reconcile", func(ctx context.Context, _ *repository.AsyncdJobRun, _ map[string]any) error {
+		return a.syncerSvc.ReconcileScheduleJobs(ctx)
 	})
 	// 同步器运行任务：真正执行一次同步（差异 → 保护 → 落地 → 运行记录）。
 	// 单飞键由入队侧给出（syncer:<id>），因此同一数据源不会并发跑两次。
@@ -555,6 +557,7 @@ func (a *Application) initServer() {
 	// 任务定义声明（幂等 upsert；重启不会打乱 next_run_at，也不会把界面上的启停掰回默认值）：
 	//   kind=async     —— 由业务动作按需入队（定义入库后，任务中心连"从未执行过"的任务也列得出）
 	//   kind=scheduled —— 由调度器按间隔/时刻入队，可停用
+	declared := make([]string, 0, 8)
 	for _, job := range []asyncd.Job{
 		{Name: service.TaskTypeSyncerRun, TaskType: service.TaskTypeSyncerRun, Kind: repository.AsyncdJobKindAsync},
 		{Name: service.TaskTypeProvisionAccount, TaskType: service.TaskTypeProvisionAccount, Kind: repository.AsyncdJobKindAsync},
@@ -576,8 +579,8 @@ func (a *Application) initServer() {
 			Schedule: asyncd.Schedule{Kind: repository.ScheduleKindInterval, IntervalSeconds: 3600},
 		},
 		{
-			// 同步器定时校验：每分钟扫描"到点且未在运行"的数据源（真正的周期判定在同步器内部）
-			Name: "syncer.schedule", TaskType: "syncer.schedule",
+			// 同步计划对账：每分钟把"连接持有的计划任务"与连接的真实状态对齐（自愈兜底）
+			Name: "syncer.schedule.reconcile", TaskType: "syncer.schedule.reconcile",
 			Kind: repository.AsyncdJobKindScheduled, Enabled: true,
 			Schedule: asyncd.Schedule{Kind: repository.ScheduleKindInterval, IntervalSeconds: 60},
 		},
@@ -590,7 +593,15 @@ func (a *Application) initServer() {
 		// 定义注册失败不应阻断启动：记日志并在下一次启动时重试（upsert 幂等）
 		if err := a.asyncdSvc.RegisterJob(context.Background(), job); err != nil {
 			logger.Error("注册任务定义失败", "job", job.Name, "error", err)
+			continue
 		}
+		declared = append(declared, job.Name)
+	}
+	// 代码里删掉的任务声明：**退役**而不是删除（删定义会级联删掉它的历史执行记录）
+	if retired, err := a.asyncdSvc.RetireUndeclared(context.Background(), declared); err != nil {
+		logger.Error("退役未声明的任务定义失败", "error", err)
+	} else if retired > 0 {
+		logger.Info("已退役未声明的任务定义", "count", retired)
 	}
 }
 

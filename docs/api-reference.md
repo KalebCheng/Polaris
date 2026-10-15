@@ -183,12 +183,19 @@
 | GET | `/asyncd/workers` | 平台管理员 |
 
 > **四个维度**（表结构见 `docs/specs/261015-asyncd-task-model.md` §4）：
-> 1. **任务定义** `asyncd_jobs`：`GET /asyncd/jobs` 返回 `{items:[{id,name,task_type,kind,schedule?,stats}]}`——
->    `kind='scheduled'` 带调度规则（`kind/interval_seconds/daily_times/window_minutes/enabled/next_run_at/last_status`），
->    `kind='async'` 没有 `schedule` 段。定义由代码在启动时声明并幂等 upsert，**界面不提供增删改**；
->    目录来自定义表，因此"注册了但从未执行过"的任务也在列（`stats.total=0`）。
->    `PUT`（按数字主键）只用于启停**定时任务**（`{"enabled":bool}`）；对异步任务返回 `INVALID_PARAMS`——
->    停用异步任务等于让业务动作静默丢任务，不提供这个口子。
+> 1. **任务定义** `asyncd_jobs`：`GET /asyncd/jobs` 返回
+>    `{items:[{id,name,task_type,kind,schedule?,owner_syncer_id?,owner_name?,stats}]}`——
+>    `kind='scheduled'` 带调度规则（`kind` ∈ `interval|daily|cron` + `interval_seconds`/`daily_times`/`cron_expr`/
+>    `window_minutes`/`enabled`/`next_run_at`/`last_status`），`kind='async'` 没有 `schedule` 段。
+>    定义有两类来源：
+>    - **代码声明**（`owner_syncer_id` 为空）：启动时幂等 upsert，界面可启停；
+>    - **数据声明**（`owner_syncer_id` 非空）：由**身份连接的「同步计划」**持有，一个连接一条，
+>      `task_type` 固定为 `syncer.run`（到点即同步，一跳完成），`owner_name` 是连接名（界面按它显示来源）。
+>    目录来自定义表，因此"注册了但从未执行过"的任务也在列（`stats.total=0`）；
+>    代码里删掉的声明会**退役**（保留历史执行记录，不再出现在目录里）。
+>    `PUT`（按数字主键）只用于启停**代码声明**的定时任务（`{"enabled":bool}`）；
+>    对异步任务返回 `INVALID_PARAMS`（停用异步任务等于让业务动作静默丢任务），
+>    对归属连接的任务同样返回 `INVALID_PARAMS`（启停跟随连接的计划）。
 > 2. **执行实例** `asyncd_job_runs`：`GET /asyncd/jobs/:id/runs` 一行 = 一次执行，状态
 >    `queued`（等待/退避）· `running`（执行中，持租约）· `succeeded` · `dead`（死信，可人工重试）；
 >    `counts` 是与列表**同一作用域**的状态直方图（前端据此派生分页总数）。
@@ -199,8 +206,12 @@
 >    `state` 由**心跳**算出：`online`（30s 内有心跳）· `stale`（心跳过期，疑似崩溃）· `stopped`（优雅退出），
 >    `running` 是该槽位当前持租约在执行的任务数（实时聚合，不落列）。
 >
-> 调度项（定时任务）由代码声明并自动注册；`last_status` 的 `skipped` 表示"单飞键命中：
-> 窗口内已有待执行/执行中的实例，本次跳过"——不再把跳过误报成"已入队"。
+> 任务定义由代码声明（平台任务）或由连接保存时写入（连接的计划）并自动注册；
+> `last_status` 的 `skipped` 表示"单飞键命中：窗口内已有待执行/执行中的实例，本次跳过"——
+> 不再把跳过误报成"已入队"。`cron` 为**标准 5 段**表达式（分 时 日 月 周，支持 `*`/列表/区间/步长；
+> 不支持秒与 `JAN`/`@daily`/`L`）；非法表达式保存时被拒，历史脏数据会让该任务记 `failed` 并跳过调度。
+> 身份连接的「同步周期/定时校验」与手工「立即同步」**共用单飞键** `syncer:<id>`：
+> 两者重叠时只跑一次，定时侧如实记 `skipped`。
 ### 3.9 平台接入信息与系统设置
 
 | 方法 | 路径 | 权限 |

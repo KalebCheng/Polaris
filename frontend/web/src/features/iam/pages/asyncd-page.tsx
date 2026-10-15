@@ -14,6 +14,9 @@ import { ResourceCards } from '../components/resource-cards'
 /** 任务中心的两层：任务维度（异步 / 定时）与执行器维度 */
 type Dimension = 'async' | 'scheduled' | 'workers'
 
+/** 定时任务的来源过滤：平台声明的任务 vs 身份连接持有的「同步计划」 */
+type Source = 'all' | 'platform' | 'syncer'
+
 /**
  * asyncd 任务中心（平台级）：四个维度都能看见。
  *
@@ -28,6 +31,7 @@ type Dimension = 'async' | 'scheduled' | 'workers'
 export default function AsyncdPage() {
   const { t } = useTranslation()
   const [dimension, setDimension] = useState<Dimension>('async')
+  const [source, setSource] = useState<Source>('all')
   const [jobs, setJobs] = useState<AsyncdJob[] | null>(null)
   const [workers, setWorkers] = useState<AsyncdWorker[]>([])
   const [selected, setSelected] = useState<AsyncdJob | null>(null)
@@ -67,9 +71,13 @@ export default function AsyncdPage() {
     return acc
   }, {})
 
-  const visible = (jobs ?? []).filter((job) =>
-    dimension === 'scheduled' ? job.kind === 'scheduled' : job.kind === 'async',
-  )
+  const visible = (jobs ?? [])
+    .filter((job) => (dimension === 'scheduled' ? job.kind === 'scheduled' : job.kind === 'async'))
+    // 来源过滤只对定时任务有意义（异步任务都由平台声明）
+    .filter((job) => {
+      if (dimension !== 'scheduled' || source === 'all') return true
+      return source === 'syncer' ? job.owner_syncer_id != null : job.owner_syncer_id == null
+    })
   const emptyKey = dimension === 'scheduled' ? 'asyncd.scheduledEmpty' : 'asyncd.asyncEmpty'
   const emptyHintKey = dimension === 'scheduled' ? 'asyncd.scheduledEmptyHint' : 'asyncd.asyncEmptyHint'
   const hintKey =
@@ -106,6 +114,16 @@ export default function AsyncdPage() {
           <RefreshCw className="size-4" /> {t('common.refresh')}
         </Button>
       </div>
+
+      {dimension === 'scheduled' ? (
+        <Tabs value={source} onValueChange={(value) => setSource(value as Source)}>
+          <TabsList>
+            <TabsTrigger value="all">{t('asyncd.sourceAll')}</TabsTrigger>
+            <TabsTrigger value="platform">{t('asyncd.sourcePlatform')}</TabsTrigger>
+            <TabsTrigger value="syncer">{t('asyncd.sourceSyncer')}</TabsTrigger>
+          </TabsList>
+        </Tabs>
+      ) : null}
 
       <p className="text-muted-foreground text-[11px]">{t(hintKey)}</p>
 

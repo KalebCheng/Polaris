@@ -1646,6 +1646,12 @@
     "attemptNo": "#{{no}}",
     "attemptsEmpty": "No attempts recorded for this run",
     "retry": "Retry",
-    "retried": "Re-queued"
+    "retried": "Re-queued",
+    "scheduleCron": "Cron · {{expr}}",
+    "sourceAll": "All sources",
+    "sourcePlatform": "Platform",
+    "sourceSyncer": "Connection",
+    "sourceLabel": "Source",
+    "ownedByConnection": "Controlled by the sync plan of connection “{{name}}”"
   }
 }

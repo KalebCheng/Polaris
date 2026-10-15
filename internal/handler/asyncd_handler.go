@@ -27,6 +27,7 @@ type asyncdScheduleDTO struct {
 	Kind            string     `json:"kind"`
 	IntervalSeconds int        `json:"interval_seconds"`
 	DailyTimes      []string   `json:"daily_times"`
+	CronExpr        string     `json:"cron_expr"`
 	WindowMinutes   int        `json:"window_minutes"`
 	Enabled         bool       `json:"enabled"`
 	NextRunAt       time.Time  `json:"next_run_at"`
@@ -42,13 +43,17 @@ type asyncdStatsDTO struct {
 }
 
 // asyncdJobDTO 任务定义（任务中心的一行）：kind=async 时没有 schedule 段。
+// owner_syncer_id/owner_name 非空表示这条定义**由身份连接的「同步计划」持有**：
+// 界面上显示来源、不提供启停开关（启停跟随连接）。
 type asyncdJobDTO struct {
-	ID       int64              `json:"id"`
-	Name     string             `json:"name"`
-	TaskType string             `json:"task_type"`
-	Kind     string             `json:"kind"`
-	Schedule *asyncdScheduleDTO `json:"schedule,omitempty"`
-	Stats    asyncdStatsDTO     `json:"stats"`
+	ID            int64              `json:"id"`
+	Name          string             `json:"name"`
+	TaskType      string             `json:"task_type"`
+	Kind          string             `json:"kind"`
+	Schedule      *asyncdScheduleDTO `json:"schedule,omitempty"`
+	OwnerSyncerID *int64             `json:"owner_syncer_id,omitempty"`
+	OwnerName     string             `json:"owner_name,omitempty"`
+	Stats         asyncdStatsDTO     `json:"stats"`
 }
 
 // asyncdJobRunDTO 执行实例（一次执行）：执行记录列表的一行。
@@ -106,7 +111,8 @@ func toAsyncdJobDTO(item asyncd.JobCatalog) *asyncdJobDTO {
 	}
 	dto := &asyncdJobDTO{
 		ID: item.Definition.ID, Name: item.Definition.Name, TaskType: item.Definition.TaskType,
-		Kind: item.Definition.Kind,
+		Kind: item.Definition.Kind, OwnerSyncerID: item.Definition.OwnerSyncerID,
+		OwnerName: item.Definition.OwnerName,
 		Stats: asyncdStatsDTO{
 			Total: stats.Total, ByStatus: byStatus, LastQueuedAt: stats.LastQueuedAt,
 		},
@@ -118,7 +124,7 @@ func toAsyncdJobDTO(item asyncd.JobCatalog) *asyncdJobDTO {
 		}
 		dto.Schedule = &asyncdScheduleDTO{
 			Kind: item.Definition.ScheduleKind, IntervalSeconds: item.Definition.IntervalSeconds,
-			DailyTimes: daily, WindowMinutes: item.Definition.WindowMinutes,
+			DailyTimes: daily, CronExpr: item.Definition.CronExpr, WindowMinutes: item.Definition.WindowMinutes,
 			Enabled: item.Definition.Enabled, NextRunAt: item.Definition.NextRunAt,
 			LastRunAt: item.Definition.LastRunAt, LastStatus: item.Definition.LastStatus,
 		}

@@ -10,6 +10,7 @@ import (
 	"polaris/internal/errors"
 	"polaris/internal/logger"
 	"polaris/internal/repository"
+	"polaris/internal/service/cron"
 )
 
 // Service 任务与调度的对外入口（定义声明 / 入队 / 查询 / 人工干预 / 保留期清理）。
@@ -64,11 +65,14 @@ func (s *Service) Registry() *Registry { return s.registry }
 
 // Schedule 任务定义的调度规则（kind=scheduled 时必填）
 type Schedule struct {
-	// Kind interval | daily
+	// Kind interval | daily | cron
 	Kind            string
 	IntervalSeconds int
 	DailyTimes      []string
-	WindowMinutes   int
+	// Cron 标准 5 段表达式（分 时 日 月 周），Kind=cron 时必填
+	Cron string
+	// WindowMinutes 执行窗口（daily 语义用；默认 30）
+	WindowMinutes int
 }
 
 // Job 任务定义声明（由代码在启动时给出：名字、处理器绑定、调度规则、载荷模板）
@@ -81,6 +85,10 @@ type Job struct {
 	// Payload 调度入队时的载荷模板（异步任务由调用方给载荷，这里不用）
 	Payload any
 	Enabled bool
+	// UniqueKey 声明式单飞键（空 = 调度器回落 job:<name>）
+	UniqueKey string
+	// OwnerSyncerID 归属的身份连接（数据声明专用；代码声明留空）
+	OwnerSyncerID *int64
 }
 
 // RegisterJob 注册/更新任务定义（幂等；启动时按代码声明对齐数据库）。
@@ -88,27 +96,14 @@ func (s *Service) RegisterJob(ctx context.Context, job Job) error {
 	if job.Kind == "" {
 		job.Kind = repository.AsyncdJobKindAsync
 	}
-	if job.Kind == repository.AsyncdJobKindScheduled {
-		if job.Schedule.Kind == "" {
-			return fmt.Errorf("task: 定时任务 %q 缺少调度规则", job.Name)
-		}
-		if job.Schedule.Kind == repository.ScheduleKindInterval && job.Schedule.IntervalSeconds <= 0 {
-			return fmt.Errorf("task: 定时任务 %q 的间隔必须为正数", job.Name)
-		}
-		if job.Schedule.Kind == repository.ScheduleKindDaily && len(job.Schedule.DailyTimes) == 0 {
-			return fmt.Errorf("task: 定时任务 %q 必须声明每天的执行时刻", job.Name)
-		}
-	}
 	if job.Kind == repository.AsyncdJobKindAsync {
 		// 异步任务没有"停用"语义：停用它等于让业务动作静默丢任务，因此恒定启用
 		job.Enabled = true
+	} else if err := validateSchedule(job.Name, job.Schedule); err != nil {
+		return err
 	}
 	if _, ok := s.registry.Lookup(job.TaskType); !ok {
 		return errUnknownTaskType(job.TaskType)
-	}
-	window := job.Schedule.WindowMinutes
-	if window <= 0 {
-		window = 30
 	}
 	payload, err := json.Marshal(job.Payload)
 	if err != nil || job.Payload == nil {
@@ -117,9 +112,131 @@ func (s *Service) RegisterJob(ctx context.Context, job Job) error {
 	return s.jobs.Upsert(ctx, &repository.AsyncdJob{
 		Name: job.Name, TaskType: job.TaskType, Kind: job.Kind,
 		ScheduleKind: job.Schedule.Kind, IntervalSeconds: job.Schedule.IntervalSeconds,
-		DailyTimes: job.Schedule.DailyTimes, WindowMinutes: window,
-		Payload: payload, Enabled: job.Enabled,
+		DailyTimes: job.Schedule.DailyTimes, CronExpr: job.Schedule.Cron,
+		WindowMinutes: windowOrDefault(job.Schedule.WindowMinutes),
+		Payload:       payload, Enabled: job.Enabled, UniqueKey: job.UniqueKey,
+		OwnerSyncerID: job.OwnerSyncerID,
 	})
+}
+
+// validateSchedule 校验调度规则的自洽性（代码声明与连接计划共用一处口径）
+func validateSchedule(name string, schedule Schedule) error {
+	switch schedule.Kind {
+	case repository.ScheduleKindInterval:
+		if schedule.IntervalSeconds <= 0 {
+			return fmt.Errorf("task: 定时任务 %q 的间隔必须为正数", name)
+		}
+	case repository.ScheduleKindDaily:
+		if len(schedule.DailyTimes) == 0 {
+			return fmt.Errorf("task: 定时任务 %q 必须声明每天的执行时刻", name)
+		}
+	case repository.ScheduleKindCron:
+		if _, err := cron.Parse(schedule.Cron); err != nil {
+			return fmt.Errorf("task: 定时任务 %q 的 cron 表达式非法: %w", name, err)
+		}
+	case "":
+		return fmt.Errorf("task: 定时任务 %q 缺少调度规则", name)
+	default:
+		return fmt.Errorf("task: 定时任务 %q 的调度规则 %q 不支持", name, schedule.Kind)
+	}
+	return nil
+}
+
+func windowOrDefault(window int) int {
+	if window <= 0 {
+		return 30
+	}
+	return window
+}
+
+// OwnedJob 由**数据**持有的任务定义：目前只有身份连接的「同步计划」（一个连接一条）。
+//
+// 与代码声明的区别：启停跟随连接（Enabled 是连接状态的投影），规则会被保存/对账覆盖。
+type OwnedJob struct {
+	Name          string
+	TaskType      string
+	OwnerSyncerID int64
+	Schedule      Schedule
+	Payload       any
+	Enabled       bool
+	// UniqueKey 单飞键（连接写 syncer:<id>，与手工「立即同步」共用）
+	UniqueKey string
+}
+
+// UpsertOwnedJob 写入/更新归属任务定义（连接保存时调用；对账任务也走它）。
+//
+// 规则或启用态发生变化时**重置 next_run_at**：否则把"每天 03:00"改成"每 10 分钟"后，
+// 最长要等到旧的下次时间才生效——那是又一次"配了不生效"。
+func (s *Service) UpsertOwnedJob(ctx context.Context, owned OwnedJob) error {
+	if err := validateSchedule(owned.Name, owned.Schedule); err != nil {
+		return err
+	}
+	if _, ok := s.registry.Lookup(owned.TaskType); !ok {
+		return errUnknownTaskType(owned.TaskType)
+	}
+	payload, err := json.Marshal(owned.Payload)
+	if err != nil || owned.Payload == nil {
+		payload = []byte("{}")
+	}
+	target := &repository.AsyncdJob{
+		Name: owned.Name, TaskType: owned.TaskType, Kind: repository.AsyncdJobKindScheduled,
+		ScheduleKind: owned.Schedule.Kind, IntervalSeconds: owned.Schedule.IntervalSeconds,
+		DailyTimes: owned.Schedule.DailyTimes, CronExpr: owned.Schedule.Cron,
+		WindowMinutes: windowOrDefault(owned.Schedule.WindowMinutes),
+		Payload:       payload, Enabled: owned.Enabled, UniqueKey: owned.UniqueKey,
+		OwnerSyncerID: &owned.OwnerSyncerID,
+	}
+	reset := true
+	if existing, err := s.jobs.GetByName(ctx, owned.Name); err == nil && existing != nil {
+		reset = scheduleChanged(existing, target) || (!existing.Enabled && target.Enabled)
+	}
+	return s.jobs.UpsertOwned(ctx, target, reset)
+}
+
+// scheduleChanged 判断"规则是否变了"（决定要不要重置 next_run_at）
+func scheduleChanged(existing, target *repository.AsyncdJob) bool {
+	if existing.ScheduleKind != target.ScheduleKind ||
+		existing.IntervalSeconds != target.IntervalSeconds ||
+		existing.CronExpr != target.CronExpr ||
+		existing.WindowMinutes != target.WindowMinutes ||
+		existing.UniqueKey != target.UniqueKey {
+		return true
+	}
+	if len(existing.DailyTimes) != len(target.DailyTimes) {
+		return true
+	}
+	for i, at := range existing.DailyTimes {
+		if at != target.DailyTimes[i] {
+			return true
+		}
+	}
+	return string(existing.Payload) != string(target.Payload)
+}
+
+// OwnedJobs 列出由数据主体持有的任务定义（目前只有身份连接的计划），供对账使用。
+func (s *Service) OwnedJobs(ctx context.Context) ([]*repository.AsyncdJob, error) {
+	definitions, err := s.jobs.List(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*repository.AsyncdJob, 0, len(definitions))
+	for _, job := range definitions {
+		if job.OwnerSyncerID != nil {
+			out = append(out, job)
+		}
+	}
+	return out, nil
+}
+
+// SetOwnedJobEnabled 按归属连接启停其计划任务（连接停用 / 计划改回「不自动」）
+func (s *Service) SetOwnedJobEnabled(ctx context.Context, ownerSyncerID int64, enabled bool) error {
+	return s.jobs.SetEnabledByOwner(ctx, ownerSyncerID, enabled)
+}
+
+// RetireUndeclared 退役"本次启动未声明且无归属"的定义（保留历史执行记录）。
+// 代码里删掉一个任务声明时走这条路，而不是 DELETE（删定义会级联删掉执行历史）。
+func (s *Service) RetireUndeclared(ctx context.Context, activeNames []string) (int64, error) {
+	return s.jobs.RetireUndeclared(ctx, activeNames, s.clock())
 }
 
 // Enqueue 入队一个执行实例。
@@ -197,7 +314,7 @@ type JobCatalog struct {
 // 定义表是目录的唯一来源，因此**从未执行过的任务也在列**——
 // 只看执行实例会把"没跑过"显示成"任务不存在"。
 func (s *Service) Jobs(ctx context.Context) ([]JobCatalog, error) {
-	definitions, err := s.jobs.List(ctx)
+	definitions, err := s.jobs.List(ctx, false)
 	if err != nil {
 		return nil, err
 	}
@@ -239,6 +356,10 @@ func (s *Service) SetJobEnabled(ctx context.Context, id int64, enabled bool) err
 	}
 	if job.Kind != repository.AsyncdJobKindScheduled {
 		return errors.ErrInvalidParams.WithDetail("id", id).WithDetail("kind", job.Kind)
+	}
+	if job.OwnerSyncerID != nil {
+		// 归属连接的任务：启停跟随连接的计划（界面不提供开关，这里再挡一次）
+		return errors.ErrInvalidParams.WithDetail("id", id).WithDetail("owner", "syncer")
 	}
 	return s.jobs.SetEnabled(ctx, id, enabled)
 }
@@ -297,7 +418,8 @@ func (s *Service) JobRun(ctx context.Context, id int64) (*JobRunView, error) {
 
 // jobIndex 任务定义索引（定义是小集合，一次读回比逐个查更划算；缺定义时归属留空即可）
 func (s *Service) jobIndex(ctx context.Context) (map[int64]*repository.AsyncdJob, error) {
-	definitions, err := s.jobs.List(ctx)
+	// 含退役定义：退役任务的执行记录仍要显示"这是哪个任务"
+	definitions, err := s.jobs.List(ctx, true)
 	if err != nil {
 		return nil, err
 	}

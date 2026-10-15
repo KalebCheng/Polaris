@@ -5,11 +5,13 @@
 package asyncd
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"time"
 
 	"polaris/internal/repository"
+	"polaris/internal/service/cron"
 )
 
 // 默认策略
@@ -67,13 +69,26 @@ func Backoff(attempts int, base, cap time.Duration, jitter func() float64) time.
 	return delay
 }
 
-// NextOccurrence 计算调度项的下一次执行时间（interval 或 daily 多时刻）。
+// NextOccurrence 计算任务定义的下一次执行时间（interval / daily / cron）。
 //
 // daily 语义对齐参考产品：每天在若干时刻执行；`windowMinutes` 表示"到点后前后该窗口内
-// 执行一次即可"。这里返回**下一个到点时刻**，窗口与去重由单飞键（window 内已有待执行
+// 执行一次即可"。这里返回**下一个到点时刻**，窗口与去重由单飞键（窗口内已有待执行
 // 任务则跳过）保证，因此不会重复入队。
-func NextOccurrence(job repository.AsyncdJob, now time.Time) time.Time {
+//
+// cron 走 internal/service/cron 的 5 段实现；表达式非法（含一年内不触发）时返回 error，
+// 由调度器如实记 last_status=failed —— 而不是静默不再调度（"配了不生效"必须看得见）。
+func NextOccurrence(job repository.AsyncdJob, now time.Time) (time.Time, error) {
 	switch job.ScheduleKind {
+	case repository.ScheduleKindCron:
+		parsed, err := cron.Parse(job.CronExpr)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("非法 cron 表达式 %q: %w", job.CronExpr, err)
+		}
+		next, ok := parsed.Next(now)
+		if !ok {
+			return time.Time{}, fmt.Errorf("cron 表达式 %q 在一年内不会触发", job.CronExpr)
+		}
+		return next, nil
 	case repository.ScheduleKindDaily:
 		window := job.WindowMinutes
 		if window <= 0 {
@@ -81,15 +96,15 @@ func NextOccurrence(job repository.AsyncdJob, now time.Time) time.Time {
 		}
 		// 命中窗口的最近时刻（含已过去但在窗口内的当天时刻）
 		if next, ok := nextDailyWithinWindow(job.DailyTimes, now, window); ok {
-			return next
+			return next, nil
 		}
-		return nextDaily(job.DailyTimes, now, window)
+		return nextDaily(job.DailyTimes, now, window), nil
 	default: // interval
 		seconds := job.IntervalSeconds
 		if seconds <= 0 {
 			seconds = 60
 		}
-		return now.Add(time.Duration(seconds) * time.Second)
+		return now.Add(time.Duration(seconds) * time.Second), nil
 	}
 }
 

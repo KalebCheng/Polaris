@@ -26,6 +26,7 @@ TEST_DEPT5="smoke-dept5-$RUN_ID"
 TEST_GROUP5="smoke-group5-$RUN_ID"
 TEST_STORAGE="smoke-storage-$RUN_ID"
 TEST_STORAGE2="smoke-storage2-$RUN_ID"
+TEST_PLAN_SYNCER="smoke-plan-$RUN_ID"
 TEST_CAPTCHA="smoke-captcha-$RUN_ID"
 TEST_EMAIL="smoke-email-$RUN_ID"
 TEST_SMS="smoke-sms-$RUN_ID"
@@ -146,6 +147,22 @@ except Exception:
     print("")'
 }
 
+# json_owner_job_id <syncer_id>：从最近一次 /asyncd/jobs 响应取"归属该连接"的任务定义主键
+json_owner_job_id() {
+  python3 -c 'import json,sys
+try:
+    d = json.load(open("/tmp/polaris-smoke-body"))
+    items = d.get("data", {}).get("items") or []
+    for item in items:
+        if item.get("owner_syncer_id") == int(sys.argv[1]):
+            print(item.get("id", ""))
+            break
+    else:
+        print("")
+except Exception:
+    print("")' "$1"
+}
+
 # json_top <key>：从最近一次响应体顶层取字段（OIDC 端点返回标准 JSON，无统一包装）
 json_top() {
   python3 -c 'import json,sys
@@ -253,6 +270,37 @@ if [ -n "$ASYNCD_JOB_ID" ]; then
   fi
 fi
 expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/asyncd/workers")" "GET /asyncd/workers → 200"
+
+# 身份连接的「同步计划」就是 asyncd 的一条定时任务（Spec：261015-syncer-schedule-into-asyncd）
+step "9a. 连接的同步计划 → asyncd 定时任务（Cron 一等能力）"
+expect_code 201 "$(code -b "$JAR" -X POST "$BASE/api/v1/syncers" -H 'Content-Type: application/json' \
+  --data-raw "$(printf '{"institution_id":%s,"name":"%s","display_name":"冒烟计划连接","type":"ldap","sub_type":"openldap","is_enabled":true,"host":"127.0.0.1","port":389,"user":"cn=admin,dc=example,dc=com","base_dn":"dc=example,dc=com","sync_config":{"schedule":{"mode":"cron","cron":"0 4 * * *"}}}' "$ORG_ID" "$TEST_PLAN_SYNCER")")" \
+  "创建身份连接（cron 计划）→ 201"
+PLAN_SYNCER_ID="$(json_field id)"
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/asyncd/jobs")" "GET /asyncd/jobs（取连接的计划任务）→ 200"
+PLAN_JOB_ID="$(json_owner_job_id "$PLAN_SYNCER_ID")"
+if [ -z "$PLAN_JOB_ID" ]; then red "FAIL  保存连接后未生成计划任务（配置即生效被破坏）"; exit 1; fi
+green "PASS  保存连接即生成 asyncd 定时任务（job=${PLAN_JOB_ID}）"
+
+# 计划任务必须：按 cron 规则落库、复用 syncer.run 处理器（到点即同步一跳）、来源可读
+export PLAN_JOB_ID PLAN_SYNCER_NAME="$TEST_PLAN_SYNCER"
+expect_ok "计划任务规则/处理器/来源正确" 'import json,os
+d=json.load(open("/tmp/polaris-smoke-body"))
+items=d.get("data",{}).get("items") or []
+job=next((j for j in items if str(j.get("id"))==os.environ["PLAN_JOB_ID"]), None)
+assert job, "plan job not found"
+assert job["schedule"]["kind"]=="cron" and job["schedule"]["cron_expr"]=="0 4 * * *", job["schedule"]
+assert job["task_type"]=="syncer.run", job
+assert job.get("owner_name")==os.environ["PLAN_SYNCER_NAME"], job
+print("OK")'
+
+expect_code 400 "$(code -b "$JAR" -X PUT "$BASE/api/v1/asyncd/jobs/$PLAN_JOB_ID" -H 'Content-Type: application/json' \
+  --data-raw '{"enabled":false}')" "归属连接的计划任务拒绝界面启停 → 400"
+expect_code 200 "$(code -b "$JAR" -X DELETE "$BASE/api/v1/syncers/$PLAN_SYNCER_ID")" "删除连接 → 200"
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/asyncd/jobs")" "GET /asyncd/jobs（确认无孤儿任务）→ 200"
+ORPHAN_JOB="$(json_owner_job_id "$PLAN_SYNCER_ID")"
+if [ -n "$ORPHAN_JOB" ]; then red "FAIL  连接已删除但计划任务仍在（孤儿任务）"; exit 1; fi
+green "PASS  删除连接后计划任务随外键级联清除（无孤儿）"
 
 step "10. 用户生命周期（创建 / 查询 / 重置密码 / 删除）"
 expect_code 201 "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \

@@ -1646,6 +1646,12 @@
     "attemptNo": "第 {{no}} 次",
     "attemptsEmpty": "这次执行还没有尝试记录",
     "retry": "重试",
-    "retried": "已重新入队"
+    "retried": "已重新入队",
+    "scheduleCron": "Cron · {{expr}}",
+    "sourceAll": "全部来源",
+    "sourcePlatform": "平台",
+    "sourceSyncer": "身份连接",
+    "sourceLabel": "来源",
+    "ownedByConnection": "由身份连接「{{name}}」的同步计划控制"
   }
 }
