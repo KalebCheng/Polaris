@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import { Check } from 'lucide-react'
 import { Button, Input, Skeleton } from '@/shared/ui'
-import { PageShell } from '@/widgets/layout/page-shell'
 import { ConfirmDialog } from '@/shared/components/confirm-dialog'
 import { FormSection } from '@/shared/components/form-section'
 import { LoadError } from '@/shared/components/load-error'
@@ -16,7 +15,7 @@ import type { ProviderCatalog, StorageSettings } from '@/shared/api/types'
 import { providerApi, storageApi } from '../api'
 import { ConnectionCard, type ConnectionCardView } from '../components/connection-card'
 import { FormField } from '../components/field-row'
-import { SettingsSubnav } from '../components/settings-subnav'
+import { usePageHeaderActions } from '../components/page-header-actions'
 import { useMutation } from '../hooks/use-mutation'
 
 /** 提交载荷：与 `storage_settings` 表列一一对应；`secret_key` 为 write-only（留空 = 保持原值） */
@@ -320,25 +319,24 @@ export default function StorageSettingsPage() {
       }
     : null
 
+  // 页头操作：编辑态的提交动作跟随页面表单状态，由页面渲染后 portal 到布局页头
+  const headerActions = usePageHeaderActions(
+    // 视图态的动作都收敛在实例卡片上（配置 / 修改配置 / 清除配置），页头只在编辑态承载提交动作
+    editing ? (
+      <>
+        <Button variant="outline" disabled={save.pending} onClick={() => setEditing(false)}>
+          {t('common.cancel')}
+        </Button>
+        <Button disabled={save.pending || !form.type} onClick={() => void submit()}>
+          {t('common.save')}
+        </Button>
+      </>
+    ) : null,
+  )
+
   return (
-    <PageShell
-      titleKey="storage.title"
-      subtitleKey="storage.subtitle"
-      subnav={<SettingsSubnav />}
-      actions={
-        // 视图态的动作都收敛在实例卡片上（配置 / 修改配置 / 清除配置），页头只在编辑态承载提交动作
-        editing ? (
-          <>
-            <Button variant="outline" disabled={save.pending} onClick={() => setEditing(false)}>
-              {t('common.cancel')}
-            </Button>
-            <Button disabled={save.pending || !form.type} onClick={() => void submit()}>
-              {t('common.save')}
-            </Button>
-          </>
-        ) : null
-      }
-    >
+    <>
+      {headerActions}
       {!loaded ? (
         <Skeleton className="h-56 w-full" />
       ) : loadError ? (
@@ -439,6 +437,6 @@ export default function StorageSettingsPage() {
         loading={save.pending}
         onConfirm={() => void clear()}
       />
-    </PageShell>
+    </>
   )
 }

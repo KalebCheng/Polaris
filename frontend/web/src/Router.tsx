@@ -4,6 +4,8 @@ import { useTranslation } from 'react-i18next'
 import { Spinner } from '@/shared/ui'
 import { AppLayout } from '@/widgets/layout/app-layout'
 import { PlatformLayout } from '@/widgets/layout/platform-layout'
+import { SecurityLayout } from '@/features/iam/pages/security-layout'
+import { SettingsLayout } from '@/features/iam/pages/settings-layout'
 import { WorkspaceLayout } from '@/widgets/layout/workspace-layout'
 import { RequireAuth } from '@/features/auth/require-auth'
 import { RequireConsoleAccess } from '@/features/auth/require-console-access'
@@ -112,15 +114,23 @@ export function Router() {
                 <Route path="/institutions/:id/edit" element={<InstitutionEditPage />} />
                 <Route path="/roles" element={<RolesPage />} />
                 <Route path="/permissions" element={<PermissionsPage />} />
-                <Route path="/security" element={<Navigate to="/security/certs" replace />} />
-                <Route path="/security/certs" element={<CertsPage />} />
-                <Route path="/security/tokens" element={<TokensPage />} />
-                <Route path="/security/sessions" element={<SessionsPage />} />
-                {/* 设置：存储设置 / 任务中心 / 审计日志（二级标签，见 SettingsSubnav） */}
-                <Route path="/settings" element={<Navigate to="/settings/storage" replace />} />
-                <Route path="/settings/storage" element={<StorageSettingsPage />} />
-                <Route path="/settings/tasks" element={<AsyncdPage />} />
-                <Route path="/settings/audit" element={<RecordsPage />} />
+                {/*
+                  安全管理 / 系统设置：页头（标题 / 描述 / 操作）与二级标签由**组级布局**承载，
+                  页面只提供内容 —— 标签因此在路由切换中不卸载，才能像顶栏导航那样"滑"过去
+                  （各页自己渲染标签时每次都是新元素，只能瞬时落位，见 docs/design-language.md §5.0）。
+                */}
+                <Route path="/security" element={<SecurityLayout />}>
+                  <Route index element={<Navigate to="certs" replace />} />
+                  <Route path="certs" element={<CertsPage />} />
+                  <Route path="tokens" element={<TokensPage />} />
+                  <Route path="sessions" element={<SessionsPage />} />
+                </Route>
+                <Route path="/settings" element={<SettingsLayout />}>
+                  <Route index element={<Navigate to="storage" replace />} />
+                  <Route path="storage" element={<StorageSettingsPage />} />
+                  <Route path="tasks" element={<AsyncdPage />} />
+                  <Route path="audit" element={<RecordsPage />} />
+                </Route>
                 {/* 旧地址：任务中心与审计日志已成为设置的二级页，永久兼容 */}
                 <Route path="/asyncd" element={<Navigate to="/settings/tasks" replace />} />
                 <Route path="/audit" element={<Navigate to="/settings/audit" replace />} />

@@ -1,12 +1,13 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { I18nextProvider } from 'react-i18next'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import i18n from '@/shared/i18n'
 import type { ProviderCatalog, StorageSettings } from '@/shared/api/types'
 import { providerApi, storageApi } from '../api'
 import StorageSettingsPage from './storage-settings-page'
+import { SettingsLayout } from './settings-layout'
 
 vi.mock('../api', () => ({
   providerApi: { catalog: vi.fn() },
@@ -74,11 +75,19 @@ const CONFIGURED: StorageSettings = {
   updated_at: '2026-10-15T02:00:00Z',
 }
 
+/**
+ * 按真实结构渲染：页头（标题 / 描述），以及页头操作（"保存 / 取消"）都由**组级布局**承载，
+ * 页面通过 portal 把按钮投进去 —— 单独渲染页面时页头不存在，按钮也就不会出现。
+ */
 function renderPage() {
   return render(
     <I18nextProvider i18n={i18n}>
       <MemoryRouter initialEntries={['/settings/storage']}>
-        <StorageSettingsPage />
+        <Routes>
+          <Route path="/settings" element={<SettingsLayout />}>
+            <Route path="storage" element={<StorageSettingsPage />} />
+          </Route>
+        </Routes>
       </MemoryRouter>
     </I18nextProvider>,
   )

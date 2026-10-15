@@ -10,7 +10,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/shared/ui'
-import { PageShell } from '@/widgets/layout/page-shell'
 import { SummaryStrip } from '@/widgets/layout/summary-strip'
 import { ListToolbar } from '@/widgets/layout/list-toolbar'
 import { StatusPill, type StatusTone } from '@/shared/components/status-pill'
@@ -19,7 +18,6 @@ import type { AuditRecord } from '@/shared/api/types'
 import { recordApi } from '../api'
 import { useListQuery } from '../hooks/use-list-query'
 import { ResourceTable, type Column } from '../components/resource-table'
-import { SettingsSubnav } from '../components/settings-subnav'
 
 function resultTone(statusCode: number): StatusTone {
   if (statusCode >= 500) return 'danger'
@@ -81,7 +79,7 @@ export default function RecordsPage() {
   ]
 
   return (
-    <PageShell titleKey="records.title" subtitleKey="records.platformSubtitle" subnav={<SettingsSubnav />}>
+    <>
       <SummaryStrip
         items={[
           { label: t('common.totalResources'), value: list.loading ? '—' : list.total },
@@ -152,6 +150,6 @@ export default function RecordsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </PageShell>
+    </>
   )
 }

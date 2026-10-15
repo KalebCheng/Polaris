@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { platformNav, settingsTabs } from './nav-config'
+import { platformNav, securityTabs, settingsTabs } from './nav-config'
 
 /**
  * 回归：任务中心与审计日志**是「设置」下的二级页**，不是一级导航。
@@ -15,7 +15,11 @@ describe('平台级导航结构', () => {
   })
 
   it('设置的二级页＝存储设置 / 任务中心 / 审计日志，且各自路径上高亮', () => {
-    expect(settingsTabs.map((tab) => tab.to)).toEqual(['/settings/storage', '/settings/tasks', '/settings/audit'])
+    expect(settingsTabs.map((tab) => tab.to)).toEqual([
+      '/settings/storage',
+      '/settings/tasks',
+      '/settings/audit',
+    ])
     for (const tab of settingsTabs) {
       expect(tab.isActive(tab.to)).toBe(true)
     }
@@ -26,6 +30,17 @@ describe('平台级导航结构', () => {
   it('任一设置路径只让一个胶囊高亮（不会出现两个选中项）', () => {
     for (const path of ['/settings', '/settings/storage', '/settings/tasks', '/settings/audit']) {
       expect(settingsTabs.filter((tab) => tab.isActive(path))).toHaveLength(1)
+    }
+  })
+
+  it('安全管理的二级页＝证书 / 令牌 / 会话，且各自路径上只高亮一个', () => {
+    expect(securityTabs.map((tab) => tab.to)).toEqual([
+      '/security/certs',
+      '/security/tokens',
+      '/security/sessions',
+    ])
+    for (const path of ['/security/certs', '/security/tokens', '/security/sessions']) {
+      expect(securityTabs.filter((tab) => tab.isActive(path))).toHaveLength(1)
     }
   })
 })

@@ -21,6 +21,9 @@ interface ResourceCardsProps<T> {
   total: number
   onPageChange: (page: number) => void
   toolbar?: React.ReactNode
+  /** 空态文案：默认是通用的「暂无数据」，业务页有自己的引导语时传进来 */
+  emptyTitle?: string
+  emptyDescription?: string
   emptyAction?: React.ReactNode
   /** 分页范围文案量词，如「个组织」 */
   unit?: string
@@ -43,6 +46,8 @@ export function ResourceCards<T>({
   total,
   onPageChange,
   toolbar,
+  emptyTitle,
+  emptyDescription,
   emptyAction,
   unit,
 }: ResourceCardsProps<T>) {
@@ -60,7 +65,11 @@ export function ResourceCards<T>({
         </div>
       ) : items.length === 0 ? (
         <div className="bg-card border-border/70 shadow-soft rounded-2xl border">
-          <EmptyState title={t('common.empty')} description={t('common.emptyHint')} action={emptyAction} />
+          <EmptyState
+            title={emptyTitle ?? t('common.empty')}
+            description={emptyDescription ?? t('common.emptyHint')}
+            action={emptyAction}
+          />
         </div>
       ) : (
         <div className={gridClass}>

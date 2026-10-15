@@ -59,6 +59,12 @@ bg-card border border-border/70 shadow-soft rounded-2xl
   其余页面用资源名 + 一句话口径。
 - 顶部导航（`TopBar`）+ 工作区侧边栏（`AppSidebar`）共同构成外壳；两者都是白色浮层 / 玻璃条，
   同属"画布上的面板"，不是贴边的另一条色带。
+- **二级页的页头归组级布局**（`SubnavPageLayout`）：页头（标题 / 描述 / 操作）与二级导航由布局渲染，
+  页面只提供内容 —— 这样导航在路由切换中不卸载，才能像顶栏那样滑动（见 §5.0）。
+  页面的操作按钮用 `usePageHeaderActions` portal 进布局页头，仍留在页面作用域里。
+- **二级导航选形态**（`variant`）：二级之间是"同一页的不同切片"、且数量少 → 横向胶囊（`tabs`，安全管理）；
+  二级之间彼此独立、像一组页面 → **左侧纵向菜单**（`menu`，系统设置走 `PageShell` 的 `sidebar` 槽位：
+  布局切成"左栏 + 右内容"，页头留在右栏内，与组织管理的资源侧栏同级；`md` 以上才是两栏，窄屏折到内容上方）。
 
 ## 3. 列表页模式
 
@@ -169,11 +175,26 @@ bg-card border border-border/70 shadow-soft rounded-2xl
 | 容器 | 选中项选择器 | 现状 |
 |---|---|---|
 | `NavPills`（顶栏 / 门户导航，`widgets/layout/nav-pills.tsx`） | `[data-active="true"]` | 路由导航，`<a>` |
+| 二级导航（`SubnavPills` 横向胶囊 / `NavMenu` 纵向菜单 ← `subnav-page-layout.tsx` 的 `variant`） | `[data-active="true"]` | 换页导航（**不是** tab），由**组级布局**常驻渲染 → 与顶栏同样能滑 |
+| 纵向菜单（`NavMenu` ← `widgets/layout/nav-menu.tsx`：工作区资源侧栏 `WorkspaceNav` 与平台二级菜单共用） | `[data-active="true"]` | 换页导航；`orientation="vertical"` 只是把位移轴换成 Y 轴（行满宽、行首图标、圆角收成与行一致）。**整块菜单只有一个容器**，分组抬头作为"不可选中的条目"一起进列表——跨分组切换才是同一块滑块的位移（每个分组各渲染一份列表＝没有过渡，`nav-menu.test.tsx` 锁定"同一个 DOM 节点 + 位移真的变了"）。**条目不许自带底色**（`bg-primary/10` / `bg-ink` 都会与滑块重影） |
 | `Tabs` 默认形态（分段控件：提供商类别 / 身份连接方向 / 任务状态 / 用户详情分区） | `[data-state="active"]` | Radix Tabs，`<button>` |
 | `TabsList variant="plain"` | —（不量测） | 下划线标签（登录页的登录方式切换），样式全交调用方 |
 
 - **量测必须由容器组件自己调用**：React 的 layout 阶段先递归子树、再给 host 节点挂 ref，
   子组件的 `useLayoutEffect` 里读容器 ref 恒为 `null`（真实踩过：滑块一直不出现）。
+- **量测时机不能只靠 React 重渲染**：容器**未必**会重渲染——Radix 分段控件是非受控的
+  （`TabsList` 不消费选中值，点击后只有触发器 `data-state` 变了），菜单折叠、增删条目同理。
+  因此 hook 每次提交都量一次（值相同不 setState）＋订阅容器的尺寸变化与
+  `data-active` / `data-state` / 子树变化；调用方不再需要传"量测签名"
+  （早先靠它驱动，漏传一次滑块就不动）。
+- **换页导航要能滑，标签必须常驻**：滑块靠 CSS transition，而 transition 只能过渡**同一个元素**的属性变化。
+  顶栏导航不卸载所以能滑；`/security/*`、`/settings/*` 的二级标签是"点一下换路由"的换页导航，
+  若由各页自己渲染（`PageShell` 的 `subnav`）就会整块重挂载 → 滑块每次都是新元素、只能瞬时落位
+  （首帧 `data-ready="false"` 本就是为"不要从最左飞过来"设的）。
+  因此这两组二级页统一用**组级布局**（`features/iam/pages/{security,settings}-layout.tsx`）：
+  页头（标题 / 描述 / 操作）与标签都归布局，页面只提供内容，标签在路由切换中不卸载。
+  回归口径：`subnav-page-layout.test.tsx` 锁定"切换后滑块是**同一个 DOM 节点**"——
+  只断言"存在滑块"会漏掉这类"看着同形、其实每次都重建"的失败。
 - 缓动与时长是令牌（`globals.css` 的 `--motion-spring` / `--motion-pill-move` / `--motion-pill-size`），
   组件里不写死数值：位移 420ms、宽高 340ms，都是 `cubic-bezier(0.34, 1.56, 0.64, 1)`（终点带回弹）。
 - **位移与尺寸用不同时长是刻意的**：滑块在换项时会被"拉长再收回"，弹性手感来自这里。

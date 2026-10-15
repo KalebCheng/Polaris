@@ -18,7 +18,6 @@ import {
   SelectValue,
   Textarea,
 } from '@/shared/ui'
-import { PageShell } from '@/widgets/layout/page-shell'
 import { SummaryStrip } from '@/widgets/layout/summary-strip'
 import { ListToolbar } from '@/widgets/layout/list-toolbar'
 import { ConfirmDialog } from '@/shared/components/confirm-dialog'
@@ -32,7 +31,7 @@ import { useMutation } from '../hooks/use-mutation'
 import { Field } from '../components/field'
 import { ResourceTable, type Column } from '../components/resource-table'
 import { RowActionsMenu } from '@/shared/components/row-actions-menu'
-import { SecuritySubnav } from '../components/security-subnav'
+import { usePageHeaderActions } from '../components/page-header-actions'
 
 const emptyForm = {
   institution_id: 0,
@@ -161,17 +160,16 @@ export default function CertsPage() {
     },
   ]
 
+  // 页头操作：按钮与页面内的新建弹窗耦合，所以仍由页面渲染，只是 portal 到组级布局的页头里
+  const headerActions = usePageHeaderActions(
+    <Button onClick={openCreate}>
+      <Plus className="size-4" /> {t('common.create')}
+    </Button>,
+  )
+
   return (
-    <PageShell
-      titleKey="certs.title"
-      subtitleKey="certs.platformSubtitle"
-      subnav={<SecuritySubnav />}
-      actions={
-        <Button onClick={openCreate}>
-          <Plus className="size-4" /> {t('common.create')}
-        </Button>
-      }
-    >
+    <>
+      {headerActions}
       <SummaryStrip
         items={[
           { label: t('common.totalResources'), value: list.loading ? '—' : list.total },
@@ -311,6 +309,6 @@ export default function CertsPage() {
           }
         }}
       />
-    </PageShell>
+    </>
   )
 }

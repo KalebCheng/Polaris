@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Ban, Trash2 } from 'lucide-react'
 import { Badge, Button } from '@/shared/ui'
-import { PageShell } from '@/widgets/layout/page-shell'
 import { SummaryStrip } from '@/widgets/layout/summary-strip'
 import { ListToolbar } from '@/widgets/layout/list-toolbar'
 import { ConfirmDialog } from '@/shared/components/confirm-dialog'
@@ -13,7 +12,6 @@ import { tokenApi } from '../api'
 import { useListQuery } from '../hooks/use-list-query'
 import { useMutation } from '../hooks/use-mutation'
 import { ResourceTable, type Column } from '../components/resource-table'
-import { SecuritySubnav } from '../components/security-subnav'
 
 /** 令牌管理（平台级，跨组织）：查看已签发令牌并吊销 */
 export default function TokensPage() {
@@ -76,7 +74,7 @@ export default function TokensPage() {
   ]
 
   return (
-    <PageShell titleKey="tokens.title" subtitleKey="tokens.platformSubtitle" subnav={<SecuritySubnav />}>
+    <>
       <SummaryStrip
         items={[
           { label: t('common.totalResources'), value: list.loading ? '—' : list.total },
@@ -137,6 +135,6 @@ export default function TokensPage() {
           }
         }}
       />
-    </PageShell>
+    </>
   )
 }

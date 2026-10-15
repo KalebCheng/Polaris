@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { RefreshCw } from 'lucide-react'
 import { Badge, Button } from '@/shared/ui'
-import { PageShell } from '@/widgets/layout/page-shell'
 import { SummaryStrip } from '@/widgets/layout/summary-strip'
 import { ListToolbar } from '@/widgets/layout/list-toolbar'
 import { ListPagination } from '@/widgets/layout/list-pagination'
@@ -13,7 +12,7 @@ import { formatDateTime } from '@/shared/lib/format'
 import type { SessionInfo } from '@/shared/api/types'
 import { sessionApi } from '../api'
 import { useMutation } from '../hooks/use-mutation'
-import { SecuritySubnav } from '../components/security-subnav'
+import { usePageHeaderActions } from '../components/page-header-actions'
 
 const PAGE_SIZE = 20
 
@@ -56,17 +55,16 @@ export default function SessionsPage() {
   const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
   const orgCount = new Set(sessions.map((session) => session.institution_id)).size
 
+  // 页头操作：刷新按钮的禁用态跟随页面 loading，因此由页面渲染后 portal 到布局页头
+  const headerActions = usePageHeaderActions(
+    <Button variant="outline" onClick={() => void load()} disabled={loading}>
+      <RefreshCw className="size-4" /> {t('common.refresh')}
+    </Button>,
+  )
+
   return (
-    <PageShell
-      titleKey="sessions.title"
-      subtitleKey="sessions.platformSubtitle"
-      subnav={<SecuritySubnav />}
-      actions={
-        <Button variant="outline" onClick={() => void load()} disabled={loading}>
-          <RefreshCw className="size-4" /> {t('common.refresh')}
-        </Button>
-      }
-    >
+    <>
+      {headerActions}
       <SummaryStrip
         items={[
           { label: t('sessions.activeCount'), value: loading ? '—' : sessions.length, tone: 'success' },
@@ -159,6 +157,6 @@ export default function SessionsPage() {
           }
         }}
       />
-    </PageShell>
+    </>
   )
 }

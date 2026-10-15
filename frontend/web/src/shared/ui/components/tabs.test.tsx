@@ -30,12 +30,27 @@ function ControlledTabs() {
 }
 
 /**
- * 分段控件（提供商类别 / 身份连接方向 / 任务状态 / 用户详情分区）的选中态是
- * **一块滑动的墨色胶囊**，与顶栏导航共用 `SlidingPill`。
- *
- * 这条契约值得锁：如果谁把 `bg-ink` 加回具体条目，画面上就会出现"两层胶囊"——
- * 一块动的、一块不动的，切换时看着像重影。
+ * 给 jsdom 装上"有尺寸"的矩形（默认全 0，滑块位置恒为 0，锁不住"会不会跟着动"）。
+ * 刻意把容器放在 (40, 100)：滑块用的是**两者 rect 之差**，所以期望值是 4px 而不是绝对坐标——
+ * 这条口径是"窄屏横向滚动 / 容器不在页面左上角时也算得对"的前提。
  */
+function stubLayout() {
+  const original = Element.prototype.getBoundingClientRect
+  const box = (left: number, top: number, width: number, height: number) =>
+    ({ left, top, width, height, right: left + width, bottom: top + height, x: left, y: top }) as DOMRect
+
+  Element.prototype.getBoundingClientRect = function (this: HTMLElement) {
+    if ((this as HTMLElement).dataset.slot === 'tabs-list') return box(40, 100, 200, 40)
+    const label = this.textContent ?? ''
+    if (label.includes('入方向')) return box(44, 104, 100, 32)
+    if (label.includes('出方向')) return box(144, 104, 100, 32)
+    return box(0, 0, 0, 0)
+  }
+  return () => {
+    Element.prototype.getBoundingClientRect = original
+  }
+}
+
 describe('Tabs 分段控件滑块', () => {
   it('默认渲染唯一一块滑块，且对读屏隐藏', () => {
     const { container } = render(<PillTabs />)
@@ -92,6 +107,22 @@ describe('Tabs 分段控件滑块', () => {
     )
 
     expect(container.querySelectorAll('.sliding-pill-indicator')).toHaveLength(0)
+  })
+
+  it('切换后滑块位置跟着重算（弹性过渡的前提）', async () => {
+    const restore = stubLayout()
+    try {
+      const user = userEvent.setup()
+      const { container } = render(<PillTabs />)
+      const transform = () =>
+        (container.querySelector('.sliding-pill-indicator') as HTMLElement).style.transform
+
+      expect(transform()).toBe('translate(4px, 4px)')
+      await user.click(screen.getByRole('tab', { name: '出方向' }))
+      expect(transform()).toBe('translate(104px, 4px)')
+    } finally {
+      restore()
+    }
   })
 
   it('variant="plain" 不套滑块，选中态交回调用方（登录页的下划线标签）', () => {

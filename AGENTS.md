@@ -291,7 +291,18 @@ ACCOUNT             账号级                Portal（/portal/**：应用中心 
 - **资源引用一律下拉选择**：多选用 `MultiSelect`（登录提供方、scope、grant types、令牌字段、字段编排），
   可搜索单选用 `Combobox`（签名证书、默认用户组）；禁止用大段勾选框平铺资源列表。
 - **「设置」是运维能力的归属地，不是一级资源**：`/settings/storage | /settings/tasks | /settings/audit`
-  （二级标签由 `settingsTabs` 声明、`SettingsSubnav` 渲染成与顶栏同一块滑动墨色胶囊）。
+  「安全管理」下的证书 / 令牌 / 会话同属这一层。两组的清单都在 `widgets/layout/nav-config.ts`
+  （`settingsTabs` / `securityTabs`，`SubnavPageTab` 一条同时声明**标签**与**页头文案**），
+  由**组级布局** `features/iam/pages/{security,settings}-layout.tsx` → `subnav-page-layout.tsx`
+  渲染页头（标题 / 描述 / 操作）+ 二级导航（与顶栏同一块滑动墨色胶囊）——页面只提供内容。
+  二级导航**两种形态**由 `variant` 决定：`menu`（系统设置）＝**左侧纵向菜单**（`PageShell.sidebar`
+  槽位，分组抬头 + 行首图标 + 行满宽）；`tabs`（安全管理）＝页头下方一条横向胶囊。
+  纵向菜单与工作区资源侧栏渲染的是**同一个** `NavMenu`，横向胶囊是同一个 `NavPills`
+  （`orientation` 只改位移轴与圆角）——选中态语言始终只有一套。**为什么非要这一层**：二级标签是"点一下换路由"的换页导航，
+  标签若由各页自己渲染就会整块重挂载，滑块每次都是新元素、只能瞬时落位；
+  放进布局后它跨路由常驻，位移过渡才成立（`subnav-page-layout.test.tsx` 锁定"切换后滑块是同一个 DOM 节点"）。
+  页头操作按钮（新建 / 刷新 / 编辑态保存）仍由**页面**渲染，用 `usePageHeaderActions` portal 进布局页头
+  （按钮与页面弹窗、`disabled` 状态耦合，提升上去只会同步出一份过期状态）。
   任务中心（asyncd）与审计日志**不再各占一个一级导航位**——它们是平台运维视角的能力，不是资源；
   旧地址 `/asyncd`、`/audit` 一律重定向到新的二级地址；快速跳转（`nav-search`）平铺设置的二级页，
   父级「系统设置」不单独列出（两条同址结果会撞 React key）。
@@ -319,8 +330,13 @@ ACCOUNT             账号级                Portal（/portal/**：应用中心 
   量测必须放在容器组件里，不能放进滑块子组件（子组件的 layout effect 早于容器 ref 挂载）。
   窄屏（`< md`）平台导航折叠为**同一玻璃岛内的第二行**（可横向滚动）。
 - **工作区左侧栏**（`widgets/layout/app-sidebar.tsx`）：组织切换器 + 当前组织的资源导航，
-  同样是画布上的白色圆角浮层（`rounded-2xl + shadow-soft`）；组织内资源项选中态为
-  `bg-primary/10 text-primary`，与顶栏的墨色胶囊区分"组织内 / 平台级"两个层级。
+  同样是画布上的白色圆角浮层（`NAV_PANEL_CLASS`：`rounded-2xl + shadow-soft`）。
+  菜单条目与平台二级菜单是**同一份实现**（`widgets/layout/nav-menu.tsx` 的 `NavMenu`
+  → `NavPills orientation="vertical"`），且**整块菜单只有一个容器**（分组抬头作为"不可选中的条目"
+  一起进列表）——跨分组切换才是同一块滑块的位移；每个分组各渲染一份列表就只会"旧滑块卸载、
+  新滑块就位"，看着像没动效。选中态同样是那块**会滑过去的墨色胶囊**：
+  横向（顶栏 / 二级标签）与纵向（工作区侧栏 / 系统设置菜单）共用一处量测、一套令牌，
+  切换时顺着位移就能看出"我从哪来"；**禁止**再给条目自己染底色（会与滑块形成重影）。
 - **内容区贴边铺满**：`main` 只保留 `px-4 py-5 / sm:px-6 sm:py-6 / lg:px-8` 呼吸间距，
   不使用居中限宽容器（避免两侧大面积留白）。
 - **全局入口在顶栏右上角的账号菜单**（`widgets/layout/account-menu.tsx`）：语言 / 主题 /

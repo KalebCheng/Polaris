@@ -1,42 +1,19 @@
-import { createContext, useContext, useRef, useState } from 'react'
+import { createContext, useContext, useRef } from 'react'
 import * as TabsPrimitive from '@radix-ui/react-tabs'
 import { cn } from '@/shared/lib/utils'
 import { SlidingPill, useSlidingPill } from './sliding-pill'
 
 /** 分段控件形态：`pill`＝胶囊分段（滑块表达选中态）；`plain`＝自由样式（如登录页的下划线标签） */
 type TabsVariant = 'pill' | 'plain'
-
-/**
- * 当前选中值。
- * Radix 的 `List` 不消费 `value`（只有 `Root` / `Trigger` / `Content` 用），
- * 而滑块的量测必须由"选中项变化"驱动 —— 因此在这里把当前值沿组件树传给 `TabsList`。
- */
-const TabsValueContext = createContext<string | undefined>(undefined)
 /** `TabsList` 声明形态，`TabsTrigger` 据此决定选中态怎么画 */
 const TabsVariantContext = createContext<TabsVariant>('pill')
 
-export function Tabs({
-  value,
-  defaultValue,
-  onValueChange,
-  ...props
-}: React.ComponentProps<typeof TabsPrimitive.Root>) {
-  // 非受控用法也留住当前值：只为量测时机服务，不参与任何渲染逻辑
-  const [uncontrolled, setUncontrolled] = useState(defaultValue)
-  return (
-    <TabsValueContext.Provider value={value ?? uncontrolled}>
-      <TabsPrimitive.Root
-        value={value}
-        defaultValue={defaultValue}
-        onValueChange={(next) => {
-          setUncontrolled(next)
-          onValueChange?.(next)
-        }}
-        {...props}
-      />
-    </TabsValueContext.Provider>
-  )
-}
+/**
+ * 分段控件（受控 / 非受控都直接透传给 Radix）。
+ * 滑块的量测不再依赖"选中值变化"这条信号（量测每次提交都做，见 `useSlidingPill`），
+ * 因此这里不再需要把当前值沿组件树传给 `TabsList`。
+ */
+export const Tabs = TabsPrimitive.Root
 
 export interface TabsListProps extends React.ComponentProps<typeof TabsPrimitive.List> {
   /**
@@ -47,13 +24,10 @@ export interface TabsListProps extends React.ComponentProps<typeof TabsPrimitive
 }
 
 export function TabsList({ className, variant = 'pill', children, ...props }: TabsListProps) {
-  const value = useContext(TabsValueContext)
   const listRef = useRef<HTMLDivElement>(null)
   // 量测必须在**容器组件**里做：子组件的 layout effect 早于容器 ref 挂载（见 sliding-pill.tsx）
   const { box, ready } = useSlidingPill(listRef, {
     activeSelector: '[data-state="active"]',
-    // 选中值变化即重新量测；标签文案变化由 ResizeObserver 兜住
-    measureKey: value ?? '',
     enabled: variant === 'pill',
   })
 

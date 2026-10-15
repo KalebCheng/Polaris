@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useState } from 'react'
 import { cn } from '@/shared/lib/utils'
 
 export interface SlidingPillBox {
@@ -11,8 +11,6 @@ export interface SlidingPillBox {
 export interface SlidingPillOptions {
   /** 选中项选择器：导航用 `[data-active="true"]`，分段控件用 `[data-state="active"]` */
   activeSelector: string
-  /** 量测依赖签名：选中项、标签文案变化时必须改变，否则不会重新量测 */
-  measureKey: string
   /** 关掉量测（如 `plain` 形态的分段控件），返回的 box 恒为 null */
   enabled?: boolean
 }
@@ -42,38 +40,62 @@ function measureActive(container: HTMLElement, selector: string): SlidingPillBox
  */
 export function useSlidingPill(
   containerRef: React.RefObject<HTMLElement | null>,
-  { activeSelector, measureKey, enabled = true }: SlidingPillOptions,
+  { activeSelector, enabled = true }: SlidingPillOptions,
 ) {
   const [box, setBox] = useState<SlidingPillBox | null>(null)
   const [ready, setReady] = useState(false)
 
+  const measure = useCallback(() => {
+    const container = containerRef.current
+    if (!container) return
+    const next = measureActive(container, activeSelector)
+    // 值相同就返回旧引用，避免"每次渲染都 setState → 再渲染"的死循环
+    setBox((prev) =>
+      prev &&
+      next &&
+      prev.left === next.left &&
+      prev.top === next.top &&
+      prev.width === next.width &&
+      prev.height === next.height
+        ? prev
+        : next,
+    )
+  }, [containerRef, activeSelector])
+
+  // **每次提交都量一次**：结构变化不止来自"选中项换了"——折叠分组、增删条目、
+  // 换语言都会移动选中项。早先靠调用方传 `measureKey` 签名驱动，漏传一次滑块就不动了
+  // （菜单跨分组、列表增删条目都踩过）；代价只是每个 commit 两次 getBoundingClientRect。
   useLayoutEffect(() => {
     if (!enabled) {
       setBox(null)
       return
     }
+    measure()
+  })
+
+  // 尺寸变化（切语言、字体加载完、窄屏换行）与**选中标记变化**都要重新量。
+  //
+  // 为什么还要盯 DOM：容器**未必**会因切换而重渲染——Radix 的分段控件是非受控的，
+  // `TabsList` 并不消费选中值，点击后只有触发器的 `data-state` 变了（真实踩过：
+  // 只靠"每次提交量一次"时，分段控件的滑块停在原地，`tabs.test.tsx` 立刻变红）。
+  useEffect(() => {
+    if (!enabled) return
     const container = containerRef.current
     if (!container) return
-    const measure = () => {
-      const next = measureActive(container, activeSelector)
-      // 值相同就返回旧引用，避免"每次渲染都 setState → 再渲染"的死循环
-      setBox((prev) =>
-        prev &&
-        next &&
-        prev.left === next.left &&
-        prev.top === next.top &&
-        prev.width === next.width &&
-        prev.height === next.height
-          ? prev
-          : next,
-      )
+    const resize = new ResizeObserver(measure)
+    resize.observe(container)
+    const mutation = new MutationObserver(measure)
+    mutation.observe(container, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['data-active', 'data-state'],
+    })
+    return () => {
+      resize.disconnect()
+      mutation.disconnect()
     }
-    measure()
-    // 容器尺寸变化（切语言、字体加载完、窄屏换行）都要重新量
-    const observer = new ResizeObserver(measure)
-    observer.observe(container)
-    return () => observer.disconnect()
-  }, [containerRef, activeSelector, measureKey, enabled])
+  }, [containerRef, enabled, measure])
 
   // 首帧关过渡：否则页面加载时滑块会从最左侧"飞"过去
   useEffect(() => {

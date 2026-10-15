@@ -13,6 +13,12 @@ interface PageShellProps {
   actions?: React.ReactNode
   /** 二级标签区（如安全管理下的证书 / 令牌 / 会话） */
   subnav?: React.ReactNode
+  /**
+   * 左栏（纵向二级菜单）。给了它就切成"左栏 + 右内容"的两栏骨架：
+   * 页头（标题 / 描述 / 操作）仍在右栏内——与组织管理的侧栏同级，
+   * 左栏在窄屏折到内容上方（`md` 以上才是两栏）。
+   */
+  sidebar?: React.ReactNode
   children: React.ReactNode
   className?: string
 }
@@ -31,6 +37,7 @@ export function PageShell({
   description,
   actions,
   subnav,
+  sidebar,
   children,
   className,
 }: PageShellProps) {
@@ -38,8 +45,8 @@ export function PageShell({
   const heading = title ?? (titleKey ? t(titleKey) : null)
   const sub = description ?? (subtitleKey ? t(subtitleKey) : null)
 
-  return (
-    <div className={cn('flex flex-col', className)}>
+  const body = (
+    <>
       <header className="flex flex-col gap-3 pb-1 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
         <div className="min-w-0 space-y-2">
           {heading ? (
@@ -57,6 +64,19 @@ export function PageShell({
       {subnav ? <div className="mt-5">{subnav}</div> : null}
 
       <div className="mt-6 flex flex-col gap-5">{children}</div>
+    </>
+  )
+
+  if (!sidebar) {
+    return <div className={cn('flex flex-col', className)}>{body}</div>
+  }
+  return (
+    <div className={cn('flex flex-col', className)}>
+      <div className="flex flex-col gap-5 md:flex-row md:items-start md:gap-6">
+        {/* 左栏跟随滚动（`main` 是滚动容器）：长列表页滚到深处时菜单仍在手边 */}
+        <div className="md:sticky md:top-0 md:w-[15rem] md:shrink-0">{sidebar}</div>
+        <div className="flex min-w-0 flex-1 flex-col">{body}</div>
+      </div>
     </div>
   )
 }

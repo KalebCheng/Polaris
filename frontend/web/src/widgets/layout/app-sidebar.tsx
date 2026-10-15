@@ -1,5 +1,6 @@
-import { useTranslation } from 'react-i18next'
+import { cn } from '@/shared/lib/utils'
 import { InstitutionSwitcher } from './institution-switcher'
+import { NAV_PANEL_CLASS } from './nav-menu'
 import { WorkspaceNav } from './nav-list'
 
 /**
@@ -12,16 +13,14 @@ import { WorkspaceNav } from './nav-list'
  * 三者的边落在同一条竖直线上，面板才不会"各浮各的"。
  */
 export function AppSidebar() {
-  const { t } = useTranslation()
   return (
     <aside className="hidden w-[16.5rem] shrink-0 py-5 pr-0 pl-4 sm:py-6 sm:pl-6 lg:pl-8 md:flex md:flex-col">
-      <div className="bg-sidebar text-sidebar-foreground border-border/70 flex min-h-0 flex-1 flex-col rounded-2xl border shadow-soft">
-        <div className="px-2 pt-3">
+      <div className={cn(NAV_PANEL_CLASS, 'flex-1')}>
+        {/* 组织切换器下面直接是分组菜单：不再有「组织资源」这种抬头——
+            能走到这里就说明组织已经选定，那四个字不传达任何信息 */}
+        <div className="px-2 pt-3 pb-2">
           <InstitutionSwitcher />
         </div>
-        <p className="text-muted-foreground px-4 pt-4 pb-1 text-[10px] font-semibold tracking-wide">
-          {t('nav.orgResources')}
-        </p>
         <WorkspaceNav />
       </div>
     </aside>
