@@ -50,6 +50,16 @@ func pathID(c *gin.Context, name string) (int64, bool) {
 // query 读取查询参数。
 func query(c *gin.Context, name string) string { return c.Query(name) }
 
+// queryIDValue 读取查询参数中的正整数主键；缺失或非法返回 0（= 不过滤）。
+// 与 pathID 的区别：过滤条件里的 0 就是"全部"，不需要区分"未提供"与"非法"。
+func queryIDValue(c *gin.Context, name string) int64 {
+	id, err := strconv.ParseInt(c.Query(name), 10, 64)
+	if err != nil || id <= 0 {
+		return 0
+	}
+	return id
+}
+
 // pathIDValue 读取路径参数 id（解析失败返回 0）。
 // 说明：资源路径统一用主键 id，服务层按 id 语义访问；组织资源（institutions）直接吃这个 id。
 func pathIDValue(c *gin.Context) int64 {

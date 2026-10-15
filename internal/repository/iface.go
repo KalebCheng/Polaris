@@ -406,43 +406,106 @@ type ProvisionHistoryRepository interface {
 	Count(ctx context.Context, q ListQuery) (int64, error)
 }
 
-// AsyncdTaskRepository 异步任务仓库接口（存储: PostgreSQL asyncd_tasks）
-//
-// 契约：Enqueue 必须能在调用方的业务事务里执行（outbox）；Claim 用 SKIP LOCKED 领取，
-// 保证多实例并发下同一任务只会被一个 worker 拿到。
-type AsyncdTaskRepository interface {
-	// Enqueue 入队；unique_key 非空且已有 pending/active 任务时返回既有任务（existing=true）
-	Enqueue(ctx context.Context, task *AsyncdTask) (id int64, existing bool, err error)
-	// Claim 领取到期任务（多实例安全）；leaseTTL 为租约时长
-	Claim(ctx context.Context, workerID string, leaseTTL time.Duration, limit int) ([]*AsyncdTask, error)
-	// RenewLease 续租（心跳）；返回 false 表示租约已失效（任务已被回收，需停止执行）
-	RenewLease(ctx context.Context, id int64, workerID string, leaseTTL time.Duration) (bool, error)
-	// Complete 标记完成
-	Complete(ctx context.Context, id int64, workerID string) error
-	// Retry 记录失败并安排下次重试；attempts >= max_attempts 时移入死信（archived）
-	Retry(ctx context.Context, id int64, workerID, cause string, nextAttemptAt time.Time) error
-	// Archive 直接入死信（如超期/不可重试错误）
-	Archive(ctx context.Context, id int64, workerID, cause string) error
-	// ReclaimExpired 回收租约过期的任务（worker 崩溃恢复）
-	ReclaimExpired(ctx context.Context, limit int) (int, error)
-	// Counts 按状态计数（可观测/管理界面）
-	Counts(ctx context.Context, taskType string) (map[string]int, error)
-	// List 列出任务（管理界面）
-	List(ctx context.Context, status, taskType string, offset, limit int) ([]*AsyncdTask, error)
-	// RetryArchived 人工重试死信任务
-	RetryArchived(ctx context.Context, id int64) error
+// ── asyncd：任务定义 / 执行实例 / 执行记录 / 执行器实例 ───────────────────────────
+
+// AsyncdJobRunQuery 执行实例查询过滤（任务中心：按归属 + 状态取执行记录）。
+type AsyncdJobRunQuery struct {
+	// JobID 归属（0 = 全部任务）
+	JobID int64
+	// Status queued | running | succeeded | dead（空 = 全部）
+	Status string
 }
 
-// AsyncdScheduleRepository 定时调度仓库接口（存储: PostgreSQL asyncd_schedules）
-type AsyncdScheduleRepository interface {
-	// Upsert 注册/更新调度项（启动时按代码声明对齐，幂等）
-	Upsert(ctx context.Context, schedule *AsyncdSchedule) error
-	// ClaimDue 原子推进到点的调度项并返回（多实例下同一时刻只有一个实例拿到）
-	ClaimDue(ctx context.Context, now time.Time, limit int) ([]*AsyncdSchedule, error)
-	// MarkRun 记录本次入队结果并推进 next_run_at
+// AsyncdJobRunStat 执行统计的一行（按任务 × 状态聚合）。
+type AsyncdJobRunStat struct {
+	JobID int64
+	// Status queued | running | succeeded | dead
+	Status string
+	Count  int
+	// LastQueuedAt 该任务最近一次执行实例的入队时间
+	LastQueuedAt time.Time
+}
+
+// AsyncdWorkerStat 执行器实例 + 实时在跑任务数（在跑数由 runs 聚合得出，不存列）。
+type AsyncdWorkerStat struct {
+	Worker AsyncdWorker
+	// Running 该槽位当前持租约在执行的任务数
+	Running int
+}
+
+// AsyncdJobRepository 任务定义仓库接口（存储: PostgreSQL asyncd_jobs）
+type AsyncdJobRepository interface {
+	// Upsert 注册/更新任务定义（启动时按代码声明对齐，幂等；next_run_at 仅在新建时初始化）
+	Upsert(ctx context.Context, job *AsyncdJob) error
+	// GetByName 按定义名取（入队时解析处理器与默认策略）
+	GetByName(ctx context.Context, name string) (*AsyncdJob, error)
+	// GetByID 按主键取（对外路径统一用主键，见 handler/util.go 的约定）
+	GetByID(ctx context.Context, id int64) (*AsyncdJob, error)
+	// ClaimDue 原子推进到点的定时任务并返回（多实例下同一时刻只有一个实例拿到）
+	ClaimDue(ctx context.Context, now time.Time, limit int) ([]*AsyncdJob, error)
+	// MarkRun 记录本次调度结果（queued|skipped|failed）并推进 next_run_at
 	MarkRun(ctx context.Context, id int64, status string, nextRunAt time.Time, at time.Time) error
-	// List 列出全部调度项（管理界面）
-	List(ctx context.Context) ([]*AsyncdSchedule, error)
-	// SetEnabled 启停调度项
-	SetEnabled(ctx context.Context, jobName string, enabled bool) error
+	// List 列出全部任务定义（任务目录）
+	List(ctx context.Context) ([]*AsyncdJob, error)
+	// SetEnabled 启停定时任务（异步任务不可停用；按主键）
+	SetEnabled(ctx context.Context, id int64, enabled bool) error
+}
+
+// AsyncdJobRunRepository 执行实例仓库接口（存储: PostgreSQL asyncd_job_runs）
+//
+// 契约：Enqueue 必须能在调用方的业务事务里执行（outbox）；Claim 用 SKIP LOCKED 领取，
+// 保证多实例并发下同一任务只会被一个执行器槽位拿到。
+type AsyncdJobRunRepository interface {
+	// Enqueue 入队；unique_key 非空且已有 queued/running 实例时返回既有实例（existing=true）
+	Enqueue(ctx context.Context, run *AsyncdJobRun) (id int64, existing bool, err error)
+	// Claim 领取到期实例（多实例安全）；leaseTTL 为租约时长
+	Claim(ctx context.Context, workerID string, leaseTTL time.Duration, limit int) ([]*AsyncdJobRun, error)
+	// RenewLease 续租（心跳）；返回 false 表示租约已失效（实例已被回收，需停止执行）
+	RenewLease(ctx context.Context, id int64, workerID string, leaseTTL time.Duration) (bool, error)
+	// Complete 标记成功
+	Complete(ctx context.Context, id int64, workerID string) error
+	// Retry 记录失败并安排下次重试；attempts >= max_attempts 时移入死信（dead）
+	Retry(ctx context.Context, id int64, workerID, cause string, nextAttemptAt time.Time) error
+	// Kill 直接入死信（如超期/不可重试错误）
+	Kill(ctx context.Context, id int64, workerID, cause string) error
+	// ReclaimExpired 回收租约过期的实例（执行器崩溃恢复）；返回被回收的实例 id
+	ReclaimExpired(ctx context.Context, limit int) ([]int64, error)
+	// Counts 按状态计数（可同时按归属过滤）
+	Counts(ctx context.Context, query AsyncdJobRunQuery) (map[string]int, error)
+	// List 列出执行实例（执行记录列表）
+	List(ctx context.Context, query AsyncdJobRunQuery, offset, limit int) ([]*AsyncdJobRun, error)
+	// GetByID 按主键取（人工重试前校验状态、尝试明细按归属鉴权）
+	GetByID(ctx context.Context, id int64) (*AsyncdJobRun, error)
+	// Stats 按任务 × 状态聚合执行计数（任务目录用）
+	Stats(ctx context.Context) ([]AsyncdJobRunStat, error)
+	// RetryDead 人工重试死信实例：回到 queued 并清零尝试计数
+	RetryDead(ctx context.Context, id int64) error
+	// PurgeFinishedBefore 清理终态且完成时间早于 before 的实例（尝试记录随外键级联删除）
+	PurgeFinishedBefore(ctx context.Context, before time.Time, limit int) (int64, error)
+}
+
+// AsyncdJobRunAttemptRepository 执行记录仓库接口（存储: PostgreSQL asyncd_job_run_attempts）
+type AsyncdJobRunAttemptRepository interface {
+	// Start 记录一次尝试的开始（返回尝试记录 id）
+	Start(ctx context.Context, attempt *AsyncdJobRunAttempt) (int64, error)
+	// Finish 记录一次尝试的结束（成功/失败 + 耗时，耗时由数据库时间计算）
+	Finish(ctx context.Context, id int64, status, cause string) error
+	// ListByRun 取某次执行的全部尝试（按尝试序号升序）
+	ListByRun(ctx context.Context, jobRunID int64) ([]*AsyncdJobRunAttempt, error)
+}
+
+// AsyncdWorkerRepository 执行器实例仓库接口（存储: PostgreSQL asyncd_workers）
+type AsyncdWorkerRepository interface {
+	// Register 登记/复活一个执行器槽位（进程启动时调用）
+	Register(ctx context.Context, worker *AsyncdWorker) error
+	// Heartbeat 心跳续期（固定间隔调用；返回受影响行数 0 表示行已被清理）
+	Heartbeat(ctx context.Context, workerID string) error
+	// Stop 标记优雅退出（stopped_at）
+	Stop(ctx context.Context, workerID string) error
+	// List 列出执行器槽位与实时在跑任务数（按实例、槽位排序）
+	List(ctx context.Context) ([]AsyncdWorkerStat, error)
+	// CountOnline 在线槽位数（心跳阈值内且未停止；任务目录的头部摘要用）
+	CountOnline(ctx context.Context, staleAfter time.Duration) (int, error)
+	// PurgeStaleBefore 清理停止/失联早于 before 的执行器行
+	PurgeStaleBefore(ctx context.Context, before time.Time) (int64, error)
 }

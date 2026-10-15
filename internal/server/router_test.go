@@ -55,10 +55,12 @@ func TestPersonalPortalRoutesAreRegistered(t *testing.T) {
 		"GET /api/v1/connections/catalog",
 		"GET /api/v1/system/oauth",
 		"POST /api/v1/connectors/:id/reconcile",
-		"GET /api/v1/asyncd/tasks",
-		"POST /api/v1/asyncd/tasks/:id/retry",
-		"GET /api/v1/asyncd/schedules",
-		"PUT /api/v1/asyncd/schedules/:name",
+		"GET /api/v1/asyncd/jobs",
+		"PUT /api/v1/asyncd/jobs/:id",
+		"GET /api/v1/asyncd/jobs/:id/runs",
+		"GET /api/v1/asyncd/jobs/:id/runs/:runId/attempts",
+		"POST /api/v1/asyncd/jobs/:id/runs/:runId/retry",
+		"GET /api/v1/asyncd/workers",
 	} {
 		if !registered[route] {
 			t.Errorf("门户自助路由未注册: %s", route)

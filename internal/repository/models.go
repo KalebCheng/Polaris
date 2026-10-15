@@ -778,61 +778,136 @@ type ProvisionHistory struct {
 	CreatedAt     time.Time `db:"created_at" json:"created_at"`
 }
 
-// 异步任务状态（async_tasks.status）
+// ── asyncd：任务定义 / 执行实例 / 执行记录 / 执行器实例 ───────────────────────────
+// 四维度模型见 docs/specs/261015-asyncd-task-model.md §4。
+
+// 任务定义的类别（asyncd_jobs.kind）
 const (
-	AsyncdTaskPending   = "pending"   // 待领取（含等待退避/延迟执行的）
-	AsyncdTaskActive    = "active"    // 已被某个 worker 领取（持租约）
-	AsyncdTaskCompleted = "completed" // 成功完成
-	AsyncdTaskArchived  = "archived"  // 死信：重试耗尽或超期，等待人工处理
+	// AsyncdJobKindAsync 事件驱动：由业务动作按需入队，没有周期
+	AsyncdJobKindAsync = "async"
+	// AsyncdJobKindScheduled 定时任务：由调度器按周期/时刻入队
+	AsyncdJobKindScheduled = "scheduled"
 )
 
-// AsyncdTask 异步任务（DB 版 asynq；入队可与业务写入同事务，见 Spec §5.7）。
-type AsyncdTask struct {
-	ID      int64  `db:"id" json:"id"`
-	Type    string `db:"type" json:"type"`
+// 调度规则（asyncd_jobs.schedule_kind；仅 kind=scheduled 使用）
+const (
+	ScheduleKindInterval = "interval" // 每 N 秒
+	ScheduleKindDaily    = "daily"    // 每天若干时刻（HH:MM），配合执行窗口
+)
+
+// 任务定义的上次调度结果（asyncd_jobs.last_status）
+const (
+	AsyncdJobStatusIdle    = "idle"    // 还没调度过
+	AsyncdJobStatusQueued  = "queued"  // 本次已入队
+	AsyncdJobStatusSkipped = "skipped" // 单飞键命中：窗口内已有待执行/执行中的任务，本次跳过
+	AsyncdJobStatusFailed  = "failed"  // 入队失败（详见服务端日志）
+)
+
+// AsyncdJob 任务定义：一个任务"是什么"（处理器绑定 + 调度规则 + 启停）。
+//
+// 由代码在启动时声明并幂等 upsert（界面不提供增删改）；运行时**真的读它**：
+// 调度器按它判到期、入队按它解析处理器、目录与执行记录按它归属。
+type AsyncdJob struct {
+	ID       int64  `db:"id" json:"id"`
+	Name     string `db:"name" json:"name"`           // 定义名（历史记录按它归属）
+	TaskType string `db:"task_type" json:"task_type"` // 处理器注册名（asyncd.Registry）
+	Kind     string `db:"kind" json:"kind"`           // async | scheduled
+	// ScheduleKind 调度规则：'' | interval | daily
+	ScheduleKind    string   `db:"schedule_kind" json:"schedule_kind"`
+	IntervalSeconds int      `db:"interval_seconds" json:"interval_seconds"`
+	DailyTimes      []string `db:"daily_times" json:"daily_times"`
+	// WindowMinutes 执行窗口：到点后该窗口内入队一次（窗口内已有任务则跳过）
+	WindowMinutes int `db:"window_minutes" json:"window_minutes"`
+	// Payload 调度入队时的载荷模板（异步任务的载荷由调用方给出）
 	Payload []byte `db:"payload" json:"payload"` // JSONB
-	// PayloadVersion 载荷版本：处理器按版本做兼容/迁移
-	PayloadVersion int       `db:"payload_version" json:"payload_version"`
+	// Enabled 仅 kind=scheduled 可停用（异步任务停用会变成静默丢任务）
+	Enabled   bool       `db:"enabled" json:"enabled"`
+	NextRunAt time.Time  `db:"next_run_at" json:"next_run_at"`
+	LastRunAt *time.Time `db:"last_run_at" json:"last_run_at,omitempty"`
+	// LastStatus idle | queued | skipped | failed
+	LastStatus string    `db:"last_status" json:"last_status"`
+	CreatedAt  time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt  time.Time `db:"updated_at" json:"updated_at"`
+}
+
+// 执行实例的状态（asyncd_job_runs.status）
+const (
+	AsyncdJobRunQueued    = "queued"    // 待领取（含延迟执行与退避等待）
+	AsyncdJobRunRunning   = "running"   // 已被某个执行器槽位领取（持租约）
+	AsyncdJobRunSucceeded = "succeeded" // 成功完成
+	AsyncdJobRunDead      = "dead"      // 死信：重试耗尽或不可重试，等待人工处理
+)
+
+// AsyncdJobRun 执行实例：一次执行的载体（队列语义 + 状态机 + 租约 + 单飞键）。
+//
+// 与"执行记录"（AsyncdJobRunAttempt）的分工：本表回答"现在怎么样"（会被领取、回收、重试），
+// 尝试表回答"当时发生了什么"（append-only，每次尝试一行）。
+type AsyncdJobRun struct {
+	ID    int64 `db:"id" json:"id"`
+	JobID int64 `db:"job_id" json:"job_id"`
+	// Status queued | running | succeeded | dead
 	Status         string    `db:"status" json:"status"`
+	Payload        []byte    `db:"payload" json:"payload"` // JSONB
+	PayloadVersion int       `db:"payload_version" json:"payload_version"`
 	Priority       int       `db:"priority" json:"priority"`
 	Attempts       int       `db:"attempts" json:"attempts"`
 	MaxAttempts    int       `db:"max_attempts" json:"max_attempts"`
 	NextAttemptAt  time.Time `db:"next_attempt_at" json:"next_attempt_at"`
 	// Deadline 任务级超时（零值 = 不限）
 	Deadline *time.Time `db:"deadline" json:"deadline,omitempty"`
-	// UniqueKey 单飞键：同一键在 pending/active 下唯一（空 = 不去重）
+	// UniqueKey 单飞键：同一键在 queued/running 下唯一（空 = 不去重）
 	UniqueKey string `db:"unique_key" json:"unique_key,omitempty"`
-	// LockedBy 领取者标识（实例 + worker 序号），配合租约实现崩溃恢复
-	LockedBy       string     `db:"locked_by" json:"locked_by,omitempty"`
+	// WorkerID 领取者（见 AsyncdWorker.ID，形如 host-pid#slot），配合租约实现崩溃恢复
+	WorkerID       string     `db:"worker_id" json:"worker_id,omitempty"`
 	LeaseExpiresAt *time.Time `db:"lease_expires_at" json:"lease_expires_at,omitempty"`
 	LastError      string     `db:"last_error" json:"last_error,omitempty"`
 	InstitutionID  *int64     `db:"institution_id" json:"institution_id,omitempty"`
 	CreatedAt      time.Time  `db:"created_at" json:"created_at"`
 	UpdatedAt      time.Time  `db:"updated_at" json:"updated_at"`
 	FinishedAt     *time.Time `db:"finished_at" json:"finished_at,omitempty"`
+	// TaskType 处理器类型：由 Claim 从任务定义 join 带出（**不是 asyncd_job_runs 的列**），
+	// 执行器据此找到处理器，因此不落列、不落缓存。
+	TaskType string `db:"-" json:"task_type,omitempty"`
 }
 
-// 调度类型（job_schedules.kind）
+// 执行记录（每次尝试）的状态（asyncd_job_run_attempts.status）
 const (
-	ScheduleKindInterval = "interval" // 每 N 秒
-	ScheduleKindDaily    = "daily"    // 每天若干时刻（HH:MM），配合执行窗口
+	AsyncdJobRunAttemptRunning   = "running"    // 正在跑
+	AsyncdJobRunAttemptSucceeded = "succeeded"  // 本次尝试成功
+	AsyncdJobRunAttemptFailed    = "failed"     // 本次尝试失败（可能还有下一次）
+	AsyncdJobRunAttemptLeaseLost = "lease_lost" // 租约过期被判"执行者失联"，结果不可信
 )
 
-// AsyncdSchedule 定时调度项：**只负责入队**，执行统一走 worker（Spec §5.7）。
-type AsyncdSchedule struct {
-	ID              int64    `db:"id" json:"id"`
-	JobName         string   `db:"job_name" json:"job_name"`
-	TaskType        string   `db:"task_type" json:"task_type"`
-	Payload         []byte   `db:"payload" json:"payload"` // JSONB
-	Kind            string   `db:"kind" json:"kind"`
-	IntervalSeconds int      `db:"interval_seconds" json:"interval_seconds"`
-	DailyTimes      []string `db:"daily_times" json:"daily_times"`
-	// WindowMinutes 执行窗口：到点后该窗口内入队一次（窗口内已有任务则跳过）
-	WindowMinutes int        `db:"window_minutes" json:"window_minutes"`
-	Enabled       bool       `db:"enabled" json:"enabled"`
-	NextRunAt     time.Time  `db:"next_run_at" json:"next_run_at"`
-	LastRunAt     *time.Time `db:"last_run_at" json:"last_run_at,omitempty"`
-	LastStatus    string     `db:"last_status" json:"last_status"`
-	CreatedAt     time.Time  `db:"created_at" json:"created_at"`
-	UpdatedAt     time.Time  `db:"updated_at" json:"updated_at"`
+// AsyncdJobRunAttempt 执行记录：一次执行里的**单次尝试**（append-only）。
+//
+// 为什么要独立于执行实例：重试会覆盖实例上的 last_error / finished_at，
+// 于是"第 2 次为什么失败、花了多久"这类问题在第一阶段的模型里答不出来。
+type AsyncdJobRunAttempt struct {
+	ID         int64      `db:"id" json:"id"`
+	JobRunID   int64      `db:"job_run_id" json:"job_run_id"`
+	AttemptNo  int        `db:"attempt_no" json:"attempt_no"`
+	WorkerID   string     `db:"worker_id" json:"worker_id"`
+	Status     string     `db:"status" json:"status"`
+	StartedAt  time.Time  `db:"started_at" json:"started_at"`
+	FinishedAt *time.Time `db:"finished_at" json:"finished_at,omitempty"`
+	// DurationMs 本次尝试的真实耗时（不含退避等待）
+	DurationMs int    `db:"duration_ms" json:"duration_ms"`
+	Error      string `db:"error" json:"error,omitempty"`
+}
+
+// AsyncdWorker 执行器实例：一个可领取任务的槽位（进程 × 槽位序号）。
+//
+// 在线状态**不存列**，由 last_heartbeat_at / stopped_at 计算得出（见 Service.Workers）；
+// 在跑任务数同样按 asyncd_job_runs.worker_id 实时聚合，避免派生标记漂移。
+type AsyncdWorker struct {
+	ID              string     `db:"id" json:"id"`                   // <host>-<pid>#<slot>
+	InstanceID      string     `db:"instance_id" json:"instance_id"` // <host>-<pid>
+	Host            string     `db:"host" json:"host"`
+	PID             int        `db:"pid" json:"pid"`
+	SlotIndex       int        `db:"slot_index" json:"slot_index"`
+	StartedAt       time.Time  `db:"started_at" json:"started_at"`
+	LastHeartbeatAt time.Time  `db:"last_heartbeat_at" json:"last_heartbeat_at"`
+	StoppedAt       *time.Time `db:"stopped_at" json:"stopped_at,omitempty"`
+	CreatedAt       time.Time  `db:"created_at" json:"created_at"`
+	UpdatedAt       time.Time  `db:"updated_at" json:"updated_at"`
 }

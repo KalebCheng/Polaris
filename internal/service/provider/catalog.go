@@ -93,9 +93,9 @@ type Field struct {
 	// Group 该字段归属的向导步骤（basic | connection | advanced）
 	Group string `json:"group"`
 	// Store 该字段的落库列（空表示与 Key 同名）；用于目录与实体列的一致性校验
-	Store       string        `json:"store,omitempty"`
-	Type        FieldType     `json:"type"`
-	Required bool `json:"required,omitempty"`
+	Store    string    `json:"store,omitempty"`
+	Type     FieldType `json:"type"`
+	Required bool      `json:"required,omitempty"`
 	// Immutable 创建后不可修改（如提供商标识 name）：编辑态只作展示，不接受修改
 	Immutable   bool          `json:"immutable,omitempty"`
 	Secret      bool          `json:"secret,omitempty"`

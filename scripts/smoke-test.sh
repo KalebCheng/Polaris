@@ -119,6 +119,33 @@ except Exception:
     print("")' "$1"
 }
 
+# json_items_field <field>：从最近一次响应体的 data.items[0] 取字段（列表类端点用；空列表返回空串）
+json_items_field() {
+  python3 -c 'import json,sys
+try:
+    d = json.load(open("/tmp/polaris-smoke-body"))
+    items = d.get("data", {}).get("items") or []
+    print(items[0].get(sys.argv[1], "") if items else "")
+except Exception:
+    print("")' "$1"
+}
+
+# json_job_id_with_runs：从最近一次 /asyncd/jobs 响应里挑第一个"有执行记录"的任务定义主键
+json_job_id_with_runs() {
+  python3 -c 'import json
+try:
+    d = json.load(open("/tmp/polaris-smoke-body"))
+    items = d.get("data", {}).get("items") or []
+    for item in items:
+        if (item.get("stats") or {}).get("total", 0) > 0:
+            print(item.get("id", ""))
+            break
+    else:
+        print("")
+except Exception:
+    print("")'
+}
+
 # json_top <key>：从最近一次响应体顶层取字段（OIDC 端点返回标准 JSON，无统一包装）
 json_top() {
   python3 -c 'import json,sys
@@ -212,9 +239,20 @@ expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/records")" "GET /records → 200
 expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/connections/catalog")" "GET /connections/catalog → 200"
 # 平台接入信息（开发信息：回调地址 / 门户地址，供回填到 IdP 后台）
 expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/system/oauth")" "GET /system/oauth → 200"
-# asyncd：任务与调度（异步任务可见性 + 定时调度清单）
-expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/asyncd/tasks")" "GET /asyncd/tasks → 200"
-expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/asyncd/schedules")" "GET /asyncd/schedules → 200"
+# asyncd：四维度（任务定义 / 执行实例 / 执行记录 / 执行器实例）
+# 任务目录：顺带取一个"有执行记录"的定义主键，下一条用它查执行实例（嵌套路径）
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/asyncd/jobs")" "GET /asyncd/jobs → 200"
+ASYNCD_JOB_ID="$(json_job_id_with_runs)"
+if [ -n "$ASYNCD_JOB_ID" ]; then
+  expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/asyncd/jobs/$ASYNCD_JOB_ID/runs?size=1")" "GET /asyncd/jobs/:id/runs → 200"
+  ASYNCD_RUN_ID="$(json_items_field id)"
+  if [ -n "$ASYNCD_RUN_ID" ]; then
+    expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/asyncd/jobs/$ASYNCD_JOB_ID/runs/$ASYNCD_RUN_ID/attempts")" "GET /asyncd/jobs/:id/runs/:runId/attempts → 200"
+  else
+    green "SKIP  asyncd 暂无执行实例，跳过 attempts 用例（路由仍由 router_test 覆盖）"
+  fi
+fi
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/asyncd/workers")" "GET /asyncd/workers → 200"
 
 step "10. 用户生命周期（创建 / 查询 / 重置密码 / 删除）"
 expect_code 201 "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \

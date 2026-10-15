@@ -8,6 +8,7 @@ import (
 
 	"polaris/internal/auth"
 	"polaris/internal/repository"
+	"polaris/internal/service/asyncd"
 )
 
 // 回归：用户响应绝不能包含密码哈希 / TOTP 密钥 / 恢复码（曾出现 /me 直接返回实体导致泄漏）。
@@ -217,5 +218,63 @@ func TestConnectorDTONeverExposesCredentials(t *testing.T) {
 	// 迁移 022 后连接器类型必须下发（前端据此选择图标与表单），且类型缺省为通用 HTTP
 	if !strings.Contains(body, `"type":"http"`) {
 		t.Fatalf("应下发连接器类型（缺省 http）: %s", body)
+	}
+}
+
+// 回归：任务目录响应必须收敛为「界面用得到的字段」——
+// 不下发定义表的 payload（实现细节），且 nil 集合**归一化为空集合**（前端不必判空）。
+func TestAsyncdJobDTOShape(t *testing.T) {
+	definition := &repository.AsyncdJob{
+		ID: 7, Name: "syncer.schedule", TaskType: "syncer.schedule",
+		Kind: repository.AsyncdJobKindScheduled, ScheduleKind: repository.ScheduleKindDaily,
+		DailyTimes: nil, WindowMinutes: 30, Enabled: true,
+		LastStatus: repository.AsyncdJobStatusSkipped,
+	}
+	body, err := json.Marshal(toAsyncdJobDTO(asyncd.JobCatalog{Definition: definition}))
+	if err != nil {
+		t.Fatalf("序列化失败: %v", err)
+	}
+	got := string(body)
+	for _, want := range []string{
+		`"name":"syncer.schedule"`, `"kind":"scheduled"`, `"daily_times":[]`,
+		`"last_status":"skipped"`, `"by_status":{}`, `"id":7`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("任务目录响应缺少 %s: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "payload") {
+		t.Fatalf("任务目录响应不应下发定义表的 payload: %s", got)
+	}
+
+	// 异步任务：没有调度段（前端据此不渲染启停开关）
+	async := &repository.AsyncdJob{ID: 8, Name: "syncer.run", TaskType: "syncer.run", Kind: repository.AsyncdJobKindAsync}
+	b, _ := json.Marshal(toAsyncdJobDTO(asyncd.JobCatalog{Definition: async, Stats: asyncd.JobStats{
+		Total: 2, ByStatus: map[string]int{repository.AsyncdJobRunSucceeded: 2},
+	}}))
+	if strings.Contains(string(b), `"schedule"`) {
+		t.Fatalf("异步任务不应带调度段: %s", string(b))
+	}
+	if !strings.Contains(string(b), `"total":2`) {
+		t.Fatalf("异步任务应带执行统计: %s", string(b))
+	}
+}
+
+// 回归：执行器实例的在线状态是**算出**的（心跳新鲜度 / 显式停止），不是库里的列。
+func TestAsyncdWorkerDTOState(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name    string
+		stopped *time.Time
+		want    string
+	}{
+		{name: "在线", want: asyncd.WorkerStateOnline},
+		{name: "已停止", stopped: &now, want: asyncd.WorkerStateStopped},
+	} {
+		worker := asyncd.WorkerInfo{ID: "host-1#0", State: tc.want, Running: 1}
+		body, _ := json.Marshal(&asyncdWorkerDTO{ID: worker.ID, State: worker.State, Running: worker.Running})
+		if !strings.Contains(string(body), `"state":"`+tc.want+`"`) {
+			t.Fatalf("%s：状态未下发: %s", tc.name, string(body))
+		}
 	}
 }

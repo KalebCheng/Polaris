@@ -33,6 +33,38 @@ func (a *Application) cleanupRecords(ctx context.Context) error {
 	return err
 }
 
+// cleanupAsyncd 执行实例/执行记录/执行器实例的保留期清理。
+//
+// 保留期来自任务定义的 payload（运行时读取，改了立即生效）：
+//
+//	retention_days        执行实例与尝试记录的保留天数（默认 14）
+//	worker_retention_days 失联/停止的执行器行保留天数（默认 3）
+func (a *Application) cleanupAsyncd(ctx context.Context, payload map[string]any) error {
+	if a.asyncdSvc == nil {
+		return nil
+	}
+	runsDays := int(payloadNumber(payload, "retention_days"))
+	if runsDays <= 0 {
+		runsDays = 14
+	}
+	workerDays := int(payloadNumber(payload, "worker_retention_days"))
+	if workerDays <= 0 {
+		workerDays = 3
+	}
+	now := time.Now()
+	// 一次最多删 1000 条实例，剩下的留给下一轮（避免长时间持锁）
+	runs, workers, err := a.asyncdSvc.Purge(ctx,
+		now.AddDate(0, 0, -runsDays), now.AddDate(0, 0, -workerDays), 1000)
+	if err != nil {
+		return err
+	}
+	if runs > 0 || workers > 0 {
+		logger.Info("asyncd retention purged", "runs", runs, "workers", workers,
+			"retention_days", runsDays, "worker_retention_days", workerDays)
+	}
+	return nil
+}
+
 func (a *Application) runScheduledSyncers(ctx context.Context) error {
 	syncers, err := a.syncerRepo.ListEnabled(ctx)
 	if err != nil {

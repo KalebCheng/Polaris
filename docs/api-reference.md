@@ -171,17 +171,36 @@
 > 返回入/出方向的**类型目录**：类型、字段 schema（含归属步骤与落库路径 `store`）、能力声明、
 > 可映射源字段与目标字段。前端据此渲染目录卡片与向导表单（类型与字段的单一来源）。
 
-### 3.8 asyncd（异步任务与定时调度）
+### 3.8 asyncd（任务定义 / 执行实例 / 执行记录 / 执行器实例）
 
 | 方法 | 路径 | 权限 |
 |------|------|------|
-| GET | `/asyncd/tasks?status=&type=` | 平台管理员 |
-| POST | `/asyncd/tasks/:id/retry` | 平台管理员 |
-| GET | `/asyncd/schedules` · PUT `/asyncd/schedules/:name` | 平台管理员 |
+| GET | `/asyncd/jobs` | 平台管理员 |
+| PUT | `/asyncd/jobs/:id` | 平台管理员 |
+| GET | `/asyncd/jobs/:id/runs?status=&page=&size=` | 平台管理员 |
+| GET | `/asyncd/jobs/:id/runs/:runId/attempts` | 平台管理员 |
+| POST | `/asyncd/jobs/:id/runs/:runId/retry` | 平台管理员 |
+| GET | `/asyncd/workers` | 平台管理员 |
 
-> 任务状态：`pending`（等待/退避）· `active`（执行中，持租约）· `completed` · `archived`（死信，可人工重试）。
-> 未注册的调度项不会被自动创建；调度项由代码在启动时声明（幂等 upsert），此处仅支持启停。
-
+> **四个维度**（表结构见 `docs/specs/261015-asyncd-task-model.md` §4）：
+> 1. **任务定义** `asyncd_jobs`：`GET /asyncd/jobs` 返回 `{items:[{id,name,task_type,kind,schedule?,stats}]}`——
+>    `kind='scheduled'` 带调度规则（`kind/interval_seconds/daily_times/window_minutes/enabled/next_run_at/last_status`），
+>    `kind='async'` 没有 `schedule` 段。定义由代码在启动时声明并幂等 upsert，**界面不提供增删改**；
+>    目录来自定义表，因此"注册了但从未执行过"的任务也在列（`stats.total=0`）。
+>    `PUT`（按数字主键）只用于启停**定时任务**（`{"enabled":bool}`）；对异步任务返回 `INVALID_PARAMS`——
+>    停用异步任务等于让业务动作静默丢任务，不提供这个口子。
+> 2. **执行实例** `asyncd_job_runs`：`GET /asyncd/jobs/:id/runs` 一行 = 一次执行，状态
+>    `queued`（等待/退避）· `running`（执行中，持租约）· `succeeded` · `dead`（死信，可人工重试）；
+>    `counts` 是与列表**同一作用域**的状态直方图（前端据此派生分页总数）。
+> 3. **执行记录** `asyncd_job_run_attempts`：`GET /asyncd/jobs/:id/runs/:runId/attempts` 一行 = 一次尝试
+>    （`running|succeeded|failed|lease_lost`，含真实耗时 `duration_ms` 与错误）。
+>    重试会覆盖执行实例上的 `last_error`，所以"第几次失败、花了多久"只能看这里。
+> 4. **执行器实例** `asyncd_workers`：`GET /asyncd/workers` 一个槽位一行（`id = <host>-<pid>#<slot>`），
+>    `state` 由**心跳**算出：`online`（30s 内有心跳）· `stale`（心跳过期，疑似崩溃）· `stopped`（优雅退出），
+>    `running` 是该槽位当前持租约在执行的任务数（实时聚合，不落列）。
+>
+> 调度项（定时任务）由代码声明并自动注册；`last_status` 的 `skipped` 表示"单飞键命中：
+> 窗口内已有待执行/执行中的实例，本次跳过"——不再把跳过误报成"已入队"。
 ### 3.9 平台接入信息与系统设置
 
 | 方法 | 路径 | 权限 |

@@ -276,12 +276,15 @@ func RegisterRoutes(engine *gin.Engine, mw *Middleware, h *Handlers) {
 	system.PUT("/storage", mw.RequireAdmin(), h.Storage.UpdateSettings)
 	system.GET("/oauth", mw.RequireAdmin(), h.Auth.OAuthInfo)
 
-	// asyncd：异步任务与调度（平台级运维可见性 + 人工干预）
+	// asyncd：任务定义 / 执行实例 / 执行记录 / 执行器实例（平台级运维可见性 + 人工干预）。
+	// 路径约定：资源标识统一用数字主键；执行实例嵌套在任务定义下（归属由路径表达）。
 	asyncdGroup := authGroup.Group("/asyncd")
-	asyncdGroup.GET("/tasks", mw.RequireAdmin(), h.Asyncd.Tasks)
-	asyncdGroup.POST("/tasks/:id/retry", mw.RequireAdmin(), h.Asyncd.RetryTask)
-	asyncdGroup.GET("/schedules", mw.RequireAdmin(), h.Asyncd.Schedules)
-	asyncdGroup.PUT("/schedules/:name", mw.RequireAdmin(), h.Asyncd.UpdateSchedule)
+	asyncdGroup.GET("/jobs", mw.RequireAdmin(), h.Asyncd.Jobs)
+	asyncdGroup.PUT("/jobs/:id", mw.RequireAdmin(), h.Asyncd.UpdateJob)
+	asyncdGroup.GET("/jobs/:id/runs", mw.RequireAdmin(), h.Asyncd.JobRuns)
+	asyncdGroup.GET("/jobs/:id/runs/:runId/attempts", mw.RequireAdmin(), h.Asyncd.JobRunAttempts)
+	asyncdGroup.POST("/jobs/:id/runs/:runId/retry", mw.RequireAdmin(), h.Asyncd.RetryJobRun)
+	asyncdGroup.GET("/workers", mw.RequireAdmin(), h.Asyncd.Workers)
 	system.POST("/storage/test", mw.RequireAdmin(), h.Storage.TestSettings)
 
 	// 通用上传：写入当前组织的存储后端，返回可访问 URL（受保护路由，按登录用户组织收敛）

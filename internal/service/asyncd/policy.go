@@ -26,6 +26,13 @@ const (
 	DefaultPollInterval = time.Second
 	// DefaultBatchSize 单次领取条数
 	DefaultBatchSize = 10
+	// WorkerHeartbeatInterval 执行器心跳间隔（asyncd_workers.last_heartbeat_at）
+	WorkerHeartbeatInterval = 10 * time.Second
+	// WorkerStaleAfter 执行器"失联"判定：心跳超过该时长未更新即视为疑似崩溃
+	// （= 3×心跳间隔；与 60s 任务租约同量级，两者都靠"过期"而不是"通知"发现故障）
+	WorkerStaleAfter = 30 * time.Second
+	// ReclaimEvery 租约过期回收的扫描间隔
+	ReclaimEvery = 30 * time.Second
 )
 
 // Backoff 计算第 attempts 次失败后的退避时长：指数增长 + 抖动，上限 cap。
@@ -65,20 +72,20 @@ func Backoff(attempts int, base, cap time.Duration, jitter func() float64) time.
 // daily 语义对齐参考产品：每天在若干时刻执行；`windowMinutes` 表示"到点后前后该窗口内
 // 执行一次即可"。这里返回**下一个到点时刻**，窗口与去重由单飞键（window 内已有待执行
 // 任务则跳过）保证，因此不会重复入队。
-func NextOccurrence(s repository.AsyncdSchedule, now time.Time) time.Time {
-	switch s.Kind {
+func NextOccurrence(job repository.AsyncdJob, now time.Time) time.Time {
+	switch job.ScheduleKind {
 	case repository.ScheduleKindDaily:
-		window := s.WindowMinutes
+		window := job.WindowMinutes
 		if window <= 0 {
 			window = 30
 		}
 		// 命中窗口的最近时刻（含已过去但在窗口内的当天时刻）
-		if next, ok := nextDailyWithinWindow(s.DailyTimes, now, window); ok {
+		if next, ok := nextDailyWithinWindow(job.DailyTimes, now, window); ok {
 			return next
 		}
-		return nextDaily(s.DailyTimes, now, window)
+		return nextDaily(job.DailyTimes, now, window)
 	default: // interval
-		seconds := s.IntervalSeconds
+		seconds := job.IntervalSeconds
 		if seconds <= 0 {
 			seconds = 60
 		}

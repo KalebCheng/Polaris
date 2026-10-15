@@ -490,31 +490,11 @@ export interface ReconcileReport {
   items: ReconcileItem[]
 }
 
-export interface AsyncdTask {
-  id: number
-  type: string
-  status: string
-  priority: number
-  attempts: number
-  max_attempts: number
-  next_attempt_at: string
-  unique_key?: string
-  locked_by?: string
-  last_error?: string
-  institution_id?: number
-  payload?: unknown
-  created_at: string
-  updated_at: string
-  finished_at?: string | null
-}
-
+/** 定时任务的调度规则（异步任务没有这一段） */
 export interface AsyncdSchedule {
-  id: number
-  job_name: string
-  task_type: string
   kind: string
   interval_seconds: number
-  daily_times: string[] | null
+  daily_times: string[]
   window_minutes: number
   enabled: boolean
   next_run_at: string
@@ -522,18 +502,100 @@ export interface AsyncdSchedule {
   last_status: string
 }
 
+/** 一个任务的执行统计（来自 asyncd_job_runs 的聚合） */
+export interface AsyncdJobStats {
+  total: number
+  by_status: Record<string, number>
+  last_queued_at?: string | null
+}
+
 /**
- * asyncd：异步任务与定时调度（平台级）。
- * 运维靠它回答三个问题：有没有堆积、为什么失败、要不要人工重试。
+ * 任务定义（asyncd_jobs）：任务中心里的一个「任务」。
+ * - `kind === 'scheduled'`：定时任务，带 `schedule` 规则与启停；
+ * - `kind === 'async'`：异步任务，由业务动作按需入队。
+ * 执行记录用 `id`（job_id）去查。
+ */
+export interface AsyncdJob {
+  id: number
+  name: string
+  task_type: string
+  kind: 'async' | 'scheduled'
+  schedule?: AsyncdSchedule
+  stats: AsyncdJobStats
+}
+
+/** 执行实例（asyncd_job_runs）：一行 = 一次执行 */
+export interface AsyncdJobRun {
+  id: number
+  job_id: number
+  job_name: string
+  task_type: string
+  /** queued | running | succeeded | dead */
+  status: string
+  priority: number
+  attempts: number
+  max_attempts: number
+  next_attempt_at: string
+  unique_key?: string
+  worker_id?: string
+  last_error?: string
+  institution_id?: number
+  created_at: string
+  updated_at: string
+  finished_at?: string | null
+}
+
+/** 执行记录（asyncd_job_run_attempts）：一行 = 一次执行里的一次尝试 */
+export interface AsyncdJobRunAttempt {
+  id: number
+  attempt_no: number
+  worker_id: string
+  /** running | succeeded | failed | lease_lost */
+  status: string
+  started_at: string
+  finished_at?: string | null
+  duration_ms: number
+  error?: string
+}
+
+/** 执行器实例（asyncd_workers）：一个可领取任务的槽位；state 由心跳算出 */
+export interface AsyncdWorker {
+  id: string
+  instance_id: string
+  host: string
+  pid: number
+  slot_index: number
+  /** online | stale | stopped */
+  state: string
+  started_at: string
+  last_heartbeat_at: string
+  stopped_at?: string | null
+  running: number
+}
+
+/**
+ * asyncd：任务定义 / 执行实例 / 执行记录 / 执行器实例（平台级）。
+ * 运维靠它回答四个问题：有哪些任务、现在队列里怎么样、某次执行当时发生了什么、谁在跑。
  */
 export const asyncdApi = {
-  tasks: (params?: { status?: string; type?: string; page?: number; size?: number }) =>
-    api.get<{ items: AsyncdTask[]; counts: Record<string, number>; page: number; size: number }>(
-      '/asyncd/tasks',
-      { status: params?.status, type: params?.type, page: params?.page ?? 1, size: params?.size ?? 20 },
+  /** 任务目录：全部任务定义（异步 + 定时）及执行统计 */
+  jobs: () => api.get<{ items: AsyncdJob[] }>('/asyncd/jobs'),
+  /** 启停定时任务（异步任务不提供停用） */
+  setJobEnabled: (id: number, enabled: boolean) => api.put<void>(`/asyncd/jobs/${id}`, { enabled }),
+  /**
+   * 某任务的执行记录（执行实例）：路径嵌套在任务定义下（执行实例必然属于某个任务定义）。
+   * `counts` 与列表同一作用域，前端据此派生分页总数。
+   */
+  jobRuns: (jobId: number, params?: { status?: string; page?: number; size?: number }) =>
+    api.get<{ items: AsyncdJobRun[]; counts: Record<string, number>; page: number; size: number }>(
+      `/asyncd/jobs/${jobId}/runs`,
+      { status: params?.status, page: params?.page ?? 1, size: params?.size ?? 20 },
     ),
-  retry: (id: number) => api.post<void>(`/asyncd/tasks/${id}/retry`, undefined),
-  schedules: () => api.get<{ items: AsyncdSchedule[] }>('/asyncd/schedules'),
-  setScheduleEnabled: (name: string, enabled: boolean) =>
-    api.put<void>(`/asyncd/schedules/${encodeURIComponent(name)}`, { enabled }),
+  /** 某次执行的尝试明细（执行记录） */
+  jobRunAttempts: (jobId: number, runId: number) =>
+    api.get<{ items: AsyncdJobRunAttempt[] }>(`/asyncd/jobs/${jobId}/runs/${runId}/attempts`),
+  /** 人工重试死信 */
+  retryJobRun: (jobId: number, runId: number) =>
+    api.post<void>(`/asyncd/jobs/${jobId}/runs/${runId}/retry`, undefined),
+  workers: () => api.get<{ items: AsyncdWorker[] }>('/asyncd/workers'),
 }

@@ -40,37 +40,37 @@ func TestBackoff(t *testing.T) {
 func TestNextOccurrence(t *testing.T) {
 	now := time.Date(2026, 10, 13, 4, 0, 0, 0, time.UTC)
 
-	interval := NextOccurrence(repository.AsyncdSchedule{Kind: repository.ScheduleKindInterval, IntervalSeconds: 3600}, now)
+	interval := NextOccurrence(repository.AsyncdJob{ScheduleKind: repository.ScheduleKindInterval, IntervalSeconds: 3600}, now)
 	if got := interval.Sub(now); got != time.Hour {
 		t.Fatalf("interval 调度应为 1 小时后，实际 %s", got)
 	}
 
-	daily := NextOccurrence(repository.AsyncdSchedule{
-		Kind: repository.ScheduleKindDaily, DailyTimes: []string{"03:00", "05:00"}, WindowMinutes: 30,
+	daily := NextOccurrence(repository.AsyncdJob{
+		ScheduleKind: repository.ScheduleKindDaily, DailyTimes: []string{"03:00", "05:00"}, WindowMinutes: 30,
 	}, now)
 	if daily.Hour() != 5 || daily.Day() != 13 {
 		t.Fatalf("4:00 应命中当天 5:00，实际 %s", daily)
 	}
 
 	// 4:10 距 03:00 已超过 30 分钟窗口 → 下一个时刻为当天 05:00
-	late := NextOccurrence(repository.AsyncdSchedule{
-		Kind: repository.ScheduleKindDaily, DailyTimes: []string{"03:00", "05:00"}, WindowMinutes: 30,
+	late := NextOccurrence(repository.AsyncdJob{
+		ScheduleKind: repository.ScheduleKindDaily, DailyTimes: []string{"03:00", "05:00"}, WindowMinutes: 30,
 	}, time.Date(2026, 10, 13, 4, 10, 0, 0, time.UTC))
 	if late.Hour() != 5 {
 		t.Fatalf("超出窗口应取下一个时刻，实际 %s", late)
 	}
 
 	// 4:05 仍在 03:00 的窗口内 → 命中当天 03:00（窗口内补跑一次）
-	inWindow := NextOccurrence(repository.AsyncdSchedule{
-		Kind: repository.ScheduleKindDaily, DailyTimes: []string{"03:00", "05:00"}, WindowMinutes: 30,
+	inWindow := NextOccurrence(repository.AsyncdJob{
+		ScheduleKind: repository.ScheduleKindDaily, DailyTimes: []string{"03:00", "05:00"}, WindowMinutes: 30,
 	}, time.Date(2026, 10, 13, 3, 20, 0, 0, time.UTC))
 	if inWindow.Hour() != 3 {
 		t.Fatalf("窗口内应命中当天 03:00，实际 %s", inWindow)
 	}
 
 	// 当天时刻都已过 → 顺延到次日第一个时刻
-	tomorrow := NextOccurrence(repository.AsyncdSchedule{
-		Kind: repository.ScheduleKindDaily, DailyTimes: []string{"03:00", "05:00"}, WindowMinutes: 30,
+	tomorrow := NextOccurrence(repository.AsyncdJob{
+		ScheduleKind: repository.ScheduleKindDaily, DailyTimes: []string{"03:00", "05:00"}, WindowMinutes: 30,
 	}, time.Date(2026, 10, 13, 23, 0, 0, 0, time.UTC))
 	if tomorrow.Day() != 14 || tomorrow.Hour() != 3 {
 		t.Fatalf("应顺延到次日 03:00，实际 %s", tomorrow)
@@ -83,7 +83,7 @@ func TestRegistryRejectsUnknownType(t *testing.T) {
 	if _, ok := registry.Lookup("unknown.task"); ok {
 		t.Fatal("未注册的类型不应被查到")
 	}
-	registry.Register("demo.task", func(ctx context.Context, task *repository.AsyncdTask, payload map[string]any) error {
+	registry.Register("demo.task", func(ctx context.Context, run *repository.AsyncdJobRun, payload map[string]any) error {
 		return nil
 	})
 	if _, ok := registry.Lookup("demo.task"); !ok {

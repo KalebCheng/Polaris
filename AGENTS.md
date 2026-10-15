@@ -42,7 +42,8 @@ internal/
 └── service/                # 业务逻辑（syncer/ 上游数据源连接器；provisioner/ 下游供给连接器；
                             #   provider/ 提供商目录与运行时（catalog/runtime/resolver）；
                             #   connection/ 身份连接的目录 schema；
-                            #   asyncd/ 异步任务与定时调度——DB 版 asynq 语义，多实例安全）
+                            #   asyncd/ 任务底盘（四维度：任务定义 / 执行实例 / 执行记录 / 执行器实例，
+                            #     DB 版 asynq 语义，多实例安全））
 pkg/                        # dbclient / redisclient / migrator
 migrations/                 # 数据库迁移
 configs/                    # 配置占位符
@@ -306,6 +307,16 @@ ACCOUNT             账号级                Portal（/portal/**：应用中心 
   任务中心（asyncd）与审计日志**不再各占一个一级导航位**——它们是平台运维视角的能力，不是资源；
   旧地址 `/asyncd`、`/audit` 一律重定向到新的二级地址；快速跳转（`nav-search`）平铺设置的二级页，
   父级「系统设置」不单独列出（两条同址结果会撞 React key）。
+- **任务中心按 asyncd 的四个维度展示**（`/settings/tasks`，三个 Tab）：
+  ①**任务维度**——异步任务（业务动作入队，无固定周期）与定时任务（代码声明的调度项，带频率/下次执行/启停），
+  卡片给出四态执行统计（等待/执行中/成功/死信）与「最近入队」，任务目录来自后端 `GET /asyncd/jobs`
+  （**定义表是唯一来源**，因此"注册了但从未执行过"的任务也在列）；
+  ②**执行记录**——点进任务看该任务的执行实例列表（一次执行一行，按 `job_id` 过滤），
+  死信行内可人工重试；③**尝试明细**——某次执行展开看每次尝试的状态/耗时/错误
+  （重试会覆盖执行实例上的 `last_error`，只记在实例上就永远看不到"第几次失败"）；
+  ④**执行器**——每个槽位一行（`<host>-<pid>#<slot>`），状态 `online|stale|stopped` 由**心跳算出**、
+  `running` 实时聚合，于是"几个服务在跑、谁掉线了、各自在跑几个"都能直接回答。
+  归属与状态都落到列上（`job_runs.job_id` / `attempts.job_run_id` / `workers.id`），**不靠 `unique_key` 前缀这类字符串约定**。
 - **单例配置页对齐组织级提供商**：系统设置 › 存储设置用**实例卡片**讲清"当前是哪一个、谁在用它、
   有哪几个行内动作"（测试连通性 / 修改配置 / 清除配置），类型与图标取自提供商目录
   （`GET /providers/catalog` 的 `storage` 类别，前端不再抄一份类型表）；点「修改配置」在**页内**展开分区表单
@@ -419,7 +430,9 @@ ACCOUNT             账号级                Portal（/portal/**：应用中心 
 | 授权名单做成三个下拉多选，用户说"一点都不好用" | 把"名单型"配置当成了"字段型"配置：`MultiSelect` 适合**字段级**多值引用（scope、grant types、token fields），而"已授权了谁"是**名单**——下拉把全局藏进控件，看不到全貌、不能逐条核对与移除，新增还要在下拉里翻半天 | 名单型授权一律用**左类型（含各自数量）/ 右名单表格**的主从布局（`application-access-editor.tsx`），行内移除 + 「添加授权」弹窗选候选；判断口径：**用户需要"看全并单条处置"的就是名单，不是字段** |
 
 | 选了一批用户保存后回来看还是"全员可访问"（配置像没生效） | 保存用的 `useCallback(fn, deps)` **漏掉了它读取的 state**（`access`）→ React 复用首次创建的闭包，提交上去的永远是初始值（`all` + 空名单）。页面回显正常、保存也"成功"（主表单确实写进去了），所以只有数据层面的授权被旧值覆盖 | handler 只要读取 state，该 state 就必须进依赖数组；表单类页面补一条"回显 → 改动 → 保存 → 断言提交体"的集成测试（`application-edit-page.test.tsx`，撤掉依赖即红），别只测纯函数与子组件 |
+| 迁移里 `DROP INDEX asyncd_tasks_type_status_idx` 报 `42704 index does not exist`（第一次真实库执行 033 时） | 同一迁移前一步已 `DROP COLUMN type`，而 **PostgreSQL 会连带删除依赖该列的索引**（`job_name` 同理会带走 `job_idx`） | 迁移里所有 `DROP INDEX` 一律写 `IF EXISTS`（删列导致的连带删除不可预期）；改表结构的迁移**必须在真实库上跑一遍 up/down**，不能只做静态审查 |
+| 任务中心只有"执行实例"，"任务定义 / 执行记录 / 执行器"三个维度全缺 | 一张队列表既当队列又当历史：任务清单取自"有执行记录的类型"（从未执行过的任务凭空消失）、重试覆盖 `last_error` 与 `finished_at`（第几次尝试失败、跑了多久查不到）、`locked_by` 只是个字符串（有几个实例在跑、谁掉线了答不了） | §7.4 + `docs/specs/261015-asyncd-task-model.md`：任务底盘固定四维度（定义 `asyncd_jobs` / 执行实例 `asyncd_job_runs` / 执行记录 `asyncd_job_run_attempts` / 执行器 `asyncd_workers`）；定义表是任务目录**唯一来源**（代码声明 + 启动 upsert）；每次尝试一行、执行器在线状态**由心跳算出**（不存派生列）；归属与状态一律落到列/外键上，不靠字符串约定 |
 | 删掉最后一个子部门后，父部门**永远删不掉**（409 still has child departments） | `DepartmentService.Delete` 用**存储的** `has_child` 标记判断"还有下级"，而删除路径从未刷新过它——只有"移动子部门层级"（走 `Update`）才会顺带刷新，于是必须"先动一下再删"这么反直觉 | 派生/冗余标记必须在**每条会改变它的写入路径**上同步（本次在删除后补 `refreshHasChild`，配回归测试）；新增这类标记时先问"还有什么操作会改变它" |
 
 ---
-*最后更新：2026-10-15（第六阶段：应用访问授权 / 授权编辑器改为左右主从布局 + 部门树按层懒加载）*
+*最后更新：2026-10-15（asyncd 四维度重建：`asyncd_jobs` / `asyncd_job_runs` / `asyncd_job_run_attempts` / `asyncd_workers`；API 嵌套路径 `/asyncd/jobs/:id/runs`；任务中心三 Tab + 尝试明细 + 执行器视图）*

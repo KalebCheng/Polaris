@@ -21,6 +21,9 @@ interface ResourceTableProps<T> {
   onPageChange: (page: number) => void
   toolbar?: React.ReactNode
   emptyAction?: React.ReactNode
+  /** 空态文案：默认是通用的「暂无数据」，业务页有自己的引导语时传进来（与 {@link ResourceCards} 同口径） */
+  emptyTitle?: string
+  emptyDescription?: string
   /** 分页范围文案量词，如「条」「个组织」 */
   unit?: string
 }
@@ -37,6 +40,8 @@ export function ResourceTable<T>({
   onPageChange,
   toolbar,
   emptyAction,
+  emptyTitle,
+  emptyDescription,
   unit,
 }: ResourceTableProps<T>) {
   const { t } = useTranslation()
@@ -51,7 +56,11 @@ export function ResourceTable<T>({
             ))}
           </div>
         ) : rows.length === 0 ? (
-          <EmptyState title={t('common.empty')} description={t('common.emptyHint')} action={emptyAction} />
+          <EmptyState
+            title={emptyTitle ?? t('common.empty')}
+            description={emptyDescription ?? t('common.emptyHint')}
+            action={emptyAction}
+          />
         ) : (
           <Table>
             <TableHeader>

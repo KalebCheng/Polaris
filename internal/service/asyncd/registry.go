@@ -10,7 +10,7 @@ import (
 )
 
 // Handler 任务处理器：payload 为已解码的 JSON 对象；返回 error 表示本次执行失败（按策略重试）。
-type Handler func(ctx context.Context, task *repository.AsyncdTask, payload map[string]any) error
+type Handler func(ctx context.Context, run *repository.AsyncdJobRun, payload map[string]any) error
 
 // HandlerOption 处理器选项
 type HandlerOption func(*handlerEntry)

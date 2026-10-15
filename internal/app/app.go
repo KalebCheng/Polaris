@@ -475,11 +475,14 @@ func (a *Application) initServer() {
 	a.middleware = server.NewMiddleware(a.cfg, a.authMiddleware)
 	a.middleware.Register(a.server.Router())
 
-	// 异步任务与定时调度（DB 版 asynq；见 Spec §5.7）：
+	// 异步任务与定时调度（DB 版 asynq；四维度模型见 docs/specs/261015-asyncd-task-model.md）：
 	// **必须在构造 handlers 之前完成**——handler 持有的是服务实例，晚构造会让 /asyncd/* 拿到 nil。
-	taskRepo := postgres.NewAsyncdTaskRepository(a.db)
-	scheduleRepo := postgres.NewAsyncdScheduleRepository(a.db)
-	a.asyncdSvc = asyncd.NewService(taskRepo, scheduleRepo)
+	a.asyncdSvc = asyncd.NewService(
+		postgres.NewAsyncdJobRepository(a.db),
+		postgres.NewAsyncdJobRunRepository(a.db),
+		postgres.NewAsyncdJobRunAttemptRepository(a.db),
+		postgres.NewAsyncdWorkerRepository(a.db),
+	)
 	a.syncerSvc.SetAsyncd(a.asyncdSvc)
 	a.provisionSvc.SetAsyncd(a.asyncdSvc)
 
@@ -510,18 +513,22 @@ func (a *Application) initServer() {
 	// 任务入队可与业务写入同事务，worker 领取用 SKIP LOCKED（多实例安全），
 	// 定时任务只负责入队，执行路径唯一（worker → 处理器）。
 	registry := a.asyncdSvc.Registry()
-	registry.Register("maintenance.token_cleanup", func(ctx context.Context, _ *repository.AsyncdTask, _ map[string]any) error {
+	registry.Register("maintenance.token_cleanup", func(ctx context.Context, _ *repository.AsyncdJobRun, _ map[string]any) error {
 		return a.cleanupTokens(ctx)
 	}, asyncd.HandlerMaxAttempts(3))
-	registry.Register("maintenance.record_cleanup", func(ctx context.Context, _ *repository.AsyncdTask, _ map[string]any) error {
+	registry.Register("maintenance.record_cleanup", func(ctx context.Context, _ *repository.AsyncdJobRun, _ map[string]any) error {
 		return a.cleanupRecords(ctx)
 	}, asyncd.HandlerMaxAttempts(3))
-	registry.Register("syncer.schedule", func(ctx context.Context, _ *repository.AsyncdTask, _ map[string]any) error {
+	// 执行实例/执行记录/执行器实例的保留期清理（配置来自任务定义的 payload，运行时读取）
+	registry.Register("maintenance.asyncd_cleanup", func(ctx context.Context, _ *repository.AsyncdJobRun, payload map[string]any) error {
+		return a.cleanupAsyncd(ctx, payload)
+	}, asyncd.HandlerMaxAttempts(3))
+	registry.Register("syncer.schedule", func(ctx context.Context, _ *repository.AsyncdJobRun, _ map[string]any) error {
 		return a.runScheduledSyncers(ctx)
 	})
 	// 同步器运行任务：真正执行一次同步（差异 → 保护 → 落地 → 运行记录）。
 	// 单飞键由入队侧给出（syncer:<id>），因此同一数据源不会并发跑两次。
-	registry.Register(service.TaskTypeSyncerRun, func(ctx context.Context, _ *repository.AsyncdTask, payload map[string]any) error {
+	registry.Register(service.TaskTypeSyncerRun, func(ctx context.Context, _ *repository.AsyncdJobRun, payload map[string]any) error {
 		syncerID := int64(payloadNumber(payload, "syncer_id"))
 		institutionID := int64(payloadNumber(payload, "institution_id"))
 		trigger := payloadString(payload, "trigger")
@@ -536,25 +543,53 @@ func (a *Application) initServer() {
 		_, err = a.syncerSvc.RunWithTrigger(ctx, "asyncd", trigger, sy)
 		return err
 	})
-	registry.Register("provisioning.retry", func(ctx context.Context, _ *repository.AsyncdTask, _ map[string]any) error {
+	registry.Register("provisioning.retry", func(ctx context.Context, _ *repository.AsyncdJobRun, _ map[string]any) error {
 		return a.retryProvisioning(ctx)
 	})
 	// 单账号供给任务：建号 / 改密 / 启用停用 / 删除（幂等键 = 机构×应用×用户，失败按退避重试、超限进死信）
-	registry.Register(service.TaskTypeProvisionAccount, func(ctx context.Context, _ *repository.AsyncdTask, payload map[string]any) error {
+	registry.Register(service.TaskTypeProvisionAccount, func(ctx context.Context, _ *repository.AsyncdJobRun, payload map[string]any) error {
 		a.provisionSvc.ProcessTask(ctx, service.ProvisionTaskFromPayload(payload))
 		return nil
 	})
-	// 调度项声明（幂等 upsert；重启不会打乱节奏）
-	for _, schedule := range []asyncd.Schedule{
-		{JobName: "maintenance.token_cleanup", TaskType: "maintenance.token_cleanup", Kind: repository.ScheduleKindInterval, IntervalSeconds: 3600, Enabled: true},
-		{JobName: "maintenance.record_cleanup", TaskType: "maintenance.record_cleanup", Kind: repository.ScheduleKindInterval, IntervalSeconds: 6 * 3600, Enabled: true},
-		// 同步器定时校验：每分钟扫描"到点且未在运行"的数据源（真正的周期判定在同步器内部/后续批次）
-		{JobName: "syncer.schedule", TaskType: "syncer.schedule", Kind: repository.ScheduleKindInterval, IntervalSeconds: 60, Enabled: true},
-		{JobName: "provisioning.retry", TaskType: "provisioning.retry", Kind: repository.ScheduleKindInterval, IntervalSeconds: 120, Enabled: true},
+
+	// 任务定义声明（幂等 upsert；重启不会打乱 next_run_at，也不会把界面上的启停掰回默认值）：
+	//   kind=async     —— 由业务动作按需入队（定义入库后，任务中心连"从未执行过"的任务也列得出）
+	//   kind=scheduled —— 由调度器按间隔/时刻入队，可停用
+	for _, job := range []asyncd.Job{
+		{Name: service.TaskTypeSyncerRun, TaskType: service.TaskTypeSyncerRun, Kind: repository.AsyncdJobKindAsync},
+		{Name: service.TaskTypeProvisionAccount, TaskType: service.TaskTypeProvisionAccount, Kind: repository.AsyncdJobKindAsync},
+		{
+			Name: "maintenance.token_cleanup", TaskType: "maintenance.token_cleanup",
+			Kind: repository.AsyncdJobKindScheduled, Enabled: true,
+			Schedule: asyncd.Schedule{Kind: repository.ScheduleKindInterval, IntervalSeconds: 3600},
+		},
+		{
+			Name: "maintenance.record_cleanup", TaskType: "maintenance.record_cleanup",
+			Kind: repository.AsyncdJobKindScheduled, Enabled: true,
+			Schedule: asyncd.Schedule{Kind: repository.ScheduleKindInterval, IntervalSeconds: 6 * 3600},
+		},
+		{
+			// 保留期清理：执行实例/尝试记录留 14 天，失联执行器留 3 天（payload 由处理器读取）
+			Name: "maintenance.asyncd_cleanup", TaskType: "maintenance.asyncd_cleanup",
+			Kind: repository.AsyncdJobKindScheduled, Enabled: true,
+			Payload:  map[string]any{"retention_days": 14, "worker_retention_days": 3},
+			Schedule: asyncd.Schedule{Kind: repository.ScheduleKindInterval, IntervalSeconds: 3600},
+		},
+		{
+			// 同步器定时校验：每分钟扫描"到点且未在运行"的数据源（真正的周期判定在同步器内部）
+			Name: "syncer.schedule", TaskType: "syncer.schedule",
+			Kind: repository.AsyncdJobKindScheduled, Enabled: true,
+			Schedule: asyncd.Schedule{Kind: repository.ScheduleKindInterval, IntervalSeconds: 60},
+		},
+		{
+			Name: "provisioning.retry", TaskType: "provisioning.retry",
+			Kind: repository.AsyncdJobKindScheduled, Enabled: true,
+			Schedule: asyncd.Schedule{Kind: repository.ScheduleKindInterval, IntervalSeconds: 120},
+		},
 	} {
-		// 调度项注册失败不应阻断启动：记日志并在下一次启动时重试（upsert 幂等）
-		if err := a.asyncdSvc.RegisterSchedule(context.Background(), schedule); err != nil {
-			logger.Error("注册调度项失败", "job", schedule.JobName, "error", err)
+		// 定义注册失败不应阻断启动：记日志并在下一次启动时重试（upsert 幂等）
+		if err := a.asyncdSvc.RegisterJob(context.Background(), job); err != nil {
+			logger.Error("注册任务定义失败", "job", job.Name, "error", err)
 		}
 	}
 }

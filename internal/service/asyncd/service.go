@@ -7,32 +7,47 @@ import (
 	"os"
 	"time"
 
+	"polaris/internal/errors"
 	"polaris/internal/logger"
 	"polaris/internal/repository"
 )
 
-// Service 任务与调度的对外入口（入队 / 查询 / 人工干预 / 注册处理器）。
+// Service 任务与调度的对外入口（定义声明 / 入队 / 查询 / 人工干预 / 保留期清理）。
+//
+// 四维度模型的中心（见 docs/specs/261015-asyncd-task-model.md）：
+//   - 任务定义 asyncd_jobs（本服务按代码声明 upsert，运行时按它解析处理器与调度规则）
+//   - 执行实例 asyncd_job_runs（入队 → 领取 → 成功/死信）
+//   - 执行记录 asyncd_job_run_attempts（每次尝试一行）
+//   - 执行器实例 asyncd_workers（注册 + 心跳，在线状态由心跳算出）
 //
 // 装配方式遵循 AGENTS.md §3.1-1：由 app 统一构造并注入，不做全局单例。
 type Service struct {
-	tasks     repository.AsyncdTaskRepository
-	schedules repository.AsyncdScheduleRepository
-	registry  *Registry
-	workerID  string
-	clock     func() time.Time
+	jobs        repository.AsyncdJobRepository
+	jobRuns     repository.AsyncdJobRunRepository
+	runAttempts repository.AsyncdJobRunAttemptRepository
+	workers     repository.AsyncdWorkerRepository
+	registry    *Registry
+	// instanceID 服务实例标识（host-pid）：执行器槽位 id 以它开头
+	instanceID string
+	clock      func() time.Time
 }
 
 // NewService 创建任务服务
-func NewService(tasks repository.AsyncdTaskRepository, schedules repository.AsyncdScheduleRepository) *Service {
+func NewService(
+	jobs repository.AsyncdJobRepository,
+	jobRuns repository.AsyncdJobRunRepository,
+	runAttempts repository.AsyncdJobRunAttemptRepository,
+	workers repository.AsyncdWorkerRepository,
+) *Service {
 	return &Service{
-		tasks: tasks, schedules: schedules,
-		registry: NewRegistry(),
-		workerID: instanceID(),
-		clock:    time.Now,
+		jobs: jobs, jobRuns: jobRuns, runAttempts: runAttempts, workers: workers,
+		registry:   NewRegistry(),
+		instanceID: instanceID(),
+		clock:      time.Now,
 	}
 }
 
-// instanceID 实例标识：主机名 + 进程号（多实例排查"谁领了这个任务"时一眼可辨）
+// instanceID 服务实例标识：主机名 + 进程号（多实例排查"谁领了这个任务"时一眼可辨）
 func instanceID() string {
 	host, err := os.Hostname()
 	if err != nil || host == "" {
@@ -41,116 +56,355 @@ func instanceID() string {
 	return fmt.Sprintf("%s-%d", host, os.Getpid())
 }
 
+// InstanceID 服务实例标识（执行器登记时写入 asyncd_workers.instance_id）
+func (s *Service) InstanceID() string { return s.instanceID }
+
 // Registry 暴露注册表（供 app 装配时登记处理器）
 func (s *Service) Registry() *Registry { return s.registry }
 
-// Enqueue 入队一个任务。
-//   - taskType：处理器注册名；
+// Schedule 任务定义的调度规则（kind=scheduled 时必填）
+type Schedule struct {
+	// Kind interval | daily
+	Kind            string
+	IntervalSeconds int
+	DailyTimes      []string
+	WindowMinutes   int
+}
+
+// Job 任务定义声明（由代码在启动时给出：名字、处理器绑定、调度规则、载荷模板）
+type Job struct {
+	Name     string
+	TaskType string
+	// Kind async | scheduled
+	Kind     string
+	Schedule Schedule
+	// Payload 调度入队时的载荷模板（异步任务由调用方给载荷，这里不用）
+	Payload any
+	Enabled bool
+}
+
+// RegisterJob 注册/更新任务定义（幂等；启动时按代码声明对齐数据库）。
+func (s *Service) RegisterJob(ctx context.Context, job Job) error {
+	if job.Kind == "" {
+		job.Kind = repository.AsyncdJobKindAsync
+	}
+	if job.Kind == repository.AsyncdJobKindScheduled {
+		if job.Schedule.Kind == "" {
+			return fmt.Errorf("task: 定时任务 %q 缺少调度规则", job.Name)
+		}
+		if job.Schedule.Kind == repository.ScheduleKindInterval && job.Schedule.IntervalSeconds <= 0 {
+			return fmt.Errorf("task: 定时任务 %q 的间隔必须为正数", job.Name)
+		}
+		if job.Schedule.Kind == repository.ScheduleKindDaily && len(job.Schedule.DailyTimes) == 0 {
+			return fmt.Errorf("task: 定时任务 %q 必须声明每天的执行时刻", job.Name)
+		}
+	}
+	if job.Kind == repository.AsyncdJobKindAsync {
+		// 异步任务没有"停用"语义：停用它等于让业务动作静默丢任务，因此恒定启用
+		job.Enabled = true
+	}
+	if _, ok := s.registry.Lookup(job.TaskType); !ok {
+		return errUnknownTaskType(job.TaskType)
+	}
+	window := job.Schedule.WindowMinutes
+	if window <= 0 {
+		window = 30
+	}
+	payload, err := json.Marshal(job.Payload)
+	if err != nil || job.Payload == nil {
+		payload = []byte("{}")
+	}
+	return s.jobs.Upsert(ctx, &repository.AsyncdJob{
+		Name: job.Name, TaskType: job.TaskType, Kind: job.Kind,
+		ScheduleKind: job.Schedule.Kind, IntervalSeconds: job.Schedule.IntervalSeconds,
+		DailyTimes: job.Schedule.DailyTimes, WindowMinutes: window,
+		Payload: payload, Enabled: job.Enabled,
+	})
+}
+
+// Enqueue 入队一个执行实例。
+//   - jobName：任务定义名（决定处理器、归属与执行记录的分组）；
 //   - payload：任意可 JSON 序列化的对象（处理器自行按 payloadVersion 兼容）；
-//   - uniqueKey：单飞键（同一键在 pending/active 下唯一）；传空表示不去重；
+//   - uniqueKey：单飞键（同一键在 queued/running 下唯一）；传空表示不去重；
 //   - runAt：延迟执行时间（零值 = 立即）。
 //
-// 返回 existing=true 表示撞上单飞键、复用了已存在的任务（不会重复执行）。
+// 返回 existing=true 表示撞上单飞键、复用了已存在的实例（不会重复执行）。
+// 定义不存在或未注册处理器时**拒绝入队**：避免"入了队却没人执行"的静默堆积。
 func (s *Service) Enqueue(
-	ctx context.Context, taskType string, payload any, uniqueKey string, runAt time.Time, opts ...EnqueueOption,
+	ctx context.Context, jobName string, payload any, uniqueKey string, runAt time.Time, opts ...EnqueueOption,
 ) (id int64, existing bool, err error) {
-	if _, ok := s.registry.Lookup(taskType); !ok {
-		// 未注册的任务一律拒绝入队：避免"入了队却没人执行"的静默堆积
-		return 0, false, errUnknownTaskType(taskType)
+	job, err := s.jobs.GetByName(ctx, jobName)
+	if err != nil {
+		return 0, false, errJobNotFound(jobName)
 	}
-	task := &repository.AsyncdTask{
-		Type: taskType, PayloadVersion: 1, MaxAttempts: DefaultMaxAttempts,
+	if _, ok := s.registry.Lookup(job.TaskType); !ok {
+		return 0, false, errUnknownTaskType(job.TaskType)
+	}
+	jobRun := &repository.AsyncdJobRun{
+		JobID: job.ID, PayloadVersion: 1, MaxAttempts: DefaultMaxAttempts,
 		UniqueKey: uniqueKey, NextAttemptAt: runAt,
 	}
 	for _, opt := range opts {
-		opt(task)
+		opt(jobRun)
 	}
 	if raw, marshalErr := json.Marshal(payload); marshalErr == nil && payload != nil {
-		task.Payload = raw
+		jobRun.Payload = raw
 	}
-	return s.tasks.Enqueue(ctx, task)
+	return s.jobRuns.Enqueue(ctx, jobRun)
 }
 
 // EnqueueOption 入队选项
-type EnqueueOption func(*repository.AsyncdTask)
+type EnqueueOption func(*repository.AsyncdJobRun)
 
 // WithMaxAttempts 设置最大尝试次数
 func WithMaxAttempts(n int) EnqueueOption {
-	return func(t *repository.AsyncdTask) {
+	return func(r *repository.AsyncdJobRun) {
 		if n > 0 {
-			t.MaxAttempts = n
+			r.MaxAttempts = n
 		}
 	}
 }
 
 // WithDeadline 设置任务级截止时间（超期不再领取）
 func WithDeadline(at time.Time) EnqueueOption {
-	return func(t *repository.AsyncdTask) { t.Deadline = &at }
+	return func(r *repository.AsyncdJobRun) { r.Deadline = &at }
 }
 
 // WithPriority 设置优先级（越大越先被领取）
-func WithPriority(p int) EnqueueOption { return func(t *repository.AsyncdTask) { t.Priority = p } }
+func WithPriority(p int) EnqueueOption { return func(r *repository.AsyncdJobRun) { r.Priority = p } }
 
-// WithInstitution 设置任务归属组织（多租户可见性）
+// WithInstitution 设置执行实例归属组织（多租户可见性）
 func WithInstitution(id int64) EnqueueOption {
-	return func(t *repository.AsyncdTask) { t.InstitutionID = &id }
+	return func(r *repository.AsyncdJobRun) { r.InstitutionID = &id }
 }
 
-// Schedule 调度项声明（由模块在装配时登记：维护任务、同步器定时、供给重试…）
-type Schedule struct {
-	JobName         string
-	TaskType        string
-	Payload         any
-	Kind            string // interval | daily
-	IntervalSeconds int
-	DailyTimes      []string
-	WindowMinutes   int
-	Enabled         bool
+// JobStats 一个任务的执行统计（来自 asyncd_job_runs 的聚合）
+type JobStats struct {
+	Total    int
+	ByStatus map[string]int
+	// LastQueuedAt 最近一次入队时间（还没执行过 = nil）
+	LastQueuedAt *time.Time
 }
 
-// RegisterSchedule 注册/更新调度项（幂等；启动时按代码声明对齐数据库）
-func (s *Service) RegisterSchedule(ctx context.Context, schedule Schedule) error {
-	if schedule.Kind == "" {
-		schedule.Kind = repository.ScheduleKindInterval
+// JobCatalog 任务目录条目：定义 + 执行统计
+type JobCatalog struct {
+	Definition *repository.AsyncdJob
+	Stats      JobStats
+}
+
+// Jobs 任务目录：所有已登记的任务定义（异步 + 定时）及各自的执行统计。
+//
+// 定义表是目录的唯一来源，因此**从未执行过的任务也在列**——
+// 只看执行实例会把"没跑过"显示成"任务不存在"。
+func (s *Service) Jobs(ctx context.Context) ([]JobCatalog, error) {
+	definitions, err := s.jobs.List(ctx)
+	if err != nil {
+		return nil, err
 	}
-	window := schedule.WindowMinutes
-	if window <= 0 {
-		window = 30
+	stats, err := s.jobRuns.Stats(ctx)
+	if err != nil {
+		return nil, err
 	}
-	payload, err := json.Marshal(schedule.Payload)
-	if err != nil || schedule.Payload == nil {
-		payload = []byte("{}")
+	byJob := make(map[int64]JobStats, len(definitions))
+	for _, row := range stats {
+		item := byJob[row.JobID]
+		if item.ByStatus == nil {
+			item.ByStatus = map[string]int{}
+		}
+		item.Total += row.Count
+		item.ByStatus[row.Status] += row.Count
+		if item.LastQueuedAt == nil || row.LastQueuedAt.After(*item.LastQueuedAt) {
+			at := row.LastQueuedAt
+			item.LastQueuedAt = &at
+		}
+		byJob[row.JobID] = item
 	}
-	return s.schedules.Upsert(ctx, &repository.AsyncdSchedule{
-		JobName: schedule.JobName, TaskType: schedule.TaskType, Payload: payload,
-		Kind: schedule.Kind, IntervalSeconds: schedule.IntervalSeconds,
-		DailyTimes: schedule.DailyTimes, WindowMinutes: window, Enabled: schedule.Enabled,
-	})
+	out := make([]JobCatalog, 0, len(definitions))
+	for _, definition := range definitions {
+		item := byJob[definition.ID]
+		if item.ByStatus == nil {
+			item.ByStatus = map[string]int{}
+		}
+		out = append(out, JobCatalog{Definition: definition, Stats: item})
+	}
+	return out, nil
 }
 
-// Counts 按状态统计任务数（可观测/管理界面）
-func (s *Service) Counts(ctx context.Context, taskType string) (map[string]int, error) {
-	return s.tasks.Counts(ctx, taskType)
+// SetJobEnabled 启停任务定义（按主键，与对外路径的资源标识约定一致）。
+// 只有定时任务可以停用：异步任务若被停用就变成"静默丢任务"（AGENTS §8 队列丢任务那行的教训）。
+func (s *Service) SetJobEnabled(ctx context.Context, id int64, enabled bool) error {
+	job, err := s.jobs.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if job.Kind != repository.AsyncdJobKindScheduled {
+		return errors.ErrInvalidParams.WithDetail("id", id).WithDetail("kind", job.Kind)
+	}
+	return s.jobs.SetEnabled(ctx, id, enabled)
 }
 
-// List 列出任务（管理界面）
-func (s *Service) List(ctx context.Context, status, taskType string, offset, limit int) ([]*repository.AsyncdTask, error) {
-	return s.tasks.List(ctx, status, taskType, offset, limit)
+// JobRunCounts 按状态统计执行实例数（可观测/管理界面）
+func (s *Service) JobRunCounts(ctx context.Context, query repository.AsyncdJobRunQuery) (map[string]int, error) {
+	return s.jobRuns.Counts(ctx, query)
 }
 
-// ListSchedules 列出全部调度项
-func (s *Service) ListSchedules(ctx context.Context) ([]*repository.AsyncdSchedule, error) {
-	return s.schedules.List(ctx)
+// JobRunView 执行实例 + 归属信息（界面上"哪个任务的哪一次执行"）
+type JobRunView struct {
+	JobRun   *repository.AsyncdJobRun
+	JobName  string
+	TaskType string
 }
 
-// SetScheduleEnabled 启停调度项
-func (s *Service) SetScheduleEnabled(ctx context.Context, jobName string, enabled bool) error {
-	return s.schedules.SetEnabled(ctx, jobName, enabled)
+// Runs 列出执行实例（= 界面上的执行记录列表），并带上归属的任务定义
+func (s *Service) JobRuns(ctx context.Context, query repository.AsyncdJobRunQuery, offset, limit int) ([]JobRunView, error) {
+	claimed, err := s.jobRuns.List(ctx, query, offset, limit)
+	if err != nil {
+		return nil, err
+	}
+	index, err := s.jobIndex(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]JobRunView, 0, len(claimed))
+	for _, jobRun := range claimed {
+		view := JobRunView{JobRun: jobRun}
+		if job, ok := index[jobRun.JobID]; ok {
+			view.JobName = job.Name
+			view.TaskType = job.TaskType
+		}
+		out = append(out, view)
+	}
+	return out, nil
 }
 
-// RetryArchived 人工重试死信任务
-func (s *Service) RetryArchived(ctx context.Context, id int64) error {
-	return s.tasks.RetryArchived(ctx, id)
+// Run 按主键取执行实例（含归属）
+func (s *Service) JobRun(ctx context.Context, id int64) (*JobRunView, error) {
+	jobRun, err := s.jobRuns.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	view := &JobRunView{JobRun: jobRun}
+	index, err := s.jobIndex(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if job, ok := index[jobRun.JobID]; ok {
+		view.JobName = job.Name
+		view.TaskType = job.TaskType
+	}
+	return view, nil
+}
+
+// jobIndex 任务定义索引（定义是小集合，一次读回比逐个查更划算；缺定义时归属留空即可）
+func (s *Service) jobIndex(ctx context.Context) (map[int64]*repository.AsyncdJob, error) {
+	definitions, err := s.jobs.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	index := make(map[int64]*repository.AsyncdJob, len(definitions))
+	for _, job := range definitions {
+		index[job.ID] = job
+	}
+	return index, nil
+}
+
+// JobRunAttempts 取某次执行的全部尝试（执行记录明细）
+func (s *Service) JobRunAttempts(ctx context.Context, jobRunID int64) ([]*repository.AsyncdJobRunAttempt, error) {
+	if _, err := s.jobRuns.GetByID(ctx, jobRunID); err != nil {
+		return nil, err
+	}
+	return s.runAttempts.ListByRun(ctx, jobRunID)
+}
+
+// RetryDead 人工重试死信实例（回到 queued 并清零尝试计数）
+func (s *Service) RetryDeadJobRun(ctx context.Context, id int64) error {
+	jobRun, err := s.jobRuns.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if jobRun.Status != repository.AsyncdJobRunDead {
+		return errors.ErrInvalidParams.WithDetail("status", jobRun.Status)
+	}
+	return s.jobRuns.RetryDead(ctx, id)
+}
+
+// WorkerInfo 执行器实例的对外视图（在线状态**计算得出**，不落库）。
+// 与 Worker（执行器本体）区分：这里是"给人看的快照"。
+type WorkerInfo struct {
+	ID         string
+	InstanceID string
+	Host       string
+	PID        int
+	SlotIndex  int
+	// State online（心跳新鲜）| stale（心跳过期，疑似崩溃）| stopped（优雅退出）
+	State           string
+	StartedAt       time.Time
+	LastHeartbeatAt time.Time
+	StoppedAt       *time.Time
+	// Running 该槽位当前持租约在执行的任务数
+	Running int
+}
+
+// 执行器在线状态（由心跳算出，避免派生列与心跳漂移）
+const (
+	WorkerStateOnline  = "online"
+	WorkerStateStale   = "stale"
+	WorkerStateStopped = "stopped"
+)
+
+// Workers 执行器实例清单（含在线状态与在跑任务数）
+func (s *Service) Workers(ctx context.Context) ([]WorkerInfo, error) {
+	rows, err := s.workers.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	now := s.clock()
+	out := make([]WorkerInfo, 0, len(rows))
+	for _, row := range rows {
+		state := WorkerStateOnline
+		switch {
+		case row.Worker.StoppedAt != nil:
+			state = WorkerStateStopped
+		case now.Sub(row.Worker.LastHeartbeatAt) > WorkerStaleAfter:
+			state = WorkerStateStale
+		}
+		out = append(out, WorkerInfo{
+			ID: row.Worker.ID, InstanceID: row.Worker.InstanceID, Host: row.Worker.Host,
+			PID: row.Worker.PID, SlotIndex: row.Worker.SlotIndex, State: state,
+			StartedAt: row.Worker.StartedAt, LastHeartbeatAt: row.Worker.LastHeartbeatAt,
+			StoppedAt: row.Worker.StoppedAt, Running: row.Running,
+		})
+	}
+	return out, nil
+}
+
+// Purge 保留期清理：删终态且完成时间早于 runsBefore 的执行实例（尝试记录随外键级联删除），
+// 并清理停止/失联早于 workersBefore 的执行器行。
+func (s *Service) Purge(ctx context.Context, jobRunsBefore, workersBefore time.Time, limit int) (int64, int64, error) {
+	deletedRuns, err := s.jobRuns.PurgeFinishedBefore(ctx, jobRunsBefore, limit)
+	if err != nil {
+		return 0, 0, err
+	}
+	deletedWorkers, err := s.workers.PurgeStaleBefore(ctx, workersBefore)
+	if err != nil {
+		return deletedRuns, 0, err
+	}
+	return deletedRuns, deletedWorkers, nil
+}
+
+// workerRecord 构造执行器槽位的登记信息（id = <host>-<pid>#<slot>，与执行实例的 worker_id 同源）
+func (s *Service) workerRecord(slotIndex int) *repository.AsyncdWorker {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "polaris"
+	}
+	return &repository.AsyncdWorker{
+		ID:         fmt.Sprintf("%s#%d", s.instanceID, slotIndex),
+		InstanceID: s.instanceID,
+		Host:       host,
+		PID:        os.Getpid(),
+		SlotIndex:  slotIndex,
+	}
 }
 
 // logWarn 统一日志前缀，便于按任务类型排查

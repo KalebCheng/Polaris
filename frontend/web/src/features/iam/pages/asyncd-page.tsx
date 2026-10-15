@@ -5,62 +5,51 @@ import { RefreshCw } from 'lucide-react'
 import { Button, Tabs, TabsList, TabsTrigger } from '@/shared/ui'
 import { SummaryStrip } from '@/widgets/layout/summary-strip'
 import { describeError } from '@/shared/lib/errors'
-import { asyncdApi, type AsyncdSchedule, type AsyncdTask } from '../api'
-import { AsyncdScheduleCard, AsyncdTaskCard } from '../components/asyncd-cards'
+import { asyncdApi, type AsyncdJob, type AsyncdWorker } from '../api'
+import { AsyncdJobCard } from '../components/asyncd-job-card'
+import { AsyncdRunsDialog } from '../components/asyncd-runs-dialog'
+import { AsyncdWorkers } from '../components/asyncd-workers'
 import { ResourceCards } from '../components/resource-cards'
 
-/** 卡片网格每页条数（3–4 列时刚好铺满整数行） */
-const PAGE_SIZE = 12
+/** 任务中心的两层：任务维度（异步 / 定时）与执行器维度 */
+type Dimension = 'async' | 'scheduled' | 'workers'
 
 /**
- * asyncd 任务中心（平台级）：异步任务与定时调度的可见性与人工干预。
+ * asyncd 任务中心（平台级）：四个维度都能看见。
  *
- * 为什么需要这个页面：队列类问题的通用解法是**可观测 + 可干预**——
- * 只看日志无法回答"有没有堆积、为什么失败、要不要重试"，而"慢操作"恰恰最需要这些。
+ *   任务定义 → 异步任务 / 定时任务（任务维度，含从未执行过的任务）
+ *   执行实例 → 点进任务的「执行记录」列表（一次执行一行）
+ *   执行记录 → 某个执行实例的尝试明细（第几次尝试、耗时、错误）
+ *   执行器   → 有几个服务/槽位在跑、谁失联了、各自在跑几个任务
  *
- * 列表形态与组织管理下的资源页一致（筛选行 + **卡片网格** + 分页）：任务与组织/应用同属
- * "逐个识别一个对象再处置它"的心智，摊成一行行反而看不出"这是个什么任务、卡在哪一步"。
+ * 为什么必须分两层：`asyncd_job_runs` 直接铺成列表看到的是"同一任务的第 N 次执行"，
+ * 看不出任务层面的堆积与失败比例；而只看任务卡片又答不了"这次到底为什么失败"。
  */
 export default function AsyncdPage() {
   const { t } = useTranslation()
-  const [status, setStatus] = useState('')
-  const [page, setPage] = useState(1)
-  const [tasks, setTasks] = useState<AsyncdTask[] | null>(null)
-  const [counts, setCounts] = useState<Record<string, number>>({})
-  const [schedules, setSchedules] = useState<AsyncdSchedule[]>([])
+  const [dimension, setDimension] = useState<Dimension>('async')
+  const [jobs, setJobs] = useState<AsyncdJob[] | null>(null)
+  const [workers, setWorkers] = useState<AsyncdWorker[]>([])
+  const [selected, setSelected] = useState<AsyncdJob | null>(null)
 
   const load = useCallback(async () => {
     try {
-      const [taskPage, schedulePage] = await Promise.all([
-        asyncdApi.tasks({ status, page, size: PAGE_SIZE }),
-        asyncdApi.schedules(),
-      ])
-      setTasks(taskPage.items ?? [])
-      setCounts(taskPage.counts ?? {})
-      setSchedules(schedulePage.items ?? [])
+      const [jobList, workerList] = await Promise.all([asyncdApi.jobs(), asyncdApi.workers()])
+      setJobs(jobList.items ?? [])
+      setWorkers(workerList.items ?? [])
     } catch (error) {
       toast.error(describeError(error, t))
-      setTasks([])
+      setJobs([])
     }
-  }, [status, page, t])
+  }, [t])
 
   useEffect(() => {
     void load()
   }, [load])
 
-  const retry = async (task: AsyncdTask) => {
+  const toggleJob = async (job: AsyncdJob, enabled: boolean) => {
     try {
-      await asyncdApi.retry(task.id)
-      toast.success(t('asyncd.retried'))
-      await load()
-    } catch (error) {
-      toast.error(describeError(error, t))
-    }
-  }
-
-  const toggleSchedule = async (schedule: AsyncdSchedule, enabled: boolean) => {
-    try {
-      await asyncdApi.setScheduleEnabled(schedule.job_name, enabled)
+      await asyncdApi.setJobEnabled(job.id, enabled)
       await load()
     } catch (error) {
       toast.error(describeError(error, t))
@@ -68,81 +57,90 @@ export default function AsyncdPage() {
   }
 
   /**
-   * 分页总数由后端下发的**状态直方图**派生：`counts` 与列表同一作用域（同一 type 过滤），
-   * 所以"全部"＝各状态求和、"某状态"＝该状态的计数——分页器不必再多一个 total 字段。
+   * 队列健康度直接从任务统计求和：每个执行实例都有 job_id（NOT NULL），
+   * 而目录列出的是**全部**任务定义，因此这个求和是全量的，无需再查一次列表接口。
    */
-  const total = status
-    ? (counts[status] ?? 0)
-    : Object.values(counts).reduce((sum, value) => sum + value, 0)
+  const queue = (jobs ?? []).reduce<Record<string, number>>((acc, job) => {
+    for (const [status, count] of Object.entries(job.stats.by_status ?? {})) {
+      acc[status] = (acc[status] ?? 0) + count
+    }
+    return acc
+  }, {})
+
+  const visible = (jobs ?? []).filter((job) =>
+    dimension === 'scheduled' ? job.kind === 'scheduled' : job.kind === 'async',
+  )
+  const emptyKey = dimension === 'scheduled' ? 'asyncd.scheduledEmpty' : 'asyncd.asyncEmpty'
+  const emptyHintKey = dimension === 'scheduled' ? 'asyncd.scheduledEmptyHint' : 'asyncd.asyncEmptyHint'
+  const hintKey =
+    dimension === 'workers'
+      ? 'asyncd.workersHint'
+      : dimension === 'scheduled'
+        ? 'asyncd.scheduledHint'
+        : 'asyncd.asyncHint'
 
   return (
     <div className="space-y-5">
       <SummaryStrip
         items={[
-          { label: t('asyncd.statusPending'), value: counts.pending ?? 0 },
-          { label: t('asyncd.statusActive'), value: counts.active ?? 0, tone: 'warning' },
-          { label: t('asyncd.statusCompleted'), value: counts.completed ?? 0, tone: 'success' },
+          { label: t('asyncd.statusQueued'), value: queue.queued ?? 0 },
+          { label: t('asyncd.statusRunning'), value: queue.running ?? 0, tone: 'warning' },
+          { label: t('asyncd.statusSucceeded'), value: queue.succeeded ?? 0, tone: 'success' },
           {
-            label: t('asyncd.statusArchived'),
-            value: counts.archived ?? 0,
-            tone: (counts.archived ?? 0) > 0 ? 'danger' : 'default',
+            label: t('asyncd.statusDead'),
+            value: queue.dead ?? 0,
+            tone: (queue.dead ?? 0) > 0 ? 'danger' : 'default',
           },
         ]}
       />
 
-      <ResourceCards
-        items={tasks ?? []}
-        cardKey={(task) => task.id}
-        loading={tasks === null}
-        page={page}
-        size={PAGE_SIZE}
-        total={total}
-        onPageChange={setPage}
-        emptyTitle={t('asyncd.empty')}
-        emptyDescription={t('asyncd.emptyHint')}
-        renderCard={(task) => <AsyncdTaskCard task={task} onRetry={() => void retry(task)} />}
-        toolbar={
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <Tabs
-              value={status || 'all'}
-              onValueChange={(value) => {
-                setStatus(value === 'all' ? '' : value)
-                setPage(1) // 换筛选条件必须回到第 1 页，否则会停在越界页码上显示空列表
-              }}
-            >
-              <TabsList>
-                <TabsTrigger value="all">{t('asyncd.filterAll')}</TabsTrigger>
-                <TabsTrigger value="pending">{t('asyncd.statusPending')}</TabsTrigger>
-                <TabsTrigger value="active">{t('asyncd.statusActive')}</TabsTrigger>
-                <TabsTrigger value="archived">{t('asyncd.statusArchived')}</TabsTrigger>
-              </TabsList>
-            </Tabs>
-            <Button variant="outline" size="sm" onClick={() => void load()}>
-              <RefreshCw className="size-4" /> {t('common.refresh')}
-            </Button>
-          </div>
-        }
-      />
-
-      <div className="space-y-3">
-        <div>
-          <p className="text-[13px] font-semibold">{t('asyncd.schedules')}</p>
-          <p className="text-muted-foreground text-[11px]">{t('asyncd.schedulesHint')}</p>
-        </div>
-        {schedules.length === 0 ? (
-          <p className="text-muted-foreground text-xs">{t('asyncd.schedulesEmpty')}</p>
-        ) : (
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-            {schedules.map((schedule) => (
-              <AsyncdScheduleCard
-                key={schedule.job_name}
-                schedule={schedule}
-                onToggle={(enabled) => void toggleSchedule(schedule, enabled)}
-              />
-            ))}
-          </div>
-        )}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Tabs value={dimension} onValueChange={(value) => setDimension(value as Dimension)}>
+          <TabsList>
+            <TabsTrigger value="async">{t('asyncd.tabAsync')}</TabsTrigger>
+            <TabsTrigger value="scheduled">{t('asyncd.tabScheduled')}</TabsTrigger>
+            <TabsTrigger value="workers">{t('asyncd.tabWorkers')}</TabsTrigger>
+          </TabsList>
+        </Tabs>
+        <Button variant="outline" size="sm" onClick={() => void load()}>
+          <RefreshCw className="size-4" /> {t('common.refresh')}
+        </Button>
       </div>
+
+      <p className="text-muted-foreground text-[11px]">{t(hintKey)}</p>
+
+      {dimension === 'workers' ? (
+        <AsyncdWorkers workers={workers} loading={jobs === null} />
+      ) : (
+        // 任务是**代码里声明的封闭集合**（定义表），不会无限增长，故不分页
+        <ResourceCards
+          items={visible}
+          cardKey={(job) => job.id}
+          loading={jobs === null}
+          page={1}
+          size={Math.max(visible.length, 1)}
+          total={visible.length}
+          onPageChange={() => undefined}
+          emptyTitle={t(emptyKey)}
+          emptyDescription={t(emptyHintKey)}
+          unit={t('asyncd.jobsUnit')}
+          renderCard={(job) => (
+            <AsyncdJobCard
+              job={job}
+              onOpenRuns={() => setSelected(job)}
+              onToggle={(enabled) => void toggleJob(job, enabled)}
+            />
+          )}
+        />
+      )}
+
+      {/* key 绑定任务主键：换任务时弹窗内的筛选/分页/选中行一律回到初始状态 */}
+      <AsyncdRunsDialog
+        key={selected?.id ?? 'none'}
+        job={selected}
+        onClose={() => setSelected(null)}
+        onChanged={() => void load()}
+      />
     </div>
   )
 }
