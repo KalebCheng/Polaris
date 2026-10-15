@@ -104,7 +104,7 @@ export function Router() {
 
           <Route element={<RequireConsoleAccess />}>
             <Route element={<AppLayout />}>
-              {/* 平台级（跨组织）：总览 / 组织 / 角色 / 权限 / 安全管理 / 审计 */}
+              {/* 平台级（跨组织）：总览 / 组织 / 角色 / 权限 / 安全管理 / 设置 */}
               <Route element={<PlatformLayout />}>
                 <Route index element={<DashboardPage />} />
                 <Route path="/institutions" element={<InstitutionsPage />} />
@@ -116,10 +116,14 @@ export function Router() {
                 <Route path="/security/certs" element={<CertsPage />} />
                 <Route path="/security/tokens" element={<TokensPage />} />
                 <Route path="/security/sessions" element={<SessionsPage />} />
-                <Route path="/audit" element={<RecordsPage />} />
-                <Route path="/asyncd" element={<AsyncdPage />} />
+                {/* 设置：存储设置 / 任务中心 / 审计日志（二级标签，见 SettingsSubnav） */}
                 <Route path="/settings" element={<Navigate to="/settings/storage" replace />} />
                 <Route path="/settings/storage" element={<StorageSettingsPage />} />
+                <Route path="/settings/tasks" element={<AsyncdPage />} />
+                <Route path="/settings/audit" element={<RecordsPage />} />
+                {/* 旧地址：任务中心与审计日志已成为设置的二级页，永久兼容 */}
+                <Route path="/asyncd" element={<Navigate to="/settings/tasks" replace />} />
+                <Route path="/audit" element={<Navigate to="/settings/audit" replace />} />
               </Route>
 
               {/* 组织内（工作区）：左侧导航 + 内容 */}
@@ -167,7 +171,7 @@ export function Router() {
               <Route path="/certs" element={<Navigate to="/security/certs" replace />} />
               <Route path="/tokens" element={<Navigate to="/security/tokens" replace />} />
               <Route path="/sessions" element={<Navigate to="/security/sessions" replace />} />
-              <Route path="/records" element={<Navigate to="/audit" replace />} />
+              <Route path="/records" element={<Navigate to="/settings/audit" replace />} />
             </Route>
           </Route>
         </Route>

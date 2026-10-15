@@ -91,3 +91,23 @@ func TestStorageSettingsUpdateKeepsExistingSecret(t *testing.T) {
 		t.Fatalf("留空时应保留既有密钥，实际 %q", repo.saved.SecretKeyEnc)
 	}
 }
+
+// 回归：type 为空 = 界面上显式选择「未配置」，必须把整行清零落库。
+// 历史缺陷：空类型被 normalizeStorageType 补成 local，随后又要求 root_path 必填——
+// 于是"未配置"既存不下去、旧配置也不会被清掉，界面上的开关等于摆设。
+func TestStorageSettingsClearResetsRow(t *testing.T) {
+	repo := &stubStorageSettingsRepo{current: &repository.StorageSettings{
+		ID: 1, Type: "s3", Endpoint: "https://s3.example.com", Bucket: "polaris", SecretKeyEnc: "ENCRYPTED-EXISTING",
+	}}
+	svc := newStorageSettingsService(repo)
+
+	if err := svc.UpdateSettings(context.Background(), "admin", &repository.StorageSettings{}); err != nil {
+		t.Fatalf("清除配置失败: %v", err)
+	}
+	if repo.saved == nil {
+		t.Fatal("未落库")
+	}
+	if repo.saved.Type != "" || repo.saved.Endpoint != "" || repo.saved.Bucket != "" || repo.saved.SecretKeyEnc != "" {
+		t.Fatalf("未清空整行: %+v", repo.saved)
+	}
+}

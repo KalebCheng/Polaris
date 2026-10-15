@@ -260,7 +260,7 @@ export default function DashboardPage() {
               <CardDescription>{t('records.subtitle')}</CardDescription>
             </div>
             <Button asChild variant="ghost" size="sm">
-              <Link to="/audit">{t('nav.audit')} →</Link>
+              <Link to="/settings/audit">{t('nav.audit')} →</Link>
             </Button>
           </CardHeader>
           <CardContent>

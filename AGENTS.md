@@ -266,8 +266,8 @@ frontend/web/src/
 **信息架构（2026-10 调整）**：组织是资源归属的唯一维度，因此导航分两层：
 
 ```
-PLATFORM            平台级（跨组织）      Dashboard、Organizations、Roles、Permissions、Security、Audit、
-                                        设置（存储 / 任务中心 asyncd）
+PLATFORM            平台级（跨组织）      Dashboard、Organizations、Roles、Permissions、Security、
+                                        设置（存储设置 / 任务中心 asyncd / 审计日志）
 <当前组织>          组织内（工作区）      Overview / Users / Groups / Departments / Applications /
                                         Providers（提供商）/ **Connections（身份连接：入方向同步 + 出方向供给）** /
                                         Account strategies / App accounts / Provisioning
@@ -290,11 +290,22 @@ ACCOUNT             账号级                Portal（/portal/**：应用中心 
   `applications.name` 是人类可读名称；登录方式以 `signin_methods` 为唯一数据源（前后端同一套判定）。
 - **资源引用一律下拉选择**：多选用 `MultiSelect`（登录提供方、scope、grant types、令牌字段、字段编排），
   可搜索单选用 `Combobox`（签名证书、默认用户组）；禁止用大段勾选框平铺资源列表。
+- **「设置」是运维能力的归属地，不是一级资源**：`/settings/storage | /settings/tasks | /settings/audit`
+  （二级标签由 `settingsTabs` 声明、`SettingsSubnav` 渲染成与顶栏同一块滑动墨色胶囊）。
+  任务中心（asyncd）与审计日志**不再各占一个一级导航位**——它们是平台运维视角的能力，不是资源；
+  旧地址 `/asyncd`、`/audit` 一律重定向到新的二级地址；快速跳转（`nav-search`）平铺设置的二级页，
+  父级「系统设置」不单独列出（两条同址结果会撞 React key）。
+- **单例配置页对齐组织级提供商**：系统设置 › 存储设置用**实例卡片**讲清"当前是哪一个、谁在用它、
+  有哪几个行内动作"（测试连通性 / 修改配置 / 清除配置），类型与图标取自提供商目录
+  （`GET /providers/catalog` 的 `storage` 类别，前端不再抄一份类型表）；点「修改配置」在**页内**展开分区表单
+  （类型决定字段集合，故不切步骤、不开弹窗）。
+  **清除 = 显式"未配置"**：`PUT /system/storage` 的 `type` 为空即整行清零（组织未配置存储提供商时
+  文件上传才会失败），不允许出现"界面写着未配置、库里还留着旧值"。
 
 **框架布局（2026-10-15 对齐实现）**：
 
 - **顶栏＝悬浮玻璃岛**（`widgets/layout/top-bar.tsx`）：桌面端顶部承载**平台级导航**
-  （Dashboard / Organizations / Roles / Permissions / Security / Audit / 设置 / 任务中心）。
+  （Dashboard / Organizations / Roles / Permissions / Security / 设置）。
   它**不贴边**——左右留白与内容区**同一套刻度**（`px-4 sm:px-6 lg:px-8`）+ `pt-3` 露出画布，
   面板为 `rounded-2xl + bg-card/60 + backdrop-blur + shadow-soft`；
   改这套留白要同步 `platform-layout.tsx` / `workspace-layout.tsx` / `app-sidebar.tsx` / `portal-layout.tsx`
@@ -347,6 +358,8 @@ ACCOUNT             账号级                Portal（/portal/**：应用中心 
 | 字段标签变成「端点 / 根目录 / 网关地址」这种多义拼盘 | 同一个列名（`endpoint`）在不同类型下含义不同，却只写了一条通用词条；把三种语义硬拼成一个标签 | 词条解析顺序固定为**类型专属 → 通用 → 目录声明**（`providers.field.<type>.<key>`）；通用词条只写"多数类型下都成立"的含义，含义随类型变化时必须给类型专属词条（`SchemaFields` 已支持，`schema-fields.test.tsx` 锁定回退顺序） |
 | 界面显示 i18next 报错原文（`key 'x' returned an object instead of string`） | 词条被多嵌套了一层（`providers.field.name` 写成 `{name, nameHint}`）；且测试用 `i18n.t(key)` 断言，坏掉时页面与断言拿到同一条报错字符串而"自证通过" | 字段类词条必须解析为**字符串**：后端 `internal/service/provider/i18n_test.go` 按目录声明锁定 `*.field.<key>` 的中英词条；前端断言一律写字面量，不用 `i18n.t` 与自身互证 |
 | 组织内资源被做成全局菜单 | 照搬 Casdoor 的扁平菜单，未按归属分层 | §7.4 信息架构：组织内资源一律挂在 `/institutions/:inst` 下 |
+| 系统设置只有一个裸表单，而任务中心 / 审计日志各占一个一级导航位 | 设置页按"字段表单"来做（没讲清"这是什么 / 谁在用 / 能做什么"），运维入口又与资源入口混在同一层导航 | §7.4：运维能力（任务中心 / 审计日志）收进「设置」二级页，旧地址重定向；单例配置页用实例卡片（状态 + 行内动作）＋页内分区编辑，类型清单走后端目录 |
+| 界面上的「未配置」存不下去（选了也报必填错误），旧配置还留在库里 | 空类型被 `normalizeStorageType` 补成 `local`，随后又走 `local` 的必填校验 | 显式"未配置"必须有服务端语义（`type` 为空＝整行清零）＋回归测试；"看起来没配、其实还配着"比报错更危险 |
 | 头像上传只有后端无入口 | 后端能力先行，前端未接线 | §3.1-10：新增能力必须同时接入调用点（弹窗内更换头像） |
 | 双语 key 漂移 | 只补中文、遗漏英文导致回退显示 | `shared/i18n/i18n.test.ts` 锁定中英 key 集合一致 |
 | 按用户过滤应用账号/供给历史静默返回空 | 动态过滤用未加引号的保留字列名（`user`）导致 SQL 解析失败 | 仓库层统一经 `columnExpr` 给保留字列名（`user`/`table`/`group`…）加引号 |

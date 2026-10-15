@@ -21,8 +21,10 @@ export interface PlatformNavItem {
 }
 
 /**
- * 平台级导航：跨组织总览、组织管理，以及提升为平台级的
- * 角色 / 权限 / 安全管理 / 审计日志。
+ * 平台级导航：跨组织总览、组织管理，以及提升为平台级的角色 / 权限 / 安全管理。
+ *
+ * 「任务中心」与「审计日志」**不是**一级导航：它们已经收进「设置」下（见 `settingsTabs`），
+ * 顶栏才有余量承载真正的平台级资源；旧地址 `/asyncd`、`/audit` 一律重定向到新的二级地址。
  */
 export const platformNav: PlatformNavItem[] = [
   { to: '/', labelKey: 'nav.dashboard', isActive: (pathname) => pathname === '/' },
@@ -30,10 +32,31 @@ export const platformNav: PlatformNavItem[] = [
   { to: '/roles', labelKey: 'nav.roles', isActive: (pathname) => pathname === '/roles' },
   { to: '/permissions', labelKey: 'nav.permissions', isActive: (pathname) => pathname === '/permissions' },
   { to: '/security', labelKey: 'nav.security', isActive: (pathname) => pathname.startsWith('/security') },
-  { to: '/audit', labelKey: 'nav.audit', isActive: (pathname) => pathname === '/audit' },
   { to: '/settings/storage', labelKey: 'nav.settings', isActive: (pathname) => pathname.startsWith('/settings') },
-  // 任务中心（asyncd）：异步任务与定时调度的可见性与人工干预
-  { to: '/asyncd', labelKey: 'nav.asyncd', isActive: (pathname) => pathname === '/asyncd' },
+]
+
+/** 设置的二级页（顶栏「设置」之下） */
+export interface SettingsTab {
+  to: string
+  labelKey: string
+  /** 当前路径是否属于该二级页（用于胶囊高亮） */
+  isActive: (pathname: string) => boolean
+}
+
+/**
+ * 「设置」下的二级页：平台默认存储 / 任务中心（asyncd）/ 审计日志。
+ *
+ * 为什么把任务中心与审计日志放在这里：它们都是**平台运维视角**的能力（队列可观测性、操作追溯），
+ * 不是组织资源，也不是独立的一等资源——放在设置下既保留了可见性，又不让顶栏被运维入口占满。
+ */
+export const settingsTabs: SettingsTab[] = [
+  {
+    to: '/settings/storage',
+    labelKey: 'storage.title',
+    isActive: (pathname) => pathname === '/settings' || pathname.startsWith('/settings/storage'),
+  },
+  { to: '/settings/tasks', labelKey: 'nav.asyncd', isActive: (pathname) => pathname.startsWith('/settings/tasks') },
+  { to: '/settings/audit', labelKey: 'nav.audit', isActive: (pathname) => pathname.startsWith('/settings/audit') },
 ]
 
 /** 安全管理下的子页（二级标签） */

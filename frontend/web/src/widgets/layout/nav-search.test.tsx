@@ -25,6 +25,7 @@ function renderSearch() {
         <Routes>
           <Route path="/" element={<div>平台总览页</div>} />
           <Route path="/institutions/1/users" element={<div>用户列表页</div>} />
+          <Route path="/settings/*" element={<div>设置页</div>} />
         </Routes>
       </MemoryRouter>
     </I18nextProvider>,
@@ -76,6 +77,20 @@ describe('NavSearch', () => {
 
     expect(screen.queryByRole('option', { name: '用户' })).toBeNull()
     expect(screen.getByRole('option', { name: '用户组' })).toBeInTheDocument()
+  })
+
+  it('「设置」的二级页直接可搜：审计日志 / 任务中心不再是顶级菜单，但仍能直达', async () => {
+    can = () => true
+    institutionId = '1'
+    renderSearch()
+
+    // 父级「系统设置」不单独列出，因此「审计日志」只有一条结果（同址两条会撞 React key）
+    const user = await openAndType('审计')
+    const options = screen.getAllByRole('option', { name: '审计日志' })
+    expect(options).toHaveLength(1)
+
+    await user.click(options[0])
+    expect(await screen.findByText('设置页')).toBeInTheDocument()
   })
 
   it('没有当前组织时只列平台级目标', async () => {

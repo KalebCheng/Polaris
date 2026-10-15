@@ -19,6 +19,7 @@ import type { AuditRecord } from '@/shared/api/types'
 import { recordApi } from '../api'
 import { useListQuery } from '../hooks/use-list-query'
 import { ResourceTable, type Column } from '../components/resource-table'
+import { SettingsSubnav } from '../components/settings-subnav'
 
 function resultTone(statusCode: number): StatusTone {
   if (statusCode >= 500) return 'danger'
@@ -80,7 +81,7 @@ export default function RecordsPage() {
   ]
 
   return (
-    <PageShell titleKey="records.title" subtitleKey="records.platformSubtitle">
+    <PageShell titleKey="records.title" subtitleKey="records.platformSubtitle" subnav={<SettingsSubnav />}>
       <SummaryStrip
         items={[
           { label: t('common.totalResources'), value: list.loading ? '—' : list.total },

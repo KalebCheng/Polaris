@@ -7,6 +7,7 @@ import { PageShell } from '@/widgets/layout/page-shell'
 import { SummaryStrip } from '@/widgets/layout/summary-strip'
 import { formatDateTime, formatRelative } from '@/shared/lib/format'
 import { describeError } from '@/shared/lib/errors'
+import { SettingsSubnav } from '../components/settings-subnav'
 import { asyncdApi, type AsyncdSchedule, type AsyncdTask } from '../api'
 
 /** 状态标签 → 文案/语气 */
@@ -69,7 +70,7 @@ export default function AsyncdPage() {
   }
 
   return (
-    <PageShell titleKey="asyncd.title" subtitleKey="asyncd.subtitle">
+    <PageShell titleKey="asyncd.title" subtitleKey="asyncd.subtitle" subnav={<SettingsSubnav />}>
       <div className="space-y-5">
         <SummaryStrip
           items={[

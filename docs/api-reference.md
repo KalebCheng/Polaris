@@ -160,11 +160,18 @@
 > 任务状态：`pending`（等待/退避）· `active`（执行中，持租约）· `completed` · `archived`（死信，可人工重试）。
 > 未注册的调度项不会被自动创建；调度项由代码在启动时声明（幂等 upsert），此处仅支持启停。
 
-### 3.9 平台接入信息（开发信息）
+### 3.9 平台接入信息与系统设置
 
 | 方法 | 路径 | 权限 |
 |------|------|------|
 | GET | `/system/oauth` | 平台管理员 |
+| GET / PUT | `/system/storage` | 平台管理员 |
+| POST | `/system/storage/test` | 平台管理员 |
+
+> `/system/storage` 是**平台默认对象存储**（组织未配置 storage 提供商时的回落目标）：
+> `type` ∈ `local` / `s3` / `minio`，`secret_key` 为 write-only（留空＝保持原值，响应只回 `has_secret`）。
+> **`type` 为空串 = 显式"未配置"**：整行清零，此后未配置存储提供商的组织上传文件会得到 `PROVIDER_UNAVAILABLE`。
+> `POST /system/storage/test` 写入并删除一个探测对象做连通性自检；未配置时同样返回 `PROVIDER_UNAVAILABLE`。
 
 ### 3.6 供给（连接器 / 策略 / 应用账号 / 历史）
 

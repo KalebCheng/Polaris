@@ -29,7 +29,20 @@ export interface ConnectionCardView {
   status: { tone: StatusTone; label: string }
   sections: ConnectionCardSection[]
   onEdit: () => void
-  onDelete: () => void
+  /** 省略时不渲染删除入口（例如"尚未配置"的单例：没有东西可清除） */
+  onDelete?: () => void
+  /**
+   * 主操作 / 删除操作的文案 key。
+   * 默认按「身份连接」的措辞（编辑 / 删除）；复用同一张卡片的其它资源（如系统存储设置）
+   * 用「修改配置 / 清除配置」这类更贴合自身语义的措辞，不必另写一张卡片。
+   */
+  editLabelKey?: string
+  removeLabelKey?: string
+  /**
+   * 主操作的按钮形态。默认 `outline`（卡片里已有状态与元信息，按钮只是行内动作）；
+   * 传 `default` 用于"还没有配置、配置本身就是页面唯一主操作"的场景（如系统设置 › 存储设置）。
+   */
+  editVariant?: 'default' | 'outline'
 }
 
 export function ConnectionCard({ view }: { view: ConnectionCardView }) {
@@ -51,12 +64,14 @@ export function ConnectionCard({ view }: { view: ConnectionCardView }) {
         </div>
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
           <StatusPill tone={view.status.tone}>{view.status.label}</StatusPill>
-          <Button type="button" size="sm" variant="outline" onClick={view.onEdit}>
-            {t('connections.edit')}
+          <Button type="button" size="sm" variant={view.editVariant ?? 'outline'} onClick={view.onEdit}>
+            {t(view.editLabelKey ?? 'connections.edit')}
           </Button>
-          <Button type="button" size="sm" variant="ghost" onClick={view.onDelete}>
-            {t('connections.remove')}
-          </Button>
+          {view.onDelete ? (
+            <Button type="button" size="sm" variant="ghost" onClick={view.onDelete}>
+              {t(view.removeLabelKey ?? 'connections.remove')}
+            </Button>
+          ) : null}
         </div>
       </div>
       <div className="grid grid-cols-1 border-t sm:grid-cols-2">

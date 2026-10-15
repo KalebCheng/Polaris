@@ -216,8 +216,17 @@ func (s *StorageService) GetSettings(ctx context.Context) (*repository.StorageSe
 }
 
 // UpdateSettings 更新系统级存储配置（密码/密钥 write-only：非空才覆盖）。
+// `type` 为空表示**显式未配置**（清除平台默认存储）：整行归零落库，而不是被 normalizeStorageType
+// 悄悄补成 local——历史上这里既过不了必填校验、又留着旧值，界面上「未配置」因此是个点不动的开关。
 func (s *StorageService) UpdateSettings(ctx context.Context, actor string, in *repository.StorageSettings) error {
-	kind := normalizeStorageType(in.Type)
+	kind := strings.ToLower(strings.TrimSpace(in.Type))
+	if kind == "" {
+		if err := s.settings.Update(ctx, &repository.StorageSettings{ID: 1}); err != nil {
+			return err
+		}
+		s.audits.Record(ctx, actor, 0, "system.storage.clear", "storage", nil)
+		return nil
+	}
 	if !isSupportedStorageType(kind) {
 		return bizerrors.ErrInvalidParams.WithDetail("allowed", []string{"local", "s3", "minio"})
 	}

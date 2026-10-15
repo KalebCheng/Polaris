@@ -6,7 +6,7 @@ import { Dialog, DialogContent, DialogTitle, Input } from '@/shared/ui'
 import { cn } from '@/shared/lib/utils'
 import { useAuth } from '@/features/auth/auth-context'
 import { useCurrentInstitution } from '@/features/iam/institution-context'
-import { platformNav, securityTabs, workspacePath, workspaceSections } from './nav-config'
+import { platformNav, securityTabs, settingsTabs, workspacePath, workspaceSections } from './nav-config'
 
 interface NavTarget {
   label: string
@@ -34,12 +34,21 @@ export function NavSearch({ className }: { className?: string }) {
   const listRef = useRef<HTMLDivElement>(null)
 
   const targets = useMemo<NavTarget[]>(() => {
-    const platform: NavTarget[] = platformNav.map((item) => ({
-      label: t(item.labelKey),
-      to: item.to,
+    // 「设置」在菜单里是一个入口，在搜索里则直达它的二级页（存储 / 任务中心 / 审计日志）：
+    // 父级入口不单独列出，否则会出现两条同址结果（同一 `to` 还会撞 React key）。
+    const platform: NavTarget[] = platformNav
+      .filter((item) => !item.to.startsWith('/settings'))
+      .map((item) => ({
+        label: t(item.labelKey),
+        to: item.to,
+        group: 'platform',
+      }))
+    const security: NavTarget[] = securityTabs.map((tab) => ({
+      label: t(tab.labelKey),
+      to: tab.to,
       group: 'platform',
     }))
-    const security: NavTarget[] = securityTabs.map((tab) => ({
+    const settings: NavTarget[] = settingsTabs.map((tab) => ({
       label: t(tab.labelKey),
       to: tab.to,
       group: 'platform',
@@ -56,7 +65,7 @@ export function NavSearch({ className }: { className?: string }) {
             })),
         )
       : []
-    return [...platform, ...security, ...workspace]
+    return [...platform, ...security, ...settings, ...workspace]
   }, [t, can, institutionId])
 
   const filtered = useMemo(() => {
