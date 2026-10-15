@@ -200,6 +200,9 @@ func (s *DepartmentService) Delete(ctx context.Context, actor string, institutio
 	if err := s.depts.Delete(ctx, institutionID, name); err != nil {
 		return err
 	}
+	// 删掉最后一个子部门后，父部门的 has_child 标记必须同步复位：
+	// Delete 正是靠该标记判断"还有下级"，不复位会让父部门**永远删不掉**（只能先移动一次层级）。
+	s.refreshHasChild(ctx, institutionID, d.ParentID)
 	s.audits.Record(ctx, actor, institutionID, "department.delete", name, nil)
 	return nil
 }

@@ -259,6 +259,58 @@ func (s *AuthService) resolveApplicationOptional(ctx context.Context, institutio
 	return apps[0], nil
 }
 
+// resolveAppContext 解析请求**显式携带**的"应用上下文"——应用准入判定的前提。
+//
+// 契约（Spec FR-3）：client_id（应用驱动入口的标准形态）优先，其次 application（应用标识，兼容旧链接）；
+// 两者都为空时返回 (nil, nil) = "登录平台"，调用方因此**跳过准入判定**。
+//
+// 关键点（勿改）：这里**不得**回退到组织默认应用。回退解析出的应用只用于其它应用级策略；
+// 若把它也用于准入判定，一旦默认应用被配成"受限 + 空名单"，全组织（含管理员）都无法登录平台，
+// 只能改库恢复——Spec Q6 明确要求"误配不锁死平台"。
+func (s *AuthService) resolveAppContext(ctx context.Context, institutionID int64, institution, application, clientID string) (*repository.Application, error) {
+	if cid := strings.TrimSpace(clientID); cid != "" {
+		app, err := s.apps.GetByClientID(ctx, cid)
+		if err != nil {
+			return nil, bizerrors.NewWithCode(bizerrors.CodeApplicationNotFound).WithDetail("client_id", cid)
+		}
+		return app, nil
+	}
+	code := strings.TrimSpace(application)
+	if code == "" {
+		return nil, nil
+	}
+	orgID := institutionID
+	if orgID == 0 {
+		org, err := s.resolveOrgForLogin(ctx, institution)
+		if err != nil {
+			return nil, bizerrors.NewWithCode(bizerrors.CodeApplicationNotFound).WithDetail("application", code)
+		}
+		orgID = org.ID
+	}
+	app, err := s.apps.GetByCode(ctx, orgID, code)
+	if err != nil {
+		return nil, bizerrors.NewWithCode(bizerrors.CodeApplicationNotFound).
+			WithDetail("institution_id", orgID).WithDetail("application", code)
+	}
+	return app, nil
+}
+
+// enforceAppAccess 应用准入判定（app 为 nil —— 请求未携带应用上下文 —— 时直接放行）。
+//
+// 判定对所有人一致：**没有管理员直通**（Spec Q5）。拒绝时写审计，便于复盘"谁被哪个应用挡在外面"。
+func (s *AuthService) enforceAppAccess(ctx context.Context, app *repository.Application, user *repository.User) error {
+	if s.access == nil || app == nil || user == nil {
+		return nil
+	}
+	if err := s.access.Enforce(ctx, app, user); err != nil {
+		if bizerrors.Is(err, bizerrors.CodeAppAccessDenied) {
+			s.audits.Record(ctx, user.Name, user.InstitutionID, "auth.app_access_denied", app.Code, nil)
+		}
+		return err
+	}
+	return nil
+}
+
 // enforceSigninPolicy 校验应用级登录策略（禁用登录 / 是否允许密码登录 / IP 限制）。
 func (s *AuthService) enforceSigninPolicy(app *repository.Application, ip string) error {
 	if app == nil {

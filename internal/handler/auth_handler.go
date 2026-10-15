@@ -185,7 +185,10 @@ func (h *AuthHandler) OAuthAuthorize(c *gin.Context) {
 	from := query(c, "from")
 	redirect := query(c, "redirect_uri")
 	// institution 用于在**组织内**定位提供商（提供商名称只在组织内唯一）
-	url, state, err := h.authService.Authorize(c.Request.Context(), h.publicInstitution(c), provider, from, redirect)
+	// 应用上下文随 state 暂存：SSO 回跳后的准入判定需要知道"这是哪个应用的入口"。
+	// 登录页由 ?client_id= 驱动；旧链接可能只带 ?application=（应用标识）。
+	url, state, err := h.authService.Authorize(c.Request.Context(), h.publicInstitution(c), provider,
+		query(c, "application"), query(c, "client_id"), from, redirect)
 	if err != nil {
 		bizerrors.Fail(c, err)
 		return

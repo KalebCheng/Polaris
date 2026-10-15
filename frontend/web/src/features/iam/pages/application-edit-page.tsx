@@ -17,7 +17,14 @@ import {
 import { PageShell } from '@/widgets/layout/page-shell'
 import { ConfirmDialog } from '@/shared/components/confirm-dialog'
 import { CopyButton } from '@/shared/components/copy-button'
-import type { Application, ApplicationCreated, Cert, Group, Provider } from '@/shared/api/types'
+import type {
+  Application,
+  ApplicationAccess,
+  ApplicationCreated,
+  Cert,
+  Group,
+  Provider,
+} from '@/shared/api/types'
 import { applicationApi, certApi, groupApi, providerApi } from '../api'
 import { useWorkspaceInstitution } from '../institution-context'
 import { useMutation } from '../hooks/use-mutation'
@@ -25,11 +32,14 @@ import { buildAuthorizeUrl } from '../lib/authorize-url'
 import { ApplicationWizard } from '../components/application-wizard'
 import { LoginPagePreview } from '../components/login-page-preview'
 import {
+  accessToFormValue,
   applicationToForm,
+  emptyApplicationAccess,
   emptyApplicationForm,
   formToApplication,
   formToApplicationValidation,
   signinMethodKinds,
+  type ApplicationAccessFormValue,
   type ApplicationFormValue,
 } from '../components/application-form'
 
@@ -57,12 +67,20 @@ export default function ApplicationEditPage() {
   const [providers, setProviders] = useState<Provider[]>([])
   const [certs, setCerts] = useState<Cert[]>([])
   const [groups, setGroups] = useState<Group[]>([])
+  // 访问授权（谁能使用该应用）：独立端点读写，与主表单一起参与「未保存修改」判定
+  const [access, setAccess] = useState<ApplicationAccessFormValue>(emptyApplicationAccess)
+  const [accessDetail, setAccessDetail] = useState<ApplicationAccess | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [previewMode, setPreviewMode] = useState<'signin' | 'signup'>('signin')
 
-  // 脏值基线：用于「未保存修改」拦截
-  const baseline = useRef<string>(JSON.stringify({ ...emptyApplicationForm, institution_id: Number(institution) }))
-  const dirty = !created && JSON.stringify(form) !== baseline.current
+  // 脏值基线：用于「未保存修改」拦截（授权与主表单都是本页的未保存内容）
+  const baseline = useRef<string>(
+    JSON.stringify({
+      form: { ...emptyApplicationForm, institution_id: Number(institution) },
+      access: emptyApplicationAccess,
+    }),
+  )
+  const dirty = !created && JSON.stringify({ form, access }) !== baseline.current
 
   // 可选资源来自当前组织，供下拉选择使用
   useEffect(() => {
@@ -94,11 +112,16 @@ export default function ApplicationEditPage() {
     void (async () => {
       try {
         const app = await applicationApi.get(appID, institution)
+        // 授权走独立端点：失败不阻断主表单（详情在向导第 6 步仍可加载）
+        const detail = await applicationApi.access(app.id, institution).catch(() => null)
         if (cancelled) return
         setEditing(app)
         const next = applicationToForm(app)
+        const accessValue = detail ? accessToFormValue(detail) : emptyApplicationAccess
         setForm(next)
-        baseline.current = JSON.stringify(next)
+        setAccessDetail(detail)
+        setAccess(accessValue)
+        baseline.current = JSON.stringify({ form: next, access: accessValue })
       } catch {
         if (!cancelled) setEditing(null)
       } finally {
@@ -130,20 +153,36 @@ export default function ApplicationEditPage() {
       return
     }
     const payload = formToApplication({ ...form, institution_id: Number(institution) })
+    // 访问授权是独立资源（访问模式 + 三类名单，后端单事务写入）。
+    // 空名单是合法输入（= 该应用暂时无人可访问），前端不做拦截，只给警示。
+    const accessPayload = {
+      access_mode: access.mode,
+      users: access.users,
+      groups: access.groups,
+      departments: access.departments,
+    }
     if (editing) {
-      const ok = await run(() => applicationApi.update(editing.id, payload), 'common.saved')
+      const ok = await run(async () => {
+        await applicationApi.update(editing.id, payload)
+        await applicationApi.setAccess(editing.id, accessPayload)
+      }, 'common.saved')
       if (ok) {
-        baseline.current = JSON.stringify(form)
+        baseline.current = JSON.stringify({ form, access })
         navigate(backToList)
       }
       return
     }
     let result: ApplicationCreated | null = null
-    const ok = await run(async () => {
+    await run(async () => {
       result = await applicationApi.create(payload)
+      // 授权是"创建后立刻落库"的第二步：这一步失败**不回滚**应用（应用已存在），
+      // 完成页照常展示，用户可在编辑页第 6 步重试（错误提示已由运行态给出）。
+      await applicationApi.setAccess(result.id, accessPayload)
     }, 'applications.created')
-    if (ok && result) setCreated(result)
-  }, [form, institution, editing, run, navigate, backToList, t])
+    if (result) setCreated(result)
+    // 依赖里**必须**有 access：漏掉它会闭包住初始值（全员可访问 + 空名单），
+    // 表现为"选了一批用户、保存后回来看还是全员可访问"——后端收到的是旧值。
+  }, [form, access, institution, editing, run, navigate, backToList, t])
 
   const requestCancel = useCallback(() => {
     if (dirty) {
@@ -361,6 +400,9 @@ export default function ApplicationEditPage() {
           onFinish={() => void save()}
           finishLabelKey={editing ? 'common.save' : 'applications.createSubmit'}
           onCancel={requestCancel}
+          access={access}
+          onAccessChange={setAccess}
+          accessDetail={accessDetail}
         />
       )}
 

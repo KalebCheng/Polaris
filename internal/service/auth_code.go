@@ -46,11 +46,13 @@ type CodeSendRequest struct {
 	Institution   string `json:"institution"`
 	InstitutionID int64  `json:"institution_id"`
 	Application   string `json:"application"`
-	Kind          string `json:"kind" binding:"required"`
-	Target        string `json:"target" binding:"required"`
-	CaptchaID     string `json:"captcha_id"`
-	CaptchaCode   string `json:"captcha_code"`
-	CaptchaToken  string `json:"captcha_token"`
+	// ClientID 应用驱动入口的应用上下文（优先于 Application；两者都空 = 平台登录，不判定准入）
+	ClientID     string `json:"client_id"`
+	Kind         string `json:"kind" binding:"required"`
+	Target       string `json:"target" binding:"required"`
+	CaptchaID    string `json:"captcha_id"`
+	CaptchaCode  string `json:"captcha_code"`
+	CaptchaToken string `json:"captcha_token"`
 }
 
 // CodeLoginRequest 验证码登录请求
@@ -58,10 +60,12 @@ type CodeLoginRequest struct {
 	Institution   string `json:"institution"`
 	InstitutionID int64  `json:"institution_id"`
 	Application   string `json:"application"`
-	Kind          string `json:"kind" binding:"required"`
-	Target        string `json:"target" binding:"required"`
-	Code          string `json:"code" binding:"required"`
-	From          string `json:"from"`
+	// ClientID 应用驱动入口的应用上下文（优先于 Application；两者都空 = 平台登录，不判定准入）
+	ClientID string `json:"client_id"`
+	Kind     string `json:"kind" binding:"required"`
+	Target   string `json:"target" binding:"required"`
+	Code     string `json:"code" binding:"required"`
+	From     string `json:"from"`
 }
 
 // Captcha 返回组织当前的人机校验挑战
@@ -178,9 +182,18 @@ func (s *AuthService) CodeLogin(ctx context.Context, req CodeLoginRequest, host,
 		return nil, "", err
 	}
 	req.Institution = resolvedOrg
-	app, err := s.resolveApplication(ctx, req.Institution, req.Application)
+	// 应用上下文：显式携带时以它为准（准入判定据此生效）；未携带时按既有语义回退默认应用，
+	// 但**不做准入判定**（Spec FR-3 作用域：平台登录不判定）。
+	appCtx, err := s.resolveAppContext(ctx, req.InstitutionID, req.Institution, req.Application, req.ClientID)
 	if err != nil {
 		return nil, "", err
+	}
+	app := appCtx
+	if app == nil {
+		app, err = s.resolveApplication(ctx, req.Institution, "")
+		if err != nil {
+			return nil, "", err
+		}
 	}
 	if err := s.enforceSigninPolicy(app, ip); err != nil {
 		return nil, "", err
@@ -201,6 +214,10 @@ func (s *AuthService) CodeLogin(ctx context.Context, req CodeLoginRequest, host,
 
 	user, err := s.findUserByCodeTarget(ctx, app, kind, target)
 	if err != nil {
+		return nil, "", err
+	}
+	// 应用准入：验证码校验通过、建会话之前（拒绝时不留下任何登录态）
+	if err := s.enforceAppAccess(ctx, appCtx, user); err != nil {
 		return nil, "", err
 	}
 	session, err := s.sessions.Create(ctx, user, app.Code, ip, userAgent)

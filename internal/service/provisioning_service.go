@@ -78,6 +78,9 @@ type ProvisioningService struct {
 	cipher     *auth.SecretCipher
 	audits     *AuditRecorder
 
+	// access 应用访问授权（可选；装配阶段注入）：门户应用中心按它过滤（FR-5）。
+	access *ApplicationAccessService
+
 	// asyncd 任务入队（异步执行 + 单飞）：由 app 装配注入。
 	// 说明：此前用的是进程内 channel，**队列满会直接丢任务**，且多实例各自为战——
 	// 换成 asyncd 后，任务落库、可重试、可观测，且同一账号不会被重复排队。
@@ -107,6 +110,9 @@ const TaskTypeProvisionAccount = "provision.account"
 
 // SetAsyncd 注入 asyncd（装配期调用）
 func (s *ProvisioningService) SetAsyncd(service *asyncd.Service) { s.asyncd = service }
+
+// SetApplicationAccess 注入应用访问授权服务（装配期调用）：门户应用中心按授权过滤。
+func (s *ProvisioningService) SetApplicationAccess(a *ApplicationAccessService) { s.access = a }
 
 // ProvisionTaskFromPayload 解析 asyncd 任务载荷为供给任务（供装配层构造调用）。
 func ProvisionTaskFromPayload(payload map[string]any) ProvisionTask {
@@ -824,7 +830,7 @@ func (s *ProvisioningService) ListApplicationsForUser(ctx context.Context, insti
 		if account.Status != "active" {
 			continue
 		}
-		s.appendPortalApplication(ctx, institutionID, account.Application, seen, &applications)
+		s.appendPortalApplication(ctx, institutionID, user, account.Application, seen, &applications)
 	}
 	// JIT 应用在首次登录前还没有 app_accounts 记录；有启用的 JIT 连接器时仍应出现在工作台。
 	connectors, err := s.connectors.List(ctx, repository.ListQuery{InstitutionID: institutionID, Limit: 500})
@@ -833,7 +839,7 @@ func (s *ProvisioningService) ListApplicationsForUser(ctx context.Context, insti
 	}
 	for _, connector := range connectors {
 		if connector.State == "active" && connector.JustInTime && connector.Application != "" {
-			s.appendPortalApplication(ctx, institutionID, connector.Application, seen, &applications)
+			s.appendPortalApplication(ctx, institutionID, user, connector.Application, seen, &applications)
 		}
 	}
 	return applications, nil
@@ -841,7 +847,7 @@ func (s *ProvisioningService) ListApplicationsForUser(ctx context.Context, insti
 
 func (s *ProvisioningService) appendPortalApplication(
 	ctx context.Context,
-	institutionID int64, name string,
+	institutionID int64, user, name string,
 	seen map[string]struct{},
 	applications *[]PortalApplication,
 ) {
@@ -851,6 +857,14 @@ func (s *ProvisioningService) appendPortalApplication(
 	app, err := s.apps.GetByCode(ctx, institutionID, name)
 	if err != nil || app == nil || app.State != "active" {
 		return
+	}
+	// 应用准入（FR-5）：未授权的应用不出现在门户应用中心，也就没有"一键 SSO"入口。
+	// 判定与登录 / 发令牌同源（唯一入口 ApplicationAccessService），不做第二套逻辑。
+	if s.access != nil {
+		allowed, err := s.access.AllowedUserName(ctx, app, institutionID, user)
+		if err != nil || !allowed {
+			return
+		}
 	}
 	seen[name] = struct{}{}
 	displayName := app.Name

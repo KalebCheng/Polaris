@@ -27,6 +27,19 @@ type OIDCService struct {
 	tokens repository.TokenRepository
 	issuer *oidc.Issuer
 	audits *AuditRecorder
+	// access 应用访问授权（可选；装配阶段注入）：作为 IdP 的链路一律带应用上下文，因此恒判定。
+	access *ApplicationAccessService
+}
+
+// SetApplicationAccess 注入应用访问授权服务（装配阶段调用）。
+func (s *OIDCService) SetApplicationAccess(a *ApplicationAccessService) { s.access = a }
+
+// enforceAccess 应用准入判定（令牌链路：应用上下文恒存在，故无"是否判定"的分支）。
+func (s *OIDCService) enforceAccess(ctx context.Context, app *repository.Application, user *repository.User) error {
+	if s.access == nil {
+		return nil
+	}
+	return s.access.Enforce(ctx, app, user)
 }
 
 // NewOIDCService 创建 OIDC 服务
@@ -108,6 +121,30 @@ func (s *OIDCService) Authorize(ctx context.Context, p AuthorizeParams) (string,
 	user, err := s.users.GetByName(ctx, app.InstitutionID, p.UserName)
 	if err != nil {
 		return "", bizerrors.ErrUnauthorized
+	}
+	// 应用准入判定（Spec FR-3）：authorize 天然携带应用上下文（client_id），因此一律判定。
+	// 拒绝时不返回错误信封，而是按 OAuth2 规范回跳 redirect_uri?error=access_denied&state=...，
+	// 否则调用方（RP）看到的是 Polaris 的 JSON 错误页，而不是标准的"授权被拒"。
+	if s.access != nil {
+		allowed, aerr := s.access.Allowed(ctx, app, user)
+		if aerr != nil {
+			return "", aerr
+		}
+		if !allowed {
+			redirect, perr := url.Parse(p.RedirectURI)
+			if perr != nil {
+				return "", bizerrors.ErrOAuthInvalidRedirect
+			}
+			q := redirect.Query()
+			q.Set("error", "access_denied")
+			q.Set("error_description", "user is not authorized for this application")
+			if p.State != "" {
+				q.Set("state", p.State)
+			}
+			redirect.RawQuery = q.Encode()
+			s.audits.Record(ctx, user.Name, app.InstitutionID, "oauth.authorize_denied", app.Code, nil)
+			return redirect.String(), nil
+		}
 	}
 	scope := normalizeScope(p.Scope)
 	code := s.issuer.NewCode()
@@ -236,6 +273,10 @@ func (s *OIDCService) grantAuthorizationCode(ctx context.Context, app *repositor
 	if err != nil {
 		return nil, bizerrors.ErrOAuthInvalidGrant.WithDetail("reason", "user_missing")
 	}
+	// 应用准入：authorize 与换码之间被移出名单时，授权码立即失效（收口窗口期）
+	if err := s.enforceAccess(ctx, app, user); err != nil {
+		return nil, err
+	}
 	return s.issueTokens(ctx, app, user, rec.CodeScope, rec.Name, false, 0)
 }
 
@@ -253,6 +294,10 @@ func (s *OIDCService) grantRefreshToken(ctx context.Context, app *repository.App
 	user, err := s.users.GetByName(ctx, rec.InstitutionID, rec.User)
 	if err != nil {
 		return nil, bizerrors.ErrOAuthInvalidGrant.WithDetail("reason", "user_missing")
+	}
+	// 「撤销授权立即生效」的关键点：换新令牌前**实时**判定，不依赖会话是否已被失效。
+	if err := s.enforceAccess(ctx, app, user); err != nil {
+		return nil, err
 	}
 	if app.DisableRefreshRotation {
 		// 关闭轮换：保留原 refresh_token（记录不吊销），仅重新签发 access_token
@@ -285,6 +330,9 @@ func (s *OIDCService) grantPassword(ctx context.Context, app *repository.Applica
 	}
 	if user.IsForbidden || user.IsDeleted || !auth.VerifyPasswordWith(req.Password, user.PasswordHash, user.PasswordType, user.PasswordSalt) {
 		return nil, bizerrors.ErrInvalidCredentials
+	}
+	if err := s.enforceAccess(ctx, app, user); err != nil {
+		return nil, err
 	}
 	return s.issueTokens(ctx, app, user, normalizeScope(req.Scope), "", false, 0)
 }

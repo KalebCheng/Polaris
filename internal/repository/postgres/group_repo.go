@@ -228,4 +228,69 @@ func (r *GroupRepository) MemberCounts(ctx context.Context, institutionID int64)
 	return out, mapError(rows.Err(), "")
 }
 
+// GroupsForUserWithAncestors 返回用户直接归属的用户组**及其全部祖先组**。
+//
+// 与 GroupsForUser 的差异是刻意的：应用访问授权遵循"授权父组 = 覆盖整个子树"，
+// 因此"用户是否命中某个被授权的组"必须沿 parent_id 向上展开（父组被授权 → 子组成员也算命中）。
+func (r *GroupRepository) GroupsForUserWithAncestors(ctx context.Context, institutionID int64, user string) ([]string, error) {
+	rows, err := r.db.Query(ctx, `WITH RECURSIVE direct AS (
+			SELECT g.id, g.name, g.parent_id FROM groups g
+			JOIN group_members gm ON gm.group_id = g.id
+			WHERE g.institution_id = $1 AND gm."user" = $2
+		), tree AS (
+			SELECT id, name, parent_id FROM direct
+			UNION
+			SELECT p.id, p.name, p.parent_id FROM groups p
+			JOIN tree t ON p.id = t.parent_id
+			WHERE p.institution_id = $1
+		)
+		SELECT name FROM tree ORDER BY name`, institutionID, user)
+	if err != nil {
+		return nil, mapError(err, "")
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, mapError(err, "")
+		}
+		out = append(out, name)
+	}
+	return out, mapError(rows.Err(), "")
+}
+
+// ExpandMembersWithDescendants 展开"这些组 + 其全部子组"的成员用户名集合。
+// 用途：授权名单变更时计算**受影响用户**（撤销授权需失效这些人在该应用下的会话）。
+func (r *GroupRepository) ExpandMembersWithDescendants(ctx context.Context, institutionID int64, names []string) ([]string, error) {
+	if len(names) == 0 {
+		return []string{}, nil
+	}
+	rows, err := r.db.Query(ctx, `WITH RECURSIVE tree AS (
+			SELECT g.id FROM groups g WHERE g.institution_id = $1 AND g.name = ANY($2)
+			UNION
+			SELECT c.id FROM groups c JOIN tree t ON c.parent_id = t.id
+		)
+		SELECT DISTINCT gm."user" FROM group_members gm JOIN tree t ON gm.group_id = t.id
+		ORDER BY 1`, institutionID, names)
+	if err != nil {
+		return nil, mapError(err, "")
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, mapError(err, "")
+		}
+		out = append(out, name)
+	}
+	return out, mapError(rows.Err(), "")
+}
+
+// ExistingNames 返回 names 中确实存在于本组织的用户组标识集合（授权名单逐项校验用）。
+func (r *GroupRepository) ExistingNames(ctx context.Context, institutionID int64, names []string) (map[string]bool, error) {
+	return existingNames(ctx, r.db, "groups", institutionID, names)
+}
+
 var _ repository.GroupRepository = (*GroupRepository)(nil)

@@ -2,6 +2,7 @@
 package postgres
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	bizerrors "polaris/internal/errors"
+	"polaris/pkg/dbclient"
 )
 
 // mapError 将底层数据库错误转换为统一业务错误（隐藏底层细节，仅保留语义）。
@@ -139,4 +141,32 @@ func isUniqueViolation(err error) bool {
 		return pgErr.Code == "23505"
 	}
 	return false
+}
+
+// existingNames 返回 names 中确实存在于本组织（institutionID）的标识名集合。
+//
+// 用途：应用授权名单的逐项校验（不存在的主体一律拒绝，不做静默忽略——否则会出现
+// "界面上加了、运行时不生效"的假配置）。表名只允许 groups / departments 这两张
+// "标识名在组织内唯一"的目录表，其余调用一律 panic（开发期即暴露，避免拼接未知标识符）。
+func existingNames(ctx context.Context, db *dbclient.Client, table string, institutionID int64, names []string) (map[string]bool, error) {
+	if table != "groups" && table != "departments" {
+		panic("existingNames: 不支持的表 " + table)
+	}
+	out := map[string]bool{}
+	if len(names) == 0 {
+		return out, nil
+	}
+	rows, err := db.Query(ctx, `SELECT name FROM `+table+` WHERE institution_id = $1 AND name = ANY($2)`, institutionID, names)
+	if err != nil {
+		return nil, mapError(err, "")
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, mapError(err, "")
+		}
+		out[name] = true
+	}
+	return out, mapError(rows.Err(), "")
 }

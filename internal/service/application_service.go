@@ -47,6 +47,9 @@ func (s *ApplicationService) Create(ctx context.Context, actor string, app *repo
 	// 凭据由服务端生成，忽略请求体中的值
 	app.ClientID = randomHex(10)
 	app.ClientSecret = randomBase64(32)
+	// 访问模式：新建一律"全员可访问"（与引入该能力之前的行为一致）。
+	// 受限模式只能由 PUT /applications/:id/access 打开——它是"模式 + 名单"的原子写入口。
+	app.AccessMode = repository.AccessModeAll
 	if err := normalizeApplication(app); err != nil {
 		return nil, err
 	}
@@ -81,6 +84,10 @@ func (s *ApplicationService) Update(ctx context.Context, actor string, app *repo
 	if app.Order == 0 {
 		app.Order = existing.Order
 	}
+	// 访问模式：**恒从现有值继承**，唯一写入口是 PUT /applications/:id/access。
+	// 反例（历史教训型陷阱）：本端点是整行 UPDATE，若让零值 "" 落库会违反 access_mode 的 CHECK 约束
+	// 抛 DB_ERROR；若在仓库层把 "" 兜底成 all，则会**静默把受限应用改成全员可访问**（放宽准入）。
+	app.AccessMode = existing.AccessMode
 	if strings.TrimSpace(app.Name) == "" {
 		app.Name = existing.Name
 	}

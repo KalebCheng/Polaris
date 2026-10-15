@@ -26,6 +26,8 @@ vi.mock('../api', () => ({
           client_id: 'client-7',
           logo: '',
           description: '终端用户入口',
+          access_mode: 'restricted',
+          access_subject_count: 2,
           created_at: '2026-10-15T02:00:00Z',
           signin_methods: [
             { name: 'Password' },
@@ -42,6 +44,7 @@ vi.mock('../api', () => ({
           type: 'web',
           state: 'inactive',
           client_id: 'client-8',
+          access_mode: 'all',
           created_at: '2026-10-14T02:00:00Z',
           signin_methods: [],
         },
@@ -90,6 +93,13 @@ describe('ApplicationsPage', () => {
     expect(within(legacy).getByText(zh.common.disabled)).toBeInTheDocument()
     // 无 display_name 时回退到应用标识
     expect(within(legacy).getAllByText('legacy').length).toBeGreaterThan(0)
+  })
+
+  it('卡片标出「访问范围」：受限给出授权主体数，默认全员可访问', async () => {
+    renderPage()
+    const [portal, legacy] = await screen.findAllByRole('article')
+    expect(within(portal).getByText('受限（2）')).toBeInTheDocument()
+    expect(within(legacy).getByText('全员可访问')).toBeInTheDocument()
   })
 
   it('主操作编辑直达向导，端点 / 重置密钥 / 删除收进「更多」', async () => {

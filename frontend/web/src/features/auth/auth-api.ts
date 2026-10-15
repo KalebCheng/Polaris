@@ -6,6 +6,8 @@ export interface LoginPayload {
   institution_id?: number
   institution?: string
   application?: string
+  /** 应用驱动入口的应用上下文（URL 的 client_id），优先于 application */
+  client_id?: string
   username: string
   password: string
   mfa_code?: string
@@ -43,6 +45,8 @@ export const authApi = {
     institution_id?: number
     institution?: string
     application?: string
+    /** 应用上下文：应用驱动登录页必带，否则发码/登录会落到"组织默认应用" */
+    client_id?: string
     kind: 'email' | 'sms'
     target: string
     captcha_id?: string
@@ -85,6 +89,8 @@ export const authApi = {
   codeLogin: (body: {
     institution?: string
     application?: string
+    /** 应用上下文：应用驱动登录页必带 */
+    client_id?: string
     kind: 'email' | 'sms'
     target: string
     code: string
@@ -95,10 +101,12 @@ export const authApi = {
     api.get<{ institutions: { id: number; name: string; display_name: string }[] | null }>(
       '/auth/institutions',
     ),
-  oauthAuthorize: (provider: string, from?: string, institutionId?: number) =>
+  // client_id 随 state 暂存：SSO 回跳后的应用准入判定需要知道"这是哪个应用的入口"
+  oauthAuthorize: (provider: string, from?: string, institutionId?: number, clientId?: string) =>
     api.get<{ authorization_url: string; state: string }>(`/auth/oauth/${provider}/authorize`, {
       from,
       institution_id: institutionId,
+      client_id: clientId,
     }),
   oauthCallback: (provider: string, code: string, state: string) =>
     api.get<LoginResponse>(`/auth/oauth/${provider}/callback`, { code, state }),

@@ -67,6 +67,14 @@ type DepartmentRepository interface {
 	Count(ctx context.Context, q ListQuery) (int64, error)
 	// SetSortIndex 仅更新排序序号（同层内拖拽/上下移动用）
 	SetSortIndex(ctx context.Context, institutionID int64, name string, sortIndex int) error
+
+	// ExpandMembersWithDescendants 展开"这些部门 + 其全部子部门"内的用户名集合（应用授权影响面计算用）。
+	// 判定语义见 ApplicationAccessService：授权父部门覆盖整棵子树。
+	ExpandMembersWithDescendants(ctx context.Context, institutionID int64, names []string) ([]string, error)
+	// ExistingNames 返回 names 中**确实存在于本组织**的部门标识集合（授权名单校验用，禁止静默忽略）
+	ExistingNames(ctx context.Context, institutionID int64, names []string) (map[string]bool, error)
+	// Children 返回某节点的直接子部门（parentID 为 nil 时取顶层）与该层总数（应用授权弹窗的部门树按层加载）
+	Children(ctx context.Context, institutionID int64, parentID *int64, offset, limit int) ([]*Department, int64, error)
 }
 
 // UserRepository 用户仓库接口
@@ -121,6 +129,18 @@ type ApplicationRepository interface {
 	Delete(ctx context.Context, id int64) error
 	List(ctx context.Context, q ListQuery) ([]*Application, error)
 	Count(ctx context.Context, q ListQuery) (int64, error)
+}
+
+// ApplicationSubjectRepository 应用授权主体仓库接口（应用准入名单）
+// 存储: PostgreSQL（application_subjects）
+type ApplicationSubjectRepository interface {
+	// Replace 整体替换某应用的访问授权配置（单事务：applications.access_mode + application_subjects）
+	// mode 为 all | restricted（调用方已校验）；空名单合法（= 暂时无人可访问）
+	Replace(ctx context.Context, app *Application, mode string, subjects []ApplicationSubject) error
+	// List 列出某应用的授权主体（按类型 + 标识名排序）
+	List(ctx context.Context, applicationID int64) ([]ApplicationSubject, error)
+	// CountByApplications 批量统计各应用的授权主体数（应用列表「访问范围」列，避免 N 次查询）
+	CountByApplications(ctx context.Context, applicationIDs []int64) (map[int64]int, error)
 }
 
 // ProviderRepository 提供方仓库接口
@@ -201,6 +221,14 @@ type GroupRepository interface {
 	SetGroupsForUser(ctx context.Context, institutionID int64, user string, groups []string) error
 	// MemberCounts 返回组织内各用户组的成员数（列表页展示，避免 N 次查询）
 	MemberCounts(ctx context.Context, institutionID int64) (map[string]int, error)
+
+	// GroupsForUserWithAncestors 返回用户直接归属的用户组**及其全部祖先组**。
+	// 与 GroupsForUser 的区别：应用授权遵循"授权父组 = 覆盖整个子树"，因此判定必须向上展开。
+	GroupsForUserWithAncestors(ctx context.Context, institutionID int64, user string) ([]string, error)
+	// ExpandMembersWithDescendants 展开"这些组 + 其全部子组"的成员用户名集合（应用授权影响面计算用）
+	ExpandMembersWithDescendants(ctx context.Context, institutionID int64, names []string) ([]string, error)
+	// ExistingNames 返回 names 中**确实存在于本组织**的用户组标识集合（授权名单校验用）
+	ExistingNames(ctx context.Context, institutionID int64, names []string) (map[string]bool, error)
 }
 
 // CertRepository 证书仓库接口

@@ -48,9 +48,13 @@ type applicationDTO struct {
 	SigninRetryWaitMinutes int `json:"signin_retry_wait_minutes"`
 
 	// 登录页跳转地址与访问限制
-	OrgChoiceMode        string `json:"org_choice_mode"`
-	IPRestriction        string `json:"ip_restriction"`
-	IPWhitelist          string `json:"ip_whitelist"`
+	OrgChoiceMode string `json:"org_choice_mode"`
+	IPRestriction string `json:"ip_restriction"`
+	IPWhitelist   string `json:"ip_whitelist"`
+	// 访问模式（all | restricted）与授权主体数：列表「访问范围」列用。
+	// 计数只在**列表**里由 access 服务批量装配（避免 N+1）；详情走 GET /applications/:id/access。
+	AccessMode           string `json:"access_mode"`
+	AccessSubjectCount   int    `json:"access_subject_count"`
 	SignupURL            string `json:"signup_url"`
 	TermsOfUse           string `json:"terms_of_use"`
 	ForcedRedirectOrigin string `json:"forced_redirect_origin"`
@@ -101,7 +105,8 @@ func toApplicationDTO(a *repository.Application) *applicationDTO {
 		MaxSessions:         a.MaxSessions,
 		SigninErrorLimit:    a.SigninErrorLimit, SigninRetryWaitMinutes: a.SigninRetryWaitMinutes,
 		OrgChoiceMode: a.OrgChoiceMode, IPRestriction: a.IPRestriction, IPWhitelist: a.IPWhitelist,
-		SignupURL: a.SignupURL, TermsOfUse: a.TermsOfUse,
+		AccessMode: accessModeOrDefault(a.AccessMode),
+		SignupURL:  a.SignupURL, TermsOfUse: a.TermsOfUse,
 		ForcedRedirectOrigin: a.ForcedRedirectOrigin, BackchannelLogoutURI: a.BackchannelLogoutURI,
 		GrantTypes: orEmptySlice(a.GrantTypes), RedirectURIs: orEmptySlice(a.RedirectURIs),
 		Providers: orEmptyItems(a.Providers), Scopes: orEmptyScopes(a.Scopes),
@@ -114,6 +119,14 @@ func toApplicationDTO(a *repository.Application) *applicationDTO {
 		ThemeData: a.ThemeData, State: a.State,
 		CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
 	}
+}
+
+// accessModeOrDefault 空串按默认（全员可访问）下发；兼容迁移前的旧行与测试构造的实体。
+func accessModeOrDefault(mode string) string {
+	if repository.IsAccessMode(mode) {
+		return mode
+	}
+	return repository.AccessModeAll
 }
 
 func toApplicationDTOs(items []*repository.Application) []*applicationDTO {

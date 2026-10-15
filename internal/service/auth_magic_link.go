@@ -203,6 +203,10 @@ func (s *AuthService) VerifyMagicLink(ctx context.Context, req MagicLinkVerifyRe
 	if err != nil {
 		return nil, "", bizerrors.ErrInvalidCredentials
 	}
+	// 应用准入：魔法链接恒为应用驱动（发链接时已要求该应用启用本方式），按链接记录的应用判定。
+	if err := s.enforceAppAccess(ctx, app, user); err != nil {
+		return nil, "", err
+	}
 	session, err := s.sessions.Create(ctx, user, applicationCode(app), ip, userAgent)
 	if err != nil {
 		return nil, "", err

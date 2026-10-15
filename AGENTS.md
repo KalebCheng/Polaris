@@ -395,5 +395,15 @@ ACCOUNT             账号级                Portal（/portal/**：应用中心 
 | 刷新或直接打开工作区深链（`/institutions/:id/users/...`）被弹回组织列表 | `WorkspaceLayout` 用 `!loading && !institutions.some(...)` 判定"组织不存在"，而组织列表**还没加载完时** `institutions` 就是空数组 → 误判；`InstitutionProvider.reload()` 也没在拉取期间置 `loading=true`，消费者无法区分"没加载完"与"加载完但没有" | 空集合/未完成态必须可区分：`loading` 要在拉取期间为真，且"不存在"的判定要加上 `institutions.length > 0`；`workspace-layout.test.tsx` 锁定"列表未就绪时不得跳转" |
 | 顶栏导航的滑块能滑，照搬进分段控件后"整块消失" | 把量测逻辑写进了容器的**子组件**：React 的 layout 阶段先递归子树、再给 host 节点挂 ref → 子组件的 `useLayoutEffect` 里 `containerRef.current` 恒为 `null`，量测静默早退（不报错、也不渲染） | 量测归**容器组件**（`useSlidingPill`）、渲染归子组件（`SlidingPill`）；回归测试必须锁"渲染出唯一一块滑块"，只锁"选中项不带 `bg-ink`"会漏掉这类静默失败（`nav-pills.test.tsx` / `tabs.test.tsx`） |
 
+| 应用的"谁能使用"配了却不生效：从应用登录页进来照样能进 | 应用驱动登录页只用 `client_id` **渲染**（品牌/登录方式），而登录请求体里**根本没有应用上下文**（`LoginPayload` 只发 `institution_id`，后端 `LoginRequest` 连 `client_id` 字段都没有）→ 后端一律回退"组织默认应用" | 公开面认证请求（login / codes / login-code / magic-link / signup / SSO 发起）都必须随请求下发**应用上下文**（`client_id` 优先、`application` 兼容旧链接），并各自有"请求体确实带上了"的断言（`login-page-requests.test.tsx`） |
+| 把"受限应用配成空名单"变成全组织只能改库恢复 | 准入判定挂在"**回退解析**出的应用"上（没带应用上下文时后端会回退到 `default_application`），于是默认应用一配错，管理员也进不来 | 判定作用域固定为"**请求是否携带应用上下文**"：`client_id`/`application` 都有才判定，都没有 = 登录平台、**不判定**（`resolveAppContext`，配 `TestResolveAppContextScope` 锁定）。副作用是不做"管理员直通"（准入对所有人一致） |
+| 受限应用被保存一次主表单就悄悄变成"全员可访问" | `PUT /applications/:id` 是**整行 UPDATE**且请求体不带 `access_mode` → 零值 `""` 落库：要么违反 CHECK 报 `DB_ERROR`，要么在仓库层被兜底成 `all` 而**放宽准入**（静默、且是安全方向） | 写入口唯一化：这类子资源列（`access_mode`）必须由专用端点写，整行 `Update` 里**从 existing 继承**并加回归测试（`TestApplicationUpdateKeepsAccessMode`）；仓库层禁止 `""→默认值` 兜底 |
+| 向导新建流程里"可授权主体"选择器永远空转 | 候选端点按**应用**取（需要应用主键），而新建时应用还不存在 | 面向"尚未创建的资源"的选择器数据源必须按**组织**取（`GET /applications/subject-options`），并给应用管理员单独授权（`application:read`）而不是要求 `user:read`/`group:read`/`department:read` |
+
+| 授权名单做成三个下拉多选，用户说"一点都不好用" | 把"名单型"配置当成了"字段型"配置：`MultiSelect` 适合**字段级**多值引用（scope、grant types、token fields），而"已授权了谁"是**名单**——下拉把全局藏进控件，看不到全貌、不能逐条核对与移除，新增还要在下拉里翻半天 | 名单型授权一律用**左类型（含各自数量）/ 右名单表格**的主从布局（`application-access-editor.tsx`），行内移除 + 「添加授权」弹窗选候选；判断口径：**用户需要"看全并单条处置"的就是名单，不是字段** |
+
+| 选了一批用户保存后回来看还是"全员可访问"（配置像没生效） | 保存用的 `useCallback(fn, deps)` **漏掉了它读取的 state**（`access`）→ React 复用首次创建的闭包，提交上去的永远是初始值（`all` + 空名单）。页面回显正常、保存也"成功"（主表单确实写进去了），所以只有数据层面的授权被旧值覆盖 | handler 只要读取 state，该 state 就必须进依赖数组；表单类页面补一条"回显 → 改动 → 保存 → 断言提交体"的集成测试（`application-edit-page.test.tsx`，撤掉依赖即红），别只测纯函数与子组件 |
+| 删掉最后一个子部门后，父部门**永远删不掉**（409 still has child departments） | `DepartmentService.Delete` 用**存储的** `has_child` 标记判断"还有下级"，而删除路径从未刷新过它——只有"移动子部门层级"（走 `Update`）才会顺带刷新，于是必须"先动一下再删"这么反直觉 | 派生/冗余标记必须在**每条会改变它的写入路径**上同步（本次在删除后补 `refreshHasChild`，配回归测试）；新增这类标记时先问"还有什么操作会改变它" |
+
 ---
-*最后更新：2026-10-14（第五阶段：用户 / 用户组 / 部门）*
+*最后更新：2026-10-15（第六阶段：应用访问授权 / 授权编辑器改为左右主从布局 + 部门树按层懒加载）*

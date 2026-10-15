@@ -183,6 +183,35 @@ func (m *SessionManager) InvalidateUser(ctx context.Context, institutionID int64
 	return m.sessions.DeleteUserSessions(ctx, institutionID, user)
 }
 
+// InvalidateUserApplication 失效用户在**指定应用**下的会话（应用访问授权被撤销时调用）。
+//
+// 只删 Application == application 的会话：用户在控制台 / 门户的登录态不因"某个应用的准入变化"被踢下线
+// （那两类会话的 Application 为空或属于别的应用）。返回被失效的会话数。
+func (m *SessionManager) InvalidateUserApplication(ctx context.Context, institutionID int64, user, application string) (int, error) {
+	if application == "" {
+		return 0, nil
+	}
+	ids, err := m.sessions.UserSessions(ctx, institutionID, user)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, id := range ids {
+		session, err := m.Load(ctx, id)
+		if err != nil {
+			continue // 已过期
+		}
+		if session.Application != application {
+			continue
+		}
+		if err := m.Drop(ctx, institutionID, user, id); err != nil {
+			return removed, err
+		}
+		removed++
+	}
+	return removed, nil
+}
+
 // UserSessions 返回用户当前会话 ID。
 func (m *SessionManager) UserSessions(ctx context.Context, institutionID int64, user string) ([]string, error) {
 	return m.sessions.UserSessions(ctx, institutionID, user)

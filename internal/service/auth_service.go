@@ -42,7 +42,12 @@ type AuthService struct {
 	provisioning *ProvisioningService
 	// backchannel 后端登出通知（可选；会话结束时通知下游 RP）。
 	backchannel *BackchannelLogoutService
+	// access 应用访问授权（可选；装配阶段注入）。应用准入的**唯一判定入口**——禁止在别处复制判定。
+	access *ApplicationAccessService
 }
+
+// SetApplicationAccess 注入应用访问授权服务（装配阶段调用）。
+func (s *AuthService) SetApplicationAccess(a *ApplicationAccessService) { s.access = a }
 
 // SetProvisioning 注入供给服务（装配阶段调用）。
 func (s *AuthService) SetProvisioning(p *ProvisioningService) { s.provisioning = p }
@@ -103,11 +108,20 @@ func (s *AuthService) Login(ctx context.Context, req auth.LoginRequest, host, ip
 		return nil, "", bizerrors.New(bizerrors.CodeForbidden, "sign-in is disabled for this institutionID")
 	}
 
-	// 应用级策略：目标应用未指定时回退到组织默认应用；禁用登录 / IP 限制在此拦下。
-	// 应用是**可选的**——组织未配置应用时不阻断登录（宽松解析返回 nil，跳过应用级策略）。
-	app, err := s.resolveApplicationOptional(ctx, req.Institution, req.Application)
+	// 应用上下文（准入判定的前提）：请求显式携带 client_id / application 时以它为准。
+	appCtx, err := s.resolveAppContext(ctx, org.ID, req.Institution, req.Application, req.ClientID)
 	if err != nil {
 		return nil, "", err
+	}
+	// 应用级策略（禁用登录 / IP 限制 / 登录方式 / 会话数）仍按既有语义解析：
+	// 未携带应用上下文时回退到组织默认应用；组织未配置应用时为 nil（宽松跳过）。
+	// 注意：回退结果**不用于**准入判定（见 resolveAppContext 注释）。
+	app := appCtx
+	if app == nil {
+		app, err = s.resolveApplicationOptional(ctx, req.Institution, "")
+		if err != nil {
+			return nil, "", err
+		}
 	}
 	if err := s.enforceSigninPolicy(app, ip); err != nil {
 		return nil, "", err
@@ -151,6 +165,12 @@ func (s *AuthService) Login(ctx context.Context, req auth.LoginRequest, host, ip
 		s.countFailure(ctx, rateKey, maxFailures, retryWait)
 		s.audits.Record(ctx, req.Username, org.ID, "auth.login_failed", req.Username, nil)
 		return nil, "", bizerrors.ErrInvalidCredentials
+	}
+
+	// 应用准入判定：凭证校验通过后、MFA 之前（避免让不可用的账号白做二次验证）。
+	// 仅当请求携带应用上下文时生效；拒绝时不建立任何会话。
+	if err := s.enforceAppAccess(ctx, appCtx, user); err != nil {
+		return nil, "", err
 	}
 
 	// ── 二次验证（MFA）────────────────────────────────
@@ -424,9 +444,12 @@ type ssoState struct {
 	// （提供商名称只在组织内唯一，跨组织同名是允许的）
 	InstitutionID int64  `json:"institution_id"`
 	Provider      string `json:"provider"`
-	From          string `json:"from"`
-	RedirectURI   string `json:"redirect_uri"`
-	LinkSession   string `json:"link_session,omitempty"`
+	// Application 应用标识（应用驱动入口发起 SSO 时带上）：回调建立会话前用它做应用准入判定；
+	// 空 = 平台级 SSO 登录，不判定（Spec FR-3 判定作用域）。
+	Application string `json:"application,omitempty"`
+	From        string `json:"from"`
+	RedirectURI string `json:"redirect_uri"`
+	LinkSession string `json:"link_session,omitempty"`
 	// PKCEVerifier 启用 PKCE 时随 state 暂存（回调时作为 code_verifier 提交）
 	PKCEVerifier string `json:"pkce_verifier,omitempty"`
 }
@@ -573,7 +596,11 @@ func (s *AuthService) InstitutionOptions(ctx context.Context) ([]InstitutionOpti
 //
 // institution 为组织标识（可空：此时按"唯一启用的同名提供商"解析）；提供商名称只在组织内唯一，
 // 因此解析出的 organizationID 会随 state 暂存，回调时必须回到同一个提供商。
-func (s *AuthService) Authorize(ctx context.Context, institution, providerName, from, redirectOverride string) (string, string, error) {
+// Authorize 发起 SSO 授权。
+//
+// application / clientID 是**应用上下文**（登录页由 ?client_id= 驱动，旧链接可能只带 ?application=），
+// 随 state 暂存并在回调建会话前用于应用准入判定（Spec FR-3）。
+func (s *AuthService) Authorize(ctx context.Context, institution, providerName, application, clientID, from, redirectOverride string) (string, string, error) {
 	if s.oauthResolver == nil {
 		return "", "", bizerrors.ErrProviderUnavailable.WithDetail("provider", providerName)
 	}
@@ -586,9 +613,14 @@ func (s *AuthService) Authorize(ctx context.Context, institution, providerName, 
 		return "", "", err
 	}
 	redirectURI := s.resolveRedirectURI(item, redirectOverride)
+	app, err := s.resolveAppContext(ctx, institutionID, institution, application, clientID)
+	if err != nil {
+		return "", "", err
+	}
 	payload := ssoState{
 		InstitutionID: institutionID, Provider: providerName,
-		From: sanitizeFrom(from), RedirectURI: redirectURI,
+		Application: applicationCode(app),
+		From:        sanitizeFrom(from), RedirectURI: redirectURI,
 	}
 	authorizeURL := connector.AuthCodeURL(state0, redirectURI)
 	if item.EnablePKCE {
@@ -729,7 +761,15 @@ func (s *AuthService) Callback(ctx context.Context, code, state, ip, userAgent s
 	if err != nil {
 		return nil, "", err
 	}
-	session, err := s.sessions.Create(ctx, user, "", ip, userAgent)
+	// 应用准入：应用上下文来自 SSO state（平台级 SSO 无该字段 → 不判定）。
+	ssoApp, err := s.resolveAppContext(ctx, st.InstitutionID, "", st.Application, "")
+	if err != nil {
+		return nil, "", err
+	}
+	if err := s.enforceAppAccess(ctx, ssoApp, user); err != nil {
+		return nil, "", err
+	}
+	session, err := s.sessions.Create(ctx, user, applicationCode(ssoApp), ip, userAgent)
 	if err != nil {
 		return nil, "", err
 	}

@@ -93,10 +93,13 @@ type LoginRequest struct {
 	// InstitutionID 组织主键：公开面的**权威引用**（与全仓"引用一律用主键 id"一致）
 	InstitutionID int64  `json:"institution_id"`
 	Application   string `json:"application"`
-	Username      string `json:"username" binding:"required"`
-	Password      string `json:"password" binding:"required"`
-	MfaCode       string `json:"mfa_code"`
-	From          string `json:"from"`
+	// ClientID 应用驱动入口的**标准应用上下文**（登录页 URL 的 client_id），优先于 Application。
+	// 两者都为空 = "登录平台"，不做应用准入判定（见 Spec 第六阶段 FR-3 判定作用域）。
+	ClientID string `json:"client_id"`
+	Username string `json:"username" binding:"required"`
+	Password string `json:"password" binding:"required"`
+	MfaCode  string `json:"mfa_code"`
+	From     string `json:"from"`
 	// RememberMfa 本次二次校验通过后是否「记住此设备」（组织配置了记住时长时生效）
 	RememberMfa bool `json:"remember_mfa"`
 	// MfaTrust 已有的「信任设备」令牌（由 handler 从 Cookie 注入，非请求体字段）

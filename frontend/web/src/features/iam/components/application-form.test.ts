@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { Application } from '@/shared/api/types'
 import {
+  accessToFormValue,
   applicationToForm,
+  emptyApplicationAccess,
   emptyApplicationForm,
   formToApplication,
   formToApplicationValidation,
@@ -44,5 +46,40 @@ describe('登录失败限制字段', () => {
     expect(negative).toEqual({ ok: false, reason: 'applications.signinLimitNegative' })
     const negativeWait = formToApplicationValidation({ ...baseForm, signin_retry_wait_minutes: -5 })
     expect(negativeWait).toEqual({ ok: false, reason: 'applications.signinLimitNegative' })
+  })
+})
+
+describe('访问授权（向导第 6 步的独立表单值）', () => {
+  it('默认全员可访问且名单为空', () => {
+    expect(emptyApplicationAccess.mode).toBe('all')
+    expect(emptyApplicationAccess.users).toEqual([])
+    expect(emptyApplicationAccess.groups).toEqual([])
+    expect(emptyApplicationAccess.departments).toEqual([])
+  })
+
+  it('接口返回的授权全景转换为表单值（三类主体取标识名）', () => {
+    const value = accessToFormValue({
+      access_mode: 'restricted',
+      users: [{ name: 'zhangsan', display_name: '张三', missing: false }],
+      groups: [{ name: 'vpn-users', display_name: 'VPN 用户', missing: false }],
+      departments: [{ name: 'tech', display_name: '技术部', path: '技术部', missing: false }],
+    })
+    expect(value.mode).toBe('restricted')
+    expect(value.users).toEqual(['zhangsan'])
+    expect(value.groups).toEqual(['vpn-users'])
+    expect(value.departments).toEqual(['tech'])
+  })
+
+  it('未知访问模式按默认（全员可访问）解读，不产生"半个受限"状态', () => {
+    const value = accessToFormValue({ access_mode: '', users: [], groups: [], departments: [] })
+    expect(value.mode).toBe('all')
+  })
+
+  it('访问授权不进入应用主表单提交体（避免与 /access 端点形成两条写入路径）', () => {
+    const payload = formToApplication({ ...baseForm, code: 'portal' }) as Record<string, unknown>
+    expect(payload.access_mode).toBeUndefined()
+    expect(payload.access_users).toBeUndefined()
+    expect(payload.access_groups).toBeUndefined()
+    expect(payload.access_departments).toBeUndefined()
   })
 })

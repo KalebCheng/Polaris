@@ -286,6 +286,11 @@ export interface Application {
   ip_restriction?: string
   ip_whitelist?: string
 
+  /** 访问模式：all = 全员可访问（默认）；restricted = 仅授权名单内主体（含其子部门/子用户组） */
+  access_mode: string
+  /** 授权主体数（仅列表返回；详情走 GET /applications/:id/access） */
+  access_subject_count?: number
+
   // 跳转地址
   signup_url?: string
   terms_of_use?: string
@@ -335,6 +340,48 @@ export interface Application {
 }
 
 /** 创建应用响应：唯一一次性返回明文密钥的时机之一（另一次是重置密钥） */
+/** 授权主体（应用准入名单的一条；missing = 主体已被删除，判定不命中） */
+export interface ApplicationSubjectView {
+  name: string
+  display_name: string
+  /** 层级路径：部门 name_path / 用户组父组链 */
+  path?: string
+  email?: string
+  missing: boolean
+}
+
+/** 应用的访问授权全景 */
+export interface ApplicationAccess {
+  access_mode: string
+  users: ApplicationSubjectView[]
+  groups: ApplicationSubjectView[]
+  departments: ApplicationSubjectView[]
+}
+
+/** 可授权主体候选（选择器数据源） */
+export interface ApplicationSubjectOption {
+  name: string
+  display_name: string
+  path?: string
+  /** 仅部门：展开该节点时用它作为 parent_id 再取一层 */
+  id?: number
+  /** 仅部门：是否还有下级（决定是否画展开箭头） */
+  has_child?: boolean
+}
+
+/** 候选主体分页结果（total 供分页器 / 「加载更多」判断是否还有更多） */
+export interface ApplicationSubjectOptionPage {
+  items: ApplicationSubjectOption[]
+  total: number
+}
+
+export interface ApplicationAccessInput {
+  access_mode: string
+  users: string[]
+  groups: string[]
+  departments: string[]
+}
+
 export interface ApplicationCreated extends Application {
   client_secret: string
   endpoints: {

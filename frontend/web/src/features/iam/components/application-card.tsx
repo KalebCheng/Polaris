@@ -53,6 +53,12 @@ export function ApplicationCard({
           </Link>
           <div className="mt-1.5 flex flex-wrap items-center gap-1">
             <Badge variant="secondary">{app.type}</Badge>
+            {/* 访问范围：受限时直接给出主体数，避免"以为限制了其实没有" */}
+            <Badge variant={app.access_mode === 'restricted' ? 'outline' : 'secondary'}>
+              {app.access_mode === 'restricted'
+                ? t('applications.accessRestrictedBadge', { count: app.access_subject_count ?? 0 })
+                : t('applications.accessAllBadge')}
+            </Badge>
             <span className="text-muted-foreground truncate font-mono text-[11px]">{app.code}</span>
           </div>
         </div>

@@ -11,6 +11,9 @@ import LoginPage from './login-page'
 // 引导接口的打点：用最简响应让页面走完"应用驱动登录页"的初始化
 // 登录请求体打点（断言"只传主键、不传标识"）
 let lastLoginPayload: Record<string, unknown> | null = null
+// 验证码通道打点：应用驱动入口的发码与登录都必须携带应用上下文（client_id）
+let lastSendCodePayload: Record<string, unknown> | null = null
+let lastCodeLoginPayload: Record<string, unknown> | null = null
 // 应用的登录方式与提供方白名单（默认 = 只允许密码、没配任何第三方提供方）
 let appSigninMethods: { name: string }[] = [{ name: 'Password' }]
 let appProviders: { name: string; canSignIn: boolean }[] = []
@@ -78,6 +81,17 @@ vi.mock('./auth-api', () => ({
       }
     },
     captcha: async () => ({ required: false }),
+    sendCode: async (body: Record<string, unknown>) => {
+      lastSendCodePayload = body
+      return { status: 'sent' }
+    },
+    codeLogin: async (body: Record<string, unknown>) => {
+      lastCodeLoginPayload = body
+      return {
+        user: { institution_id: 2, name: 'testlogin' },
+        session: { id: 's2', expires_at: 0 },
+      }
+    },
     login: async (body: Record<string, unknown>) => {
       lastLoginPayload = body
       if (forceMfaEnroll) {
@@ -159,6 +173,41 @@ describe('登录请求的组织参数', () => {
     expect(lastLoginPayload).not.toBeNull()
     expect(lastLoginPayload).toMatchObject({ institution_id: 2, username: 'testlogin' })
     expect(lastLoginPayload).not.toHaveProperty('institution')
+    // 应用驱动入口必须带上应用上下文（client_id）：否则后端按"组织默认应用"解析，
+    // 应用的准入判定与登录方式都会落空——典型的"配了不生效"
+    expect(lastLoginPayload).toMatchObject({ client_id: 'f555cd666d51f1066d6b' })
+  })
+
+  it('应用驱动登录的验证码通道同样携带 client_id（发码 + 登录）', async () => {
+    // 打开验证码通道（应用把 EmailCode 列为登录方式）
+    appSigninMethods = [{ name: 'Password' }, { name: 'EmailCode' }]
+    lastSendCodePayload = null
+    lastCodeLoginPayload = null
+    try {
+      render(
+        <I18nextProvider i18n={i18n}>
+          <MemoryRouter initialEntries={['/login?client_id=f555cd666d51f1066d6b']}>
+            <AuthProvider>
+              <LoginPage />
+            </AuthProvider>
+          </MemoryRouter>
+        </I18nextProvider>,
+      )
+      expect(await screen.findByText('Net Bird')).toBeInTheDocument()
+
+      await userEvent.click(screen.getByRole('tab', { name: i18n.t('auth.codeTab') }))
+      await userEvent.type(screen.getByLabelText(i18n.t('auth.codeTarget')), 'u@example.com')
+      await userEvent.click(screen.getByRole('button', { name: i18n.t('auth.sendCode') }))
+      await waitFor(() => expect(lastSendCodePayload).not.toBeNull())
+      expect(lastSendCodePayload).toMatchObject({ client_id: 'f555cd666d51f1066d6b' })
+
+      await userEvent.type(screen.getByLabelText(i18n.t('auth.codeValue')), '123456')
+      await userEvent.click(screen.getByRole('button', { name: i18n.t('auth.codeSignIn') }))
+      await waitFor(() => expect(lastCodeLoginPayload).not.toBeNull())
+      expect(lastCodeLoginPayload).toMatchObject({ client_id: 'f555cd666d51f1066d6b', code: '123456' })
+    } finally {
+      resetSigninMethods()
+    }
   })
 })
 

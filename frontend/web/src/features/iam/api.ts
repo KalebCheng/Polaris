@@ -1,7 +1,10 @@
 import { api } from '@/shared/api/client'
 import type {
   Application,
+  ApplicationAccess,
+  ApplicationAccessInput,
   ApplicationCreated,
+  ApplicationSubjectOptionPage,
   AccountStrategy,
   AppAccount,
   Cert,
@@ -170,6 +173,35 @@ export const userApi = {
 
 export const applicationApi = {
   list: (params?: ListParams) => api.get<PageData<Application>>('/applications', orgQ(toQuery(params))),
+  /** 访问授权（谁能使用该应用）：访问模式 + 三类主体名单 */
+  access: (id: number, institution?: string) =>
+    api.get<ApplicationAccess>(`/applications/${id}/access`, orgQ({ institution })),
+  /** 整体替换访问授权（空名单允许保存 = 该应用暂时无人可访问） */
+  setAccess: (id: number, body: ApplicationAccessInput) =>
+    api.put<ApplicationAccess>(`/applications/${id}/access`, body, orgQ()),
+  /**
+   * 可授权主体候选（按组织；新建应用时还没有主键也能取）。
+   * 独立端点而非复用 /users、/groups、/departments：应用管理员通常没有那些读权限，
+   * 复用会让选择器空转——"配了但选不出人"是最难排查的死配置。
+   *
+   * 分页：offset/limit + total（扁平列表分页器）。
+   * 部门树：不传 keyword 时按层返回**直接子节点**，`parentId` 指定要展开的节点（省略 = 顶层）。
+   */
+  subjectOptions: (params: {
+    type: string
+    keyword?: string
+    parentId?: number
+    offset?: number
+    limit?: number
+  }) =>
+    api.get<ApplicationSubjectOptionPage>('/applications/subject-options', {
+      type: params.type,
+      keyword: params.keyword,
+      parent_id: params.parentId,
+      offset: params.offset,
+      limit: params.limit,
+      ...orgQ(),
+    }),
   /** code 为应用标识（创建后不可修改） */
   get: (id: number, institution?: string) =>
     api.get<Application>(`/applications/${id}`, orgQ({ institution })),

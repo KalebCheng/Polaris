@@ -314,6 +314,9 @@ export default function LoginPage() {
       try {
         const result = await authApi.login({
           ...orgRef,
+          // 应用上下文：应用驱动登录页（?client_id=）必须把 client_id 带上，
+          // 否则后端按"组织默认应用"解析，应用的准入判定与登录方式都会落空。
+          client_id: clientId || undefined,
           username,
           password,
           mfa_code: code,
@@ -375,6 +378,9 @@ export default function LoginPage() {
     try {
       const result = await authApi.login({
         ...orgRef,
+        // 应用上下文：应用驱动登录页（?client_id=）必须把 client_id 带上，
+        // 否则后端按"组织默认应用"解析，应用的准入判定与登录方式都会落空。
+        client_id: clientId || undefined,
         username,
         password,
         from,
@@ -421,6 +427,7 @@ export default function LoginPage() {
     try {
       await authApi.sendCode({
         institution,
+        client_id: clientId || undefined,
         kind: codeKind,
         target: codeTarget,
         captcha_id: captcha.type === 'image' ? captcha.captcha_id : undefined,
@@ -449,7 +456,14 @@ export default function LoginPage() {
     if (!codeTarget || !code) return
     setSubmitting(true)
     try {
-      const result = await authApi.codeLogin({ institution, kind: codeKind, target: codeTarget, code, from })
+      const result = await authApi.codeLogin({
+        institution,
+        client_id: clientId || undefined,
+        kind: codeKind,
+        target: codeTarget,
+        code,
+        from,
+      })
       await finishLogin(String(result.user?.institution_id ?? ''), result.session?.from)
     } catch (error) {
       toast.error(describeError(error, t))
@@ -461,7 +475,7 @@ export default function LoginPage() {
 
   const startSso = async (provider: string) => {
     try {
-      const result = await authApi.oauthAuthorize(provider, from, institutionID ?? undefined)
+      const result = await authApi.oauthAuthorize(provider, from, institutionID ?? undefined, clientId || undefined)
       window.location.assign(result.authorization_url)
     } catch (error) {
       toast.error(describeError(error, t))

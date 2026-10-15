@@ -43,6 +43,7 @@ type Application struct {
 	deptRepo            *postgres.DepartmentRepository
 	userRepo            *postgres.UserRepository
 	appRepo             *postgres.ApplicationRepository
+	appSubjectRepo      *postgres.ApplicationSubjectRepository
 	providerRepo        *postgres.ProviderRepository
 	storageSettingsRepo *postgres.StorageSettingsRepository
 	roleRepo            *postgres.RoleRepository
@@ -77,6 +78,7 @@ type Application struct {
 	userSvc        *service.UserService
 	lockoutSvc     *service.LoginLockoutService
 	applicationSvc *service.ApplicationService
+	appAccessSvc   *service.ApplicationAccessService
 	providerSvc    *service.ProviderService
 	roleSvc        *service.RoleService
 	permissionSvc  *service.PermissionService
@@ -213,6 +215,7 @@ func (a *Application) initRepositories() {
 	a.deptRepo = postgres.NewDepartmentRepository(a.db)
 	a.userRepo = postgres.NewUserRepository(a.db)
 	a.appRepo = postgres.NewApplicationRepository(a.db)
+	a.appSubjectRepo = postgres.NewApplicationSubjectRepository(a.db)
 	a.providerRepo = postgres.NewProviderRepository(a.db)
 	a.storageSettingsRepo = postgres.NewStorageSettingsRepository(a.db)
 	a.roleRepo = postgres.NewRoleRepository(a.db)
@@ -415,6 +418,10 @@ func (a *Application) initServices() {
 		time.Duration(a.cfg.Auth.RateLimit.LoginWindowSeconds)*time.Second,
 	)
 	a.applicationSvc = service.NewApplicationService(a.appRepo, a.orgRepo, a.audits)
+	// 应用访问授权（谁能使用该应用）：唯一判定入口，见 Spec 第六阶段
+	a.appAccessSvc = service.NewApplicationAccessService(
+		a.appSubjectRepo, a.userRepo, a.groupRepo, a.deptRepo, a.sessionManager, a.audits,
+	)
 	a.storageSvc = service.NewStorageService(a.providerRuntime, a.userRepo, a.storageSettingsRepo, a.secretCipher, a.audits)
 	a.providerSvc = service.NewProviderService(
 		a.providerRepo, a.orgRepo, a.providerRuntime, a.oauthResolver, a.captchaSvc, a.storageSvc, a.audits,
@@ -454,6 +461,10 @@ func (a *Application) initServices() {
 	a.authSvc.SetProvisioning(a.provisionSvc)
 	// 后端登出挂钩：本地登出时通知下游 RP
 	a.authSvc.SetBackchannelLogout(a.backchannelSvc)
+	// 应用准入挂钩：登录族 / IdP 令牌链路 / 门户应用中心共用同一判定入口
+	a.authSvc.SetApplicationAccess(a.appAccessSvc)
+	a.oidcSvc.SetApplicationAccess(a.appAccessSvc)
+	a.provisionSvc.SetApplicationAccess(a.appAccessSvc)
 	// 迁移期兜底：把 yaml 里的外部身份提供方种子写入提供商表（幂等）
 	a.seedOAuthProviders(context.Background())
 	logger.Info("services initialized")
@@ -479,7 +490,7 @@ func (a *Application) initServer() {
 		User:        handler.NewUserHandler(a.userSvc, a.lockoutSvc, a.sessionSvc, a.provisionSvc, a.recordSvc, a.tokenSvc, a.storageSvc),
 		Institution: handler.NewInstitutionHandler(a.institutionSvc),
 		Department:  handler.NewDepartmentHandler(a.departmentSvc),
-		Application: handler.NewApplicationHandler(a.applicationSvc),
+		Application: handler.NewApplicationHandler(a.applicationSvc, a.appAccessSvc),
 		Provider:    handler.NewProviderHandler(a.providerSvc),
 		Storage:     handler.NewStorageHandler(a.storageSvc),
 		Role:        handler.NewRoleHandler(a.roleSvc),

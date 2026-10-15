@@ -91,7 +91,10 @@ func newApplicationHandlerForTest(row *repository.Application) (*ApplicationHand
 	gin.SetMode(gin.TestMode)
 	repo := &fakeApplicationRepo{items: map[int64]*repository.Application{row.ID: row}}
 	svc := service.NewApplicationService(repo, nil, service.NewAuditRecorder(nil))
-	return NewApplicationHandler(svc), repo
+	// 访问授权服务一并装配（列表处理器会给受限应用补"授权主体数"）；
+	// 本用例的应用非受限，因此不会触达主体仓库。
+	access := service.NewApplicationAccessService(nil, nil, nil, nil, nil, service.NewAuditRecorder(nil))
+	return NewApplicationHandler(svc, access), repo
 }
 
 func putApplication(h *ApplicationHandler, id, body string) (*gin.Context, *httptest.ResponseRecorder) {

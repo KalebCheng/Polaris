@@ -86,6 +86,19 @@ func (s *AuthService) Signup(ctx context.Context, req SignupRequest, ip, userAge
 			return nil, nil, err
 		}
 	}
+	// 应用准入：受限应用下自助注册一律拒绝——新用户不可能出现在授权名单里，
+	// 放进来只会得到"注册成功但登不进去"的死路。仅当请求显式携带应用上下文时判定（Spec FR-3）。
+	if s.access != nil {
+		appCtx, cerr := s.resolveAppContext(ctx, org.ID, institution, req.Application, req.ClientID)
+		if cerr != nil {
+			return nil, nil, cerr
+		}
+		if appCtx != nil && appCtx.AccessMode == repository.AccessModeRestricted {
+			s.audits.Record(ctx, name, org.ID, "auth.app_access_denied", appCtx.Code,
+				map[string]interface{}{"flow": "signup"})
+			return nil, nil, bizerrors.NewWithCode(bizerrors.CodeAppAccessDenied).WithDetail("application", appCtx.Code)
+		}
+	}
 
 	// 注册频率限制（按组织 + IP）
 	if s.rateLimiter != nil {

@@ -262,6 +262,12 @@ type Application struct {
 	IPRestriction string `db:"ip_restriction" json:"ip_restriction"`
 	IPWhitelist   string `db:"ip_whitelist" json:"ip_whitelist"`
 
+	// 访问模式（谁能使用该应用，见 Spec 第六阶段）：
+	//   all        → 全员可访问（默认；与引入该能力之前的行为完全一致）
+	//   restricted → 仅 application_subjects 名单内主体（含其子部门 / 子用户组）可访问
+	// 运行时判定唯一入口：ApplicationAccessService.Allowed（禁止在别处复制判定）。
+	AccessMode string `db:"access_mode" json:"access_mode"`
+
 	// 跳转地址（仅保留有运行时读取点的两项：注册入口与用户协议）
 	SignupURL  string `db:"signup_url" json:"signup_url"`
 	TermsOfUse string `db:"terms_of_use" json:"terms_of_use"`
@@ -321,6 +327,42 @@ type Application struct {
 
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
 	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
+}
+
+// 应用访问模式取值（applications.access_mode）。
+const (
+	AccessModeAll        = "all"        // 全员可访问（默认）
+	AccessModeRestricted = "restricted" // 受限：仅授权名单内主体可访问
+)
+
+// IsAccessMode 判定访问模式取值是否受支持。
+func IsAccessMode(mode string) bool {
+	return mode == AccessModeAll || mode == AccessModeRestricted
+}
+
+// 应用授权主体类型（application_subjects.subject_type）。
+const (
+	SubjectTypeUser       = "user"
+	SubjectTypeGroup      = "group"
+	SubjectTypeDepartment = "department"
+)
+
+// IsSubjectType 判定主体类型取值是否受支持。
+func IsSubjectType(t string) bool {
+	return t == SubjectTypeUser || t == SubjectTypeGroup || t == SubjectTypeDepartment
+}
+
+// ApplicationSubject 应用授权主体：应用准入名单的一条（三类主体统一落一张表）。
+//
+// SubjectName 是**组织内唯一标识名**（users.name / groups.name / departments.name），
+// 因此同一组织内不会歧义；展示名由服务层 JOIN 回实体装配（主体被删除时表现为"已失效"）。
+type ApplicationSubject struct {
+	ID            int64     `db:"id" json:"id"`
+	InstitutionID int64     `db:"institution_id" json:"institution_id"`
+	ApplicationID int64     `db:"application_id" json:"application_id"`
+	SubjectType   string    `db:"subject_type" json:"subject_type"`
+	SubjectName   string    `db:"subject_name" json:"subject_name"`
+	CreatedAt     time.Time `db:"created_at" json:"created_at"`
 }
 
 // Provider 提供商：覆盖外部身份提供方（第三方登录 / 标准 OIDC）、邮件、短信、人机校验、存储多类别。

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -11,12 +12,16 @@ import (
 	"polaris/internal/service"
 )
 
-// ApplicationHandler 应用处理器
-type ApplicationHandler struct{ svc *service.ApplicationService }
+// ApplicationHandler 应用处理器。
+// access 承载"谁能使用该应用"的读写（访问模式 + 三类授权主体），与 svc 同一资源、不同关注点。
+type ApplicationHandler struct {
+	svc    *service.ApplicationService
+	access *service.ApplicationAccessService
+}
 
 // NewApplicationHandler 创建应用处理器
-func NewApplicationHandler(svc *service.ApplicationService) *ApplicationHandler {
-	return &ApplicationHandler{svc: svc}
+func NewApplicationHandler(svc *service.ApplicationService, access *service.ApplicationAccessService) *ApplicationHandler {
+	return &ApplicationHandler{svc: svc, access: access}
 }
 
 // List 分页列出应用
@@ -27,7 +32,111 @@ func (h *ApplicationHandler) List(c *gin.Context) {
 		bizerrors.Fail(c, err)
 		return
 	}
-	bizerrors.RenderSuccess(c, gin.H{"items": toApplicationDTOs(items), "total": total, "page": page, "size": size})
+	dtos := toApplicationDTOs(items)
+	h.attachAccessCounts(c, items, dtos)
+	bizerrors.RenderSuccess(c, gin.H{"items": dtos, "total": total, "page": page, "size": size})
+}
+
+// attachAccessCounts 给受限应用补上"授权主体数"（列表「访问范围」列）。
+// 一次批量查询（不做 N+1）；计数失败不影响列表主数据（降级为 0，界面显示"受限"）。
+func (h *ApplicationHandler) attachAccessCounts(c *gin.Context, apps []*repository.Application, dtos []*applicationDTO) {
+	counts, err := h.access.SubjectCounts(c.Request.Context(), apps)
+	if err != nil {
+		return
+	}
+	for i, app := range apps {
+		if i < len(dtos) && app != nil {
+			dtos[i].AccessSubjectCount = counts[app.ID]
+		}
+	}
+}
+
+// Access 读取应用的访问授权（访问模式 + 三类授权主体）。
+func (h *ApplicationHandler) Access(c *gin.Context) {
+	app, err := h.svc.Get(c.Request.Context(), instID(c), h.codeByID(c))
+	if err != nil {
+		bizerrors.Fail(c, err)
+		return
+	}
+	access, err := h.access.Access(c.Request.Context(), app)
+	if err != nil {
+		bizerrors.Fail(c, err)
+		return
+	}
+	bizerrors.RenderSuccess(c, access)
+}
+
+// SetAccess 整体替换应用的访问授权（模式 + 名单，单事务）。
+//
+// 空名单是合法输入（= 该应用暂时无人可访问，见 Spec Q4）；被移除主体的成员在该应用下的
+// 会话会被立即失效（FR-7）。
+func (h *ApplicationHandler) SetAccess(c *gin.Context) {
+	var in service.ApplicationAccessInput
+	if !bindJSON(c, &in) {
+		return
+	}
+	app, err := h.svc.Get(c.Request.Context(), instID(c), h.codeByID(c))
+	if err != nil {
+		bizerrors.Fail(c, err)
+		return
+	}
+	access, err := h.access.SetAccess(c.Request.Context(), currentUser(c), app, in)
+	if err != nil {
+		bizerrors.Fail(c, err)
+		return
+	}
+	bizerrors.RenderSuccess(c, access)
+}
+
+// SubjectOptions 返回可授权主体候选（关键词 + 上限）。
+//
+// 独立端点的动机：应用管理员往往没有 user:read / group:read / department:read，
+// 复用那些列表接口会让选择器空转——"配了但选不出人"是最难排查的死配置。
+//
+// 作用域是**组织**而不是某个应用：应用向导在"新建"阶段还没有应用主键，
+// 候选主体必须先能取到（路由见 server/router.go）。
+func (h *ApplicationHandler) SubjectOptions(c *gin.Context) {
+	limit, offset, ok := pageQuery(c)
+	if !ok {
+		return
+	}
+	var parentID *int64
+	if raw := query(c, "parent_id"); raw != "" {
+		id, perr := strconv.ParseInt(raw, 10, 64)
+		if perr != nil {
+			bizerrors.Fail(c, bizerrors.ErrInvalidParams.WithDetail("parent_id", raw))
+			return
+		}
+		parentID = &id
+	}
+	page, err := h.access.SubjectOptions(c.Request.Context(), instID(c),
+		query(c, "type"), query(c, "keyword"), parentID, offset, limit)
+	if err != nil {
+		bizerrors.Fail(c, err)
+		return
+	}
+	bizerrors.RenderSuccess(c, page)
+}
+
+// pageQuery 解析候选择器的 limit / offset（部门树按层加载与扁平列表分页共用）。
+func pageQuery(c *gin.Context) (limit, offset int, ok bool) {
+	if raw := query(c, "limit"); raw != "" {
+		n, perr := strconv.Atoi(raw)
+		if perr != nil || n <= 0 {
+			bizerrors.Fail(c, bizerrors.ErrInvalidParams.WithDetail("limit", raw))
+			return 0, 0, false
+		}
+		limit = n
+	}
+	if raw := query(c, "offset"); raw != "" {
+		n, perr := strconv.Atoi(raw)
+		if perr != nil || n < 0 {
+			bizerrors.Fail(c, bizerrors.ErrInvalidParams.WithDetail("offset", raw))
+			return 0, 0, false
+		}
+		offset = n
+	}
+	return limit, offset, true
 }
 
 // Get 查询应用

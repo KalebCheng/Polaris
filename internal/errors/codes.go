@@ -156,3 +156,11 @@ var (
 	CodeCertNotFound        = defineCode("CERT_NOT_FOUND", "certificate not found", http.StatusNotFound, "referenced certificate does not exist")
 	CodeTokenNotFound       = defineCode("TOKEN_NOT_FOUND", "token not found", http.StatusNotFound, "referenced token does not exist")
 )
+
+// 应用准入业务码（见 docs/specs/261015-application-access-phase6.md）
+var (
+	// CodeAppAccessDenied 用户不在该应用的访问授权范围内（受限应用 + 未命中名单）。
+	// 判定语义对所有人一致（含管理员）；判定作用域限定在"携带应用上下文的请求"。
+	CodeAppAccessDenied = defineCode("APP_ACCESS_DENIED", "you are not authorized to access this application",
+		http.StatusForbidden, "authenticated user is outside the application access scope")
+)

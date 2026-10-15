@@ -138,3 +138,73 @@ func (r *DepartmentRepository) Count(ctx context.Context, q repository.ListQuery
 	err := r.db.QueryRow(ctx, sql, args...).Scan(&n)
 	return n, mapError(err, "")
 }
+
+// ExpandMembersWithDescendants 展开"这些部门 + 其全部子部门"内的用户名集合。
+//
+// 用 parent_id 递归而非 code_path 前缀匹配：两者等价，但前者不依赖路径字符串格式，
+// 且复用与用户组展开同一套递归写法（部门移动时无需特殊处理）。
+func (r *DepartmentRepository) ExpandMembersWithDescendants(ctx context.Context, institutionID int64, names []string) ([]string, error) {
+	if len(names) == 0 {
+		return []string{}, nil
+	}
+	rows, err := r.db.Query(ctx, `WITH RECURSIVE tree AS (
+			SELECT d.id FROM departments d WHERE d.institution_id = $1 AND d.name = ANY($2)
+			UNION
+			SELECT c.id FROM departments c JOIN tree t ON c.parent_id = t.id
+		)
+		SELECT DISTINCT u.name FROM users u JOIN tree t ON u.department_id = t.id
+		WHERE u.institution_id = $1
+		ORDER BY 1`, institutionID, names)
+	if err != nil {
+		return nil, mapError(err, "")
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, mapError(err, "")
+		}
+		out = append(out, name)
+	}
+	return out, mapError(rows.Err(), "")
+}
+
+// Children 返回某节点的**直接子部门**（parentID 为 nil 时取顶层），并返回该层总数。
+//
+// 用途：应用授权弹窗的部门树按层懒加载——顶层先取一页，展开某节点时再取它的孩子，
+// 避免一次性把整棵部门树（大组织可达数百节点）拉到前端。
+func (r *DepartmentRepository) Children(ctx context.Context, institutionID int64, parentID *int64, offset, limit int) ([]*repository.Department, int64, error) {
+	cond := "WHERE institution_id=$1 AND parent_id IS NULL"
+	args := []interface{}{institutionID}
+	if parentID != nil {
+		cond = "WHERE institution_id=$1 AND parent_id=$2"
+		args = append(args, *parentID)
+	}
+	var total int64
+	if err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM departments `+cond, args...).Scan(&total); err != nil {
+		return nil, 0, mapError(err, "")
+	}
+	queryArgs := append(append([]interface{}{}, args...), limit, offset)
+	sql := `SELECT ` + deptColumns + ` FROM departments ` + cond +
+		` ORDER BY sort_index ASC, name ASC LIMIT $` + strconv.Itoa(len(args)+1) + ` OFFSET $` + strconv.Itoa(len(args)+2)
+	rows, err := r.db.Query(ctx, sql, queryArgs...)
+	if err != nil {
+		return nil, 0, mapError(err, "")
+	}
+	defer rows.Close()
+	result := []*repository.Department{}
+	for rows.Next() {
+		d, err := scanDepartment(rows)
+		if err != nil {
+			return nil, 0, mapError(err, "")
+		}
+		result = append(result, d)
+	}
+	return result, total, mapError(rows.Err(), "")
+}
+
+// ExistingNames 返回 names 中确实存在于本组织的部门标识集合（授权名单逐项校验用）。
+func (r *DepartmentRepository) ExistingNames(ctx context.Context, institutionID int64, names []string) (map[string]bool, error) {
+	return existingNames(ctx, r.db, "departments", institutionID, names)
+}

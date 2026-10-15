@@ -147,6 +147,12 @@ func RegisterRoutes(engine *gin.Engine, mw *Middleware, h *Handlers) {
 	apps.PUT("/:id", mw.RequirePermission("application", "update"), h.Application.Update)
 	apps.DELETE("/:id", mw.RequirePermission("application", "delete"), h.Application.Delete)
 	apps.POST("/:id/reset-secret", mw.RequirePermission("application", "update"), h.Application.ResetSecret)
+	// 应用访问授权（谁能使用该应用）：读取随 application:read，写入随 application:update
+	apps.GET("/:id/access", mw.RequirePermission("application", "read"), h.Application.Access)
+	apps.PUT("/:id/access", mw.RequirePermission("application", "update"), h.Application.SetAccess)
+	// 可授权主体候选：必须有独立端点，否则只有 application:read 的应用管理员选不出人；
+	// 作用域是组织（新建应用时还没有主键，候选必须先能取到）
+	apps.GET("/subject-options", mw.RequirePermission("application", "read"), h.Application.SubjectOptions)
 
 	// 身份提供方
 	providers := authGroup.Group("/providers")

@@ -19,6 +19,9 @@ TEST_DEPT_CHILD="smoke-dept-child-$RUN_ID"
 TEST_APP="smoke-app-$RUN_ID"
 TEST_SIGNUP_USER="smoke-signup-$RUN_ID"
 TEST_USER5="smoke-user5-$RUN_ID"
+TEST_ACCESS_USER="smoke-access-$RUN_ID"
+TEST_ACCESS_DEPT="smoke-access-dept-$RUN_ID"
+TEST_ACCESS_DEPT_CHILD="smoke-access-dept-child-$RUN_ID"
 TEST_DEPT5="smoke-dept5-$RUN_ID"
 TEST_GROUP5="smoke-group5-$RUN_ID"
 TEST_STORAGE="smoke-storage-$RUN_ID"
@@ -47,6 +50,9 @@ cleanup() {
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/groups/${GROUP5_ID:-0}" >/dev/null 2>&1 || true
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/departments/${DEPT5_ID:-0}" >/dev/null 2>&1 || true
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/users/${USER5_ID:-0}" >/dev/null 2>&1 || true
+    curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/users/${ACCESS_USER_ID:-0}" >/dev/null 2>&1 || true
+    curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/departments/${ACCESS_DEPT_CHILD_ID:-0}" >/dev/null 2>&1 || true
+    curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/departments/${ACCESS_DEPT_ID:-0}" >/dev/null 2>&1 || true
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/connectors/${CONNECTOR_ID:-0}" >/dev/null 2>&1 || true
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/account-strategies/${STRATEGY_ID:-0}" >/dev/null 2>&1 || true
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/applications/${TEST_APP_ID:-0}" >/dev/null 2>&1 || true
@@ -482,6 +488,125 @@ expect_code 429 "$(code -X POST "$BASE/api/v1/auth/login" -H 'Content-Type: appl
 expect_code 200 "$(code -b "$JAR" -X PUT "$BASE/api/v1/applications/$TEST_APP_ID" -H 'Content-Type: application/json' \
   --data-raw "$(printf '{"institution_id":%s,"code":"%s","name":"冒烟应用","signin_methods":[{"name":"Password"}],"self_signup_enabled":false,"grant_types":["authorization_code","refresh_token","password"],"redirect_uris":["%s"],"signin_error_limit":0,"signin_retry_wait_minutes":0}' "$ORG_ID" "$TEST_APP" "$REDIRECT_URI")")" \
   "复位登录失败限制（0 = 平台默认）→ 200"
+
+step "12e. 应用访问授权（谁能使用该应用）"
+# 默认「全员可访问」：读到的模式是 all，三类名单是空集合（不是 null）
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/applications/$TEST_APP_ID/access")" "GET /applications/:id/access → 200"
+expect_ok "默认 access_mode=all 且三类名单为空集合" "
+import json
+d = json.load(open('/tmp/polaris-smoke-body'))['data']
+ok = d.get('access_mode') == 'all' and d.get('users') == [] and d.get('groups') == [] and d.get('departments') == []
+print('OK' if ok else '实际 %r' % d)"
+
+# 可授权主体候选：**按组织**取（应用管理员通常没有 user/group/department 读权限）
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/applications/subject-options?institution=$ORG_ID&type=user&offset=0&limit=5")"   "GET /applications/subject-options（用户候选，分页）→ 200"
+expect_ok "扁平候选下发 total（分页器数据源）" "
+import json
+d = json.load(open('/tmp/polaris-smoke-body'))['data']
+print('OK' if isinstance(d.get('total'), int) else '实际 %r' % d)"
+
+# 部门候选是**树**：不带 parent_id 只返回顶层，带 parent_id 才取该节点的下一层（弹窗按层懒加载）
+expect_code 201 "$(code -b "$JAR" -X POST "$BASE/api/v1/departments" -H 'Content-Type: application/json' --data-raw "$(printf '{"name":"%s","display_name":"准入父部门"}' "$TEST_ACCESS_DEPT")")"   "创建准入测试部门（父）→ 201"
+ACCESS_DEPT_ID="$(json_field id)"
+expect_code 201 "$(code -b "$JAR" -X POST "$BASE/api/v1/departments" -H 'Content-Type: application/json' --data-raw "$(printf '{"name":"%s","display_name":"准入子部门","parent_id":%s}' "$TEST_ACCESS_DEPT_CHILD" "$ACCESS_DEPT_ID")")"   "创建准入测试部门（子）→ 201"
+ACCESS_DEPT_CHILD_ID="$(json_field id)"
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/applications/subject-options?institution=$ORG_ID&type=department&limit=50")"   "部门候选：顶层 → 200"
+expect_ok "顶层不含子部门，且带 id / has_child（前端据此画树）" "
+import json
+d = json.load(open('/tmp/polaris-smoke-body'))['data']
+names = [i['name'] for i in d['items']]
+parent = [i for i in d['items'] if i['name'] == '$TEST_ACCESS_DEPT']
+ok = '$TEST_ACCESS_DEPT_CHILD' not in names and parent and parent[0].get('has_child') is True and parent[0].get('id')
+print('OK' if ok else '实际 %r' % d)"
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/applications/subject-options?institution=$ORG_ID&type=department&parent_id=$ACCESS_DEPT_ID&limit=50")"   "部门候选：展开父部门（按层取子）→ 200"
+expect_ok "展开后只含它的直接子部门" "
+import json
+d = json.load(open('/tmp/polaris-smoke-body'))['data']
+names = [i['name'] for i in d['items']]
+print('OK' if names == ['$TEST_ACCESS_DEPT_CHILD'] else '实际 %r' % names)"
+# parent_id 只对部门有意义，且与关键词搜索互斥：一律显式拒绝（不静默忽略）
+expect_code 400 "$(code -b "$JAR" "$BASE/api/v1/applications/subject-options?institution=$ORG_ID&type=user&parent_id=$ACCESS_DEPT_ID")"   "parent_id 用于非部门类型 → 400"
+expect_code 400 "$(code -b "$JAR" "$BASE/api/v1/applications/subject-options?institution=$ORG_ID&type=department&parent_id=$ACCESS_DEPT_ID&keyword=x")"   "parent_id 与 keyword 互斥 → 400"
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/applications/subject-options?institution=$ORG_ID&type=department&keyword=准入子部门")"   "部门关键词搜索（跨层级扁平结果）→ 200"
+expect_ok "搜索结果带层级路径（关键词模式下不按层）" "
+import json
+d = json.load(open('/tmp/polaris-smoke-body'))['data']
+hit = [i for i in d['items'] if i['name'] == '$TEST_ACCESS_DEPT_CHILD']
+print('OK' if hit and '准入父部门' in (hit[0].get('path') or '') else '实际 %r' % d)"
+expect_code 200 "$(code -b "$JAR" -X DELETE "$BASE/api/v1/departments/$ACCESS_DEPT_CHILD_ID")" "删除准入测试子部门 → 200"
+ACCESS_DEPT_CHILD_ID=""
+expect_code 200 "$(code -b "$JAR" -X DELETE "$BASE/api/v1/departments/$ACCESS_DEPT_ID")" "删除准入测试父部门 → 200"
+ACCESS_DEPT_ID=""
+
+expect_code 201 "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
+  --data-raw "$(create_user_body "$ORG_ID" "$TEST_ACCESS_USER" 准入用户 "smoke-access-$RUN_ID@polaris.local" 'Smoke@12345')")" \
+  "创建准入测试用户 → 201"
+ACCESS_USER_ID="$(json_field id)"
+JAR_A="$(mktemp "${TMPDIR:-/tmp}/polaris-smoke-a.XXXXXX")"
+
+# 受限 + 空名单：**允许保存**（Q4），该应用暂时无人可访问
+expect_code 200 "$(code -b "$JAR" -X PUT "$BASE/api/v1/applications/$TEST_APP_ID/access" -H 'Content-Type: application/json' \
+  --data-raw '{"access_mode":"restricted","users":[],"groups":[],"departments":[]}')" \
+  "设置受限 + 空名单 → 200（不做拦截）"
+expect_code 403 "$(code -X POST "$BASE/api/v1/auth/login" -H 'Content-Type: application/json' \
+  --data-raw "$(printf '{"institution_id":%s,"client_id":"%s","username":"%s","password":"Smoke@12345"}' "$ORG_ID" "$CLIENT_ID" "$TEST_ACCESS_USER")")" \
+  "受限应用（空名单）带 client_id 登录 → 403"
+# 判定作用域（Q6）：不带应用上下文的登录 = 登录平台，不做应用准入判定
+# （正因如此，误配永远不会把管理员挡在控制台之外）
+expect_code 200 "$(code -c "$JAR_A" -X POST "$BASE/api/v1/auth/login" -H 'Content-Type: application/json' \
+  --data-raw "$(printf '{"institution_id":%s,"username":"%s","password":"Smoke@12345"}' "$ORG_ID" "$TEST_ACCESS_USER")")" \
+  "不带应用上下文的平台登录 → 200（平台登录不判定）"
+
+# 加入名单后放行（login 请求通过 client_id 携带应用上下文）
+expect_code 200 "$(code -b "$JAR" -X PUT "$BASE/api/v1/applications/$TEST_APP_ID/access" -H 'Content-Type: application/json' \
+  --data-raw "$(printf '{"access_mode":"restricted","users":["%s"],"groups":[],"departments":[]}' "$TEST_ACCESS_USER")")" \
+  "加入授权名单 → 200"
+expect_code 200 "$(code -X POST "$BASE/api/v1/auth/login" -H 'Content-Type: application/json' \
+  --data-raw "$(printf '{"institution_id":%s,"client_id":"%s","username":"%s","password":"Smoke@12345"}' "$ORG_ID" "$CLIENT_ID" "$TEST_ACCESS_USER")")" \
+  "名单内用户带 client_id 登录 → 200"
+
+# 回归：应用主表单是整行 UPDATE，**不得**重置访问模式（否则受限被静默放宽成全员可访问）
+expect_code 200 "$(code -b "$JAR" -X PUT "$BASE/api/v1/applications/$TEST_APP_ID" -H 'Content-Type: application/json' \
+  --data-raw "$(printf '{"name":"Net Bird Smoke","signin_methods":[{"name":"Password"}],"self_signup_enabled":true,"signup_auto_signin":true,"grant_types":["authorization_code","refresh_token","password"],"redirect_uris":["%s"]}' "$REDIRECT_URI")")" \
+  "更新应用主表单（不带 access_mode）→ 200"
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/applications/$TEST_APP_ID/access")" "回读访问授权 → 200"
+expect_ok "主表单更新后访问模式仍是 restricted" "
+import json
+d = json.load(open('/tmp/polaris-smoke-body'))['data']
+print('OK' if d.get('access_mode') == 'restricted' else 'access_mode=%r（被静默放宽）' % d.get('access_mode'))"
+
+# 列表「访问范围」列：access_mode + 授权主体数
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/applications?institution=$ORG_ID&size=200")" "GET /applications（列表）→ 200"
+expect_ok "列表按应用下发 access_mode 与 access_subject_count" "
+import json
+items = json.load(open('/tmp/polaris-smoke-body'))['data']['items']
+target = [a for a in items if a.get('code') == '$TEST_APP']
+print('OK' if target and target[0].get('access_mode') == 'restricted' and target[0].get('access_subject_count') == 1 else '实际 %r' % target)"
+
+# 未知主体一律拒绝（不静默忽略：否则会出现"界面上加了、运行时不生效"）
+expect_code 400 "$(code -b "$JAR" -X PUT "$BASE/api/v1/applications/$TEST_APP_ID/access" -H 'Content-Type: application/json' \
+  --data-raw '{"access_mode":"restricted","users":["no-such-user-smoke"]}')" \
+  "未知主体 → 400（INVALID_PARAMS）"
+
+# 作为 IdP：未授权用户访问 authorize 必须按 OAuth2 规范回跳 error=access_denied
+expect_code 200 "$(code -b "$JAR" -X PUT "$BASE/api/v1/applications/$TEST_APP_ID/access" -H 'Content-Type: application/json' \
+  --data-raw '{"access_mode":"restricted","users":[],"groups":[],"departments":[]}')" \
+  "移出名单（受限 + 空名单）→ 200"
+AUTHORIZE_LOCATION="$(curl -sS -o /dev/null -w '%{redirect_url}' -b "$JAR_A" \
+  "$BASE/oauth/authorize?client_id=$CLIENT_ID&redirect_uri=$REDIRECT_URI&response_type=code&scope=openid&state=smoke-denied")"
+case "$AUTHORIZE_LOCATION" in
+  *"error=access_denied"*)
+    green "PASS  未授权用户的 authorize → 回跳 error=access_denied（${AUTHORIZE_LOCATION}）" ;;
+  *)
+    red "FAIL  authorize 未按 OAuth2 规范回跳拒绝：$AUTHORIZE_LOCATION"; exit 1 ;;
+esac
+
+# 复位为「全员可访问」：后续用例（password grant / 授权码流程）沿用默认语义
+expect_code 200 "$(code -b "$JAR" -X PUT "$BASE/api/v1/applications/$TEST_APP_ID/access" -H 'Content-Type: application/json' \
+  --data-raw '{"access_mode":"all","users":[],"groups":[],"departments":[]}')" \
+  "复位为全员可访问 → 200"
+expect_code 200 "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$ACCESS_USER_ID")" "删除准入测试用户 → 200"
+ACCESS_USER_ID=""
 
 step "13. 密码模式下发令牌（OAuth2 password grant）"
 expect_code 200 "$(code -X POST "$BASE/oauth/token" \

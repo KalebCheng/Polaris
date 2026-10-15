@@ -30,7 +30,8 @@ import { SigninMethodIcon } from '@/shared/components/signin-method-icon'
 import { TagInput } from '@/shared/components/tag-input'
 import { SwitchField } from '@/shared/components/switch-field'
 import { UploadOrURL } from '@/shared/components/upload-or-url'
-import type { Application, Cert, Group, Provider } from '@/shared/api/types'
+import type { Application, ApplicationAccess, Cert, Group, Provider } from '@/shared/api/types'
+import { ApplicationAccessEditor } from './application-access-editor'
 import { Field } from './field'
 import {
   addedMethodKinds,
@@ -46,6 +47,7 @@ import {
   signupItemOptions,
   smsDependentMethods,
   tokenFieldOptions,
+  type ApplicationAccessFormValue,
   type ApplicationFormValue,
   type ScopeRow,
   type SigninMethodEntry,
@@ -59,6 +61,7 @@ const APP_STEPS: WizardStep[] = [
   { key: 'signup', titleKey: 'applications.stepSignup', descriptionKey: 'applications.stepSignupHint' },
   { key: 'client', titleKey: 'applications.stepClient', descriptionKey: 'applications.stepClientHint' },
   { key: 'security', titleKey: 'applications.stepSecurity', descriptionKey: 'applications.stepSecurityHint' },
+  { key: 'access', titleKey: 'applications.stepAccess', descriptionKey: 'applications.stepAccessHint' },
 ]
 
 const categoryOptions: SelectOption[] = [
@@ -109,6 +112,11 @@ interface ApplicationWizardProps {
   onFinish: () => void
   finishLabelKey: string
   onCancel?: () => void
+  /** 访问授权（谁能使用该应用）：独立于应用主表单，走 PUT /applications/:id/access */
+  access: ApplicationAccessFormValue
+  onAccessChange: (next: ApplicationAccessFormValue) => void
+  /** 已保存的授权详情（含展示名与"已失效"标记），用于把已选主体显示成人类可读的名称 */
+  accessDetail?: ApplicationAccess | null
 }
 
 /**
@@ -127,6 +135,9 @@ export function ApplicationWizard({
   onFinish,
   finishLabelKey,
   onCancel,
+  access,
+  onAccessChange,
+  accessDetail,
 }: ApplicationWizardProps) {
   const { t } = useTranslation()
 
@@ -1161,6 +1172,12 @@ export function ApplicationWizard({
             </div>
           </FormSection>
         </>
+      ) : null}
+
+      {current === 5 ? (
+        <FormSection titleKey="applications.sectionAccess" descriptionKey="applications.sectionAccessHint">
+          <ApplicationAccessEditor access={access} onChange={onAccessChange} detail={accessDetail} />
+        </FormSection>
       ) : null}
     </FormWizard>
   )

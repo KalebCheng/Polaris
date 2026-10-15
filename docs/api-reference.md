@@ -117,6 +117,8 @@
 | GET/POST | `/applications` | `application:read/create` |
 | GET/PUT/DELETE | `/applications/:name` | `application:read/update/delete` |
 | POST | `/applications/:name/reset-secret` | `application:update` |
+| GET/PUT | `/applications/:name/access` | `application:read/update` |
+| GET | `/applications/subject-options?type=user\|group\|department&keyword=&parent_id=&offset=&limit=` | `application:read` |
 | GET/POST | `/providers` · GET/PUT/DELETE `/providers/:id` | `provider:*` |
 | GET | `/providers/catalog` · POST `/providers/:id/test` | `provider:read/update` |
 | GET/POST | `/certs` · GET/PUT/DELETE `/certs/:name` | `cert:*` |
@@ -124,6 +126,26 @@
 | POST | `/tokens/:name/revoke` · DELETE `/tokens/:name` | `token:update/delete` |
 
 **应用字段补充（P4）**：`adapter`（`default`/`custom`）与 `adapter_config`（`{"claimMap": {...}}`），见《OIDC 接入指南》§4.1。
+
+**应用访问授权（第六阶段）**：`applications.access_mode` 为 `all`（全员可访问，默认）或 `restricted`（仅授权名单内主体）。
+
+- `PUT /applications/:name/access`：整体替换访问模式与名单，请求体 `{"access_mode":"restricted","users":["zhangsan"],"groups":["vpn-users"],"departments":["tech"]}`；
+  **空名单是合法输入**（= 该应用暂时无人可访问，可保存后补授权）；不存在的主体一律 `INVALID_PARAMS`（不做静默忽略）。
+- 语义：部门含子部门、用户组含子组（"授权父级 = 覆盖整个子树"）；判定**对所有人一致，没有管理员直通**。
+- 判定作用域：只在请求携带**应用上下文**（`client_id` / `application`）时生效——应用的登录、授权码、令牌（含 `refresh_token` 轮换）与门户应用中心都被约束，
+  而"不带应用上下文的登录"= 登录平台，**不做准入判定**（因此误配永远不会把人挡在控制台之外）。
+- 拒绝表现：登录族返回 `403 APP_ACCESS_DENIED` 且不建立会话；`/oauth/authorize` 按 OAuth2 规范回跳 `redirect_uri?error=access_denied&state=...`。
+- `GET /applications/:name/access` 返回 `{access_mode, users[], groups[], departments[]}`，每项含 `name` / `display_name` / `path` / `missing`（主体已删除时 `missing=true`）。
+- 应用列表额外下发 `access_mode` 与 `access_subject_count`（供列表「访问范围」列）。
+
+**可授权主体候选（`GET /applications/subject-options`）**：按**组织**取（新建应用时还没有主键也能用），只需 `application:read`。
+
+- 返回 `{items: [...], total: N}`；扁平列表用 `offset`/`limit` 分页（`limit` 上限 200）。
+- `type=user|group`：扁平分页列表，`keyword` 同时匹配标识与展示名，`path` 为层级路径（用户组含父组链）。
+- `type=department`：
+  - **带 `keyword`** → 跨层级的扁平搜索结果（带 `name_path`，便于按名字直达），与扁平列表一样分页；
+  - **不带 `keyword`** → **按层返回直接子节点**（省略 `parent_id` 即顶层），每项带 `id`（展开时作为 `parent_id` 再取一层）与 `has_child`（决定是否画展开箭头）。控制台弹窗的部门树据此逐层懒加载，不会一次拉全整棵树。
+- `parent_id` **只对部门有意义**：传给其它类型、或与 `keyword` 同时出现，一律 `INVALID_PARAMS`（不静默忽略）。
 
 ### 3.5 会话 / 审计 / 同步器
 

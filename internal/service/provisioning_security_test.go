@@ -23,6 +23,11 @@ func (r *stubConnectorRepo) Create(_ context.Context, c *repository.Connector) (
 	return 1, nil
 }
 
+// List 返回空集合：门户应用中心用例（FR-5）不关心 JIT 连接器分支。
+func (r *stubConnectorRepo) List(context.Context, repository.ListQuery) ([]*repository.Connector, error) {
+	return nil, nil
+}
+
 type stubInstitutionRepo struct {
 	repository.InstitutionRepository
 }

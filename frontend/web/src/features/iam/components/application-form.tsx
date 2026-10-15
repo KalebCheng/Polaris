@@ -1,5 +1,5 @@
 import type { SelectOption } from '@/shared/ui'
-import type { Application, SigninMethod } from '@/shared/api/types'
+import type { Application, ApplicationAccess, SigninMethod } from '@/shared/api/types'
 
 /**
  * 登录方式条目：**一条 = 一张卡片**（逐个添加、各自配参数）。
@@ -561,4 +561,36 @@ function signupFieldsFromApplication(app: Application): SignupFieldRow[] {
     else rows.push(row)
   }
   return rows
+}
+
+/**
+ * 应用访问授权（向导第 6 步「授权与访问」）。
+ *
+ * 刻意**不放进 ApplicationFormValue**：授权由独立端点读写（PUT /applications/:id/access），
+ * 与应用主表单整行更新是两条写入路径，混在一起会让"零值覆盖"再次发生（历史教训）。
+ */
+export interface ApplicationAccessFormValue {
+  /** all = 全员可访问（默认）| restricted = 受限（仅名单内主体可访问） */
+  mode: string
+  /** 主体标识名（users.name / groups.name / departments.name） */
+  users: string[]
+  groups: string[]
+  departments: string[]
+}
+
+export const emptyApplicationAccess: ApplicationAccessFormValue = {
+  mode: 'all',
+  users: [],
+  groups: [],
+  departments: [],
+}
+
+/** 接口返回的授权全景 → 表单值 */
+export function accessToFormValue(access: ApplicationAccess): ApplicationAccessFormValue {
+  return {
+    mode: access.access_mode === 'restricted' ? 'restricted' : 'all',
+    users: (access.users ?? []).map((item) => item.name),
+    groups: (access.groups ?? []).map((item) => item.name),
+    departments: (access.departments ?? []).map((item) => item.name),
+  }
 }
