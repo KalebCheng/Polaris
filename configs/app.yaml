@@ -1,0 +1,124 @@
+# Polaris 配置文件
+# 安全约定：本文件只允许占位符；真实密钥必须通过 POLARIS_* 环境变量注入（见 AGENTS.md §3.5）
+
+app:
+  name: polaris
+  version: 0.1.0
+  env: development          # development/staging/production
+  port: 8100
+
+log:
+  level: debug              # debug/info/warn/error
+  format: json              # json/console
+  output: stdout
+
+database:
+  host: localhost
+  port: 5432
+  user: polaris
+  password: polaris123       # 敏感，建议用 POLARIS_DB_PASSWORD 覆盖
+  name: polaris
+  sslmode: disable
+  max_open_conns: 25
+  max_idle_conns: 5
+  conn_max_lifetime: 300
+  auto_migrate: true        # 启动时自动执行未应用迁移
+  migrations_dir: migrations
+  seed: true                # 启动时写入内置组织/管理员（生产建议关闭或显式提供强口令）
+
+redis:
+  host: localhost
+  port: 6379
+  password: "redis"         # 敏感，POLARIS_REDIS_PASSWORD
+  db: 0
+  pool_size: 10
+  min_idle_conns: 2
+
+auth:
+  jwt_secret: change-me-in-production   # 必须用 POLARIS_JWT_SECRET 覆盖
+  session_ttl: 3600         # 会话有效期（秒）
+  refresh_ttl: 7200
+  issuer: polaris            # JWT/ID Token 签发者
+  rate_limit:
+    login_max_attempts: 5
+    login_window_seconds: 300
+  # 作为 OIDC Provider（IdP）对外提供的能力
+  oidc:
+    issuer: ""              # 对外 issuer（默认回退到 oauth.base_url）
+    cert_name: cert-built-in  # 签名证书名（certs 表）
+    # 附加校验密钥（JWKS 多密钥平滑轮换）：这些证书的公钥一并发布到 JWKS 并用于验签既有令牌，
+    # 但不用于签发新令牌。配置项也可用 POLARIS_OIDC_ADDITIONAL_KEY_CERT_NAMES 覆盖（逗号分隔）。
+    additional_key_cert_names: []
+    access_token_expire_hours: 1
+    refresh_token_expire_hours: 24
+    authorization_code_expire_seconds: 300
+  # 作为 SP 接入外部 IdP 的能力（仅内置钉钉 / 微信 / 飞书，其余不实现）
+  oauth:
+    base_url: http://127.0.0.1:8100
+    success_redirect: http://127.0.0.1:5173/
+    redirect_uri: http://127.0.0.1:5173/oauth/callback
+    state_ttl: 600
+    cookie_secure: false    # 生产必须为 true，POLARIS_COOKIE_SECURE=true
+    # 说明（第四阶段起）：外部身份提供方的权威来源是控制台「提供商」（providers 表）。
+    # 本节仅作**迁移期种子**：启动时若目标组织尚无同名提供商，则写入一次；
+    # default_institution 同时作为"未显式指定组织时发起 SSO"的兜底落地组织。
+    default_institution: built-in
+    providers:
+      # 例：把钉钉种子写入 built-in 组织（enabled: true 才会写入；写入后请在控制台维护）
+      dingtalk:
+        type: dingtalk
+        enabled: false
+        display_name: 钉钉
+        client_id: ""
+        client_secret: ""   # POLARIS_OAUTH_DINGTALK_CLIENT_SECRET
+        provisioning:
+          mode: jit
+          default_role: user
+          auto_create: true
+          link_by_email: true
+          allowed_domains: []
+      wechat:
+        type: wechat
+        enabled: false
+        display_name: 微信
+        client_id: ""
+        client_secret: ""   # POLARIS_OAUTH_WECHAT_CLIENT_SECRET
+        provisioning:
+          mode: jit
+          auto_create: true
+          link_by_email: true
+      feishu:
+        type: feishu
+        enabled: false
+        display_name: 飞书
+        client_id: ""
+        client_secret: ""   # POLARIS_OAUTH_FEISHU_CLIENT_SECRET
+        scopes: []
+        provisioning:
+          mode: jit
+          auto_create: true
+          link_by_email: true
+
+# CORS（控制"谁能读取跨域响应"，浏览器强制）
+cors:
+  allow_origins:
+    - "*"
+  allow_methods:
+    - GET
+    - POST
+    - PUT
+    - DELETE
+    - OPTIONS
+  allow_headers:
+    - Authorization
+    - Content-Type
+    - X-Request-ID
+
+# 安全配置（与 cors 独立：cors 管"读"，csrf 管"写"）
+security:
+  # CSRF 可信来源白名单：空 = 跳过 Origin 校验（仅限开发）；生产必须显式配置
+  csrf_allowed_origins: []
+  # 敏感字段加密密钥（base64 编码 32 字节）：POLARIS_CREDENTIAL_ENC_KEY
+  credential_enc_key: ""
+  access_key_rate_limit_max: 10
+  access_key_rate_limit_window_seconds: 900

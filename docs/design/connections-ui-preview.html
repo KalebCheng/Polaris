@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>身份连接 · 图标与卡片预览</title>
+<style>
+  :root{
+    --bg:#f6f7fb; --card:#fff; --fg:#26262f; --muted:#6b6b7b; --border:#e7e7ef;
+    --primary:#6d5bf5; --primary-fg:#fff; --accent:#f1efff;
+    --dt:#007fff; --wecom:#2f7dff; --feishu:#3370ff; --lark:#00c2a8;
+    --ad-orange:#f25022; --ad-green:#7fba00; --ad-blue:#00a4ef; --ad-yellow:#ffb900;
+    --openldap:#c1272d; --scim:#6e56cf; --pg:#4169e1; --mysql:#00758f; --oidc:#f5a623; --http:#64748b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1240px;margin:0 auto;padding:28px 24px 60px}
+  h1{font-size:20px;margin:0 0 4px}
+  h2{font-size:15px;margin:34px 0 12px;color:#454553;font-weight:600}
+  .sub{color:var(--muted);font-size:13px;margin:0 0 8px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:14px}
+  /* 图标规格 */
+  .sizes{display:flex;align-items:flex-end;gap:26px;padding:18px 20px}
+  .sizes figure{margin:0;text-align:center}
+  .sizes figcaption{font-size:11px;color:var(--muted);margin-top:6px}
+  /* 图标基底 */
+  .tile{display:inline-flex;align-items:center;justify-content:center;border-radius:26%;
+        background:#fff;box-shadow:inset 0 0 0 1px rgba(20,20,40,.08)}
+  .t40{width:40px;height:40px}.t32{width:32px;height:32px}.t24{width:24px;height:24px}.t16{width:16px;height:16px}
+  .tile svg{display:block}
+  /* 目录卡片网格 */
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  .cat{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px 16px 14px;
+       display:flex;flex-direction:column;gap:10px;transition:.15s}
+  .cat:hover{border-color:#d6d2ff;box-shadow:0 6px 18px rgba(80,60,200,.10);transform:translateY(-1px)}
+  .cat .head{display:flex;gap:10px;align-items:center}
+  .cat .name{font-weight:600;font-size:14px}
+  .cat .kind{font-size:11px;color:var(--muted)}
+  .cat p{margin:0;color:var(--muted);font-size:12.5px;min-height:34px}
+  .add{align-self:flex-start;background:var(--primary);color:var(--primary-fg);border:0;border-radius:8px;
+       padding:6px 14px;font-size:12.5px;font-weight:600;cursor:pointer}
+  .add.ghost{background:#fff;color:var(--primary);box-shadow:inset 0 0 0 1px #ded9ff}
+  /* 实例卡片 */
+  .inst{background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:hidden}
+  .inst .top{display:flex;align-items:flex-start;gap:12px;padding:16px}
+  .inst .title{font-weight:600}
+  .tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+  .tag{font-size:11px;border-radius:6px;padding:2px 7px;border:1px solid transparent}
+  .tag.dir{background:#eef0ff;color:#4a45c9;border-color:#e0def9}
+  .tag.ok{background:#e9f8f1;color:#127a52;border-color:#d3efe2}
+  .tag.info{background:#eef4ff;color:#2a5fc4;border-color:#dbe6fb}
+  .meta{color:var(--muted);font-size:11.5px;margin-top:8px}
+  .meta code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#4b4b5c}
+  .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+  .btn{border:1px solid var(--border);background:#fff;border-radius:8px;padding:6px 12px;font-size:12.5px;color:#3c3c4a}
+  .btn.link{border:0;background:none;color:#4a45c9;padding:0;cursor:pointer;text-decoration:none}
+  .pill{display:inline-flex;align-items:center;gap:6px;font-size:11px;border-radius:8px;padding:3px 9px;border:1px solid}
+  .pill.ok{color:#127a52;background:#eefaf3;border-color:#d5f0e2}
+  .pill.warn{color:#8a5a12;background:#fdf6e8;border-color:#f2e4c6}
+  .pill.neutral{color:#5c5c6b;background:#f4f4f8;border-color:#e9e9f1}
+  .pill i{width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block}
+  .dash{border:1px dashed var(--border);background:#fff;border-radius:8px;padding:5px 11px;font-size:12px;color:#4a4a58}
+  .body{border-top:1px solid var(--border);display:grid;grid-template-columns:1fr 1fr}
+  .col{padding:14px 16px}
+  .col+.col{border-left:1px solid var(--border)}
+  .row{display:flex;align-items:center;gap:8px}
+  .row .lbl{font-size:12.5px;font-weight:600}
+  .hint{color:var(--muted);font-size:11.5px;margin:6px 0 8px}
+  .links{display:flex;gap:14px;font-size:11.5px}
+  .links a{color:#4a45c9;text-decoration:none}
+  .sw{width:34px;height:20px;border-radius:999px;background:#dcdce6;position:relative;flex:0 0 auto}
+  .sw.on{background:var(--primary)}
+  .sw b{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:.15s}
+  .sw.on b{left:16px}
+  /* 深色片段 */
+  .darkpanel{background:#1f2033;border-radius:14px;padding:18px 20px;color:#eeeef7;display:flex;gap:22px;align-items:center}
+  .darkpanel .tile{background:#2b2c43;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
+  .darkpanel .cap{font-size:11.5px;color:#a9a9c4}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);margin-top:10px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>身份连接 · 图标体系与卡片形态（预览稿）</h1>
+  <p class="sub">入方向 = 从外部目录拉取组织与账号；出方向 = 把本地账号推送给下游应用。图标为纯矢量内联 SVG，无第三方依赖，16px 下仍可辨识。</p>
+
+  <h2>1 · 图标规格（16 / 24 / 32 / 40px）</h2>
+  <div class="card sizes">
+    <figure><span class="tile t16" id="i16"></span><figcaption>16px 行内</figcaption></figure>
+    <figure><span class="tile t24" id="i24"></span><figcaption>24px 表单</figcaption></figure>
+    <figure><span class="tile t32" id="i32"></span><figcaption>32px 实例卡片</figcaption></figure>
+    <figure><span class="tile t40" id="i40"></span><figcaption>40px 目录卡片</figcaption></figure>
+    <div class="legend"><span>基底：圆角 26% + 品牌色图形 + 1px 内描边（明暗均可用）</span></div>
+  </div>
+
+  <h2>2 · 入方向 · 类型目录</h2>
+  <p class="sub">管理员点「添加」后先选类型；每张卡片 = 图标 + 名称 + 一句话价值 + 「添加」。</p>
+  <div class="grid" id="in-grid"></div>
+
+  <h2>3 · 出方向 · 类型目录</h2>
+  <div class="grid" id="out-grid"></div>
+
+  <h2>4 · 实例卡片（入方向）</h2>
+  <div class="inst">
+    <div class="top">
+      <span class="tile t40" data-ic="dingtalk"></span>
+      <div>
+        <div class="title">钉钉通讯录</div>
+        <div class="tags"><span class="tag dir">入方向</span><span class="tag info">自建应用</span><span class="tag ok">同步成功</span></div>
+        <div class="meta">类型 <code>dingtalk</code> · 目标组织 <code>华东分公司</code> · 上次同步 12 分钟前</div>
+      </div>
+      <div class="right">
+        <span class="pill ok"><i></i>可用</span>
+        <span class="dash">检查状态</span>
+        <button class="btn">修改</button>
+        <button class="btn">删除</button>
+      </div>
+    </div>
+    <div class="body">
+      <div class="col">
+        <div class="row"><span class="lbl">拉取账号与组织</span><span class="sw on" style="margin-left:auto"><b></b></span></div>
+        <p class="hint">同步 1,284 个账号 / 36 个部门，字段映射 8 项</p>
+        <div class="links"><a href="#">修改配置</a><a href="#">字段映射</a></div>
+      </div>
+      <div class="col">
+        <div class="row"><span class="lbl">定时校验</span><span class="sw on" style="margin-left:auto"><b></b></span></div>
+        <p class="hint">每天 03:00、05:00（前后 30 分钟窗口）· 删除保护 30 账号 / 10 部门</p>
+        <div class="links"><a href="#">查看日志</a><a href="#">触发同步</a><a href="#">试运行</a></div>
+      </div>
+    </div>
+  </div>
+
+  <h2>5 · 实例卡片（出方向）</h2>
+  <div class="inst">
+    <div class="top">
+      <span class="tile t40" data-ic="scim"></span>
+      <div>
+        <div class="title">Salesforce 供给</div>
+        <div class="tags"><span class="tag dir">出方向</span><span class="tag info">SCIM 2.0</span><span class="tag ok">建号成功 42</span></div>
+        <div class="meta">关联应用 <code>salesforce</code> · 能力：建号 / 改密 / 禁用 / 删除</div>
+      </div>
+      <div class="right">
+        <span class="pill warn"><i></i>2 条待重试</span>
+        <span class="dash">检查状态</span>
+        <button class="btn">修改</button>
+        <button class="btn">删除</button>
+      </div>
+    </div>
+    <div class="body">
+      <div class="col">
+        <div class="row"><span class="lbl">账号供给</span><span class="sw on" style="margin-left:auto"><b></b></span></div>
+        <p class="hint">策略：创建即建号 · 字段映射 5 项</p>
+        <div class="links"><a href="#">修改配置</a><a href="#">账号策略</a></div>
+      </div>
+      <div class="col">
+        <div class="row"><span class="lbl">定时对齐</span><span class="sw on" style="margin-left:auto"><b></b></span></div>
+        <p class="hint">每周一 02:00 · 删除保护 30 账号</p>
+        <div class="links"><a href="#">查看日志</a><a href="#">对齐检查</a><a href="#">重试队列</a></div>
+      </div>
+    </div>
+  </div>
+
+  <h2>6 · 深色模式</h2>
+  <div class="darkpanel" id="dark-row"><span class="cap" style="color:#eeeef7">品牌色块在深色底上保持不变，仅基底转为 #2b2c43，保证对比度 ≥ 4.5:1</span></div>
+</div>
+
+<script>
+const ICONS = {
+  dingtalk: {svg:`<rect x="2.5" y="2.5" width="19" height="19" rx="5" fill="#007fff"/>
+    <g fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" opacity=".97">
+      <path d="M6.1 6.4c3.9.5 7 2.1 9.2 4.7"/>
+      <path d="M6.4 10.4c3.1.4 5.6 1.7 7.3 3.9"/>
+      <path d="M6.8 14.4c2.3.4 4.2 1.4 5.5 2.9"/>
+    </g>
+    <circle cx="17.4" cy="16.6" r="1.35" fill="#fff" opacity=".97"/>`},
+  feishu: {svg:`<defs><linearGradient id="fsg" x1="3" y1="3" x2="21" y2="21"><stop stop-color="#3370ff"/><stop offset="1" stop-color="#7b61ff"/></linearGradient></defs>
+    <rect x="2.5" y="2.5" width="19" height="19" rx="5" fill="url(#fsg)"/>
+    <path d="M5.2 12.9 19.4 5.6l-4.6 12.6-3-4.4z" fill="#fff" opacity=".97"/>
+    <path d="M11.8 13.8l7.6-8.2-4.6 12.6z" fill="#cfe0ff" opacity=".55"/>`},
+  lark: {svg:`<defs><linearGradient id="lkg" x1="3" y1="3" x2="21" y2="21"><stop stop-color="#00c2a8"/><stop offset="1" stop-color="#3370ff"/></linearGradient></defs>
+    <rect x="2.5" y="2.5" width="19" height="19" rx="5" fill="url(#lkg)"/>
+    <path d="M5.2 12.9 19.4 5.6l-4.6 12.6-3-4.4z" fill="#fff" opacity=".97"/>
+    <path d="M11.8 13.8l7.6-8.2-4.6 12.6z" fill="#ccfbf1" opacity=".5"/>`},
+  wecom: {svg:`<defs><linearGradient id="wecomg" x1="3" y1="3" x2="21" y2="21"><stop stop-color="#2f7dff"/><stop offset="1" stop-color="#12c2c2"/></linearGradient></defs>
+    <rect x="2.5" y="2.5" width="19" height="19" rx="5" fill="url(#wecomg)"/>
+    <path d="M9.4 6.4c3 0 5.4 1.9 5.4 4.2 0 .5-.1 1-.3 1.4-1.5-.5-3.3-.3-4.7.6-1.9 1.2-2.6 3.3-1.8 5.1-2.9-.3-5-2.1-5-4.4 0-1 .4-2 1.1-2.8l-.6-2 2 .9c1-.5 2.3-.8 3.9-.8z" fill="#fff" opacity=".96"/>
+    <path d="M16.4 12.2c2.4 0 4.3 1.5 4.3 3.4 0 .8-.3 1.6-.9 2.2l.5 1.6-1.6-.7c-.7.3-1.5.5-2.3.5-2.4 0-4.3-1.5-4.3-3.4s1.9-3.6 4.3-3.6z" fill="#fff" opacity=".82"/>`},
+  ad: {svg:`<rect x="3" y="3" width="8.4" height="8.4" fill="#f25022"/>
+    <rect x="12.6" y="3" width="8.4" height="8.4" fill="#7fba00"/>
+    <rect x="3" y="12.6" width="8.4" height="8.4" fill="#00a4ef"/>
+    <rect x="12.6" y="12.6" width="8.4" height="8.4" fill="#ffb900"/>`},
+  ldap: {svg:`<rect x="2.5" y="2.5" width="19" height="19" rx="5" fill="#c1272d"/>
+    <g stroke="#fff" stroke-width="1.5" fill="none" opacity=".95"><path d="M12 5.8v3.6"/><path d="M11.4 9.7 7.6 13.2"/><path d="M12.6 9.7l3.8 3.5"/></g>
+    <circle cx="12" cy="5.6" r="2" fill="#fff"/><circle cx="7.4" cy="13.6" r="2" fill="#fff"/><circle cx="16.6" cy="13.6" r="2" fill="#fff"/>`},
+  scim: {svg:`<rect x="2.5" y="2.5" width="19" height="19" rx="5" fill="#6e56cf"/>
+    <g stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" opacity=".96">
+      <path d="M7 9.4h8.6l-2.2-2.2"/><path d="M16.9 14.6H8.3l2.2 2.2"/></g>`},
+  database: {svg:`<rect x="2.5" y="2.5" width="19" height="19" rx="5" fill="#4169e1"/>
+    <g fill="none" stroke="#fff" stroke-width="1.5" opacity=".96">
+      <ellipse cx="12" cy="7.6" rx="5.6" ry="2.4"/><path d="M6.4 7.6v8.8c0 1.3 2.5 2.4 5.6 2.4s5.6-1.1 5.6-2.4V7.6"/><path d="M6.4 12c0 1.3 2.5 2.4 5.6 2.4s5.6-1.1 5.6-2.4"/></g>`},
+  oidc: {svg:`<rect x="2.5" y="2.5" width="19" height="19" rx="5" fill="#f5a623"/>
+    <circle cx="11.4" cy="12" r="4.4" fill="none" stroke="#fff" stroke-width="1.7" opacity=".96"/>
+    <path d="M18 7.4v9.2l2.2-1.1V6.3z" fill="#fff" opacity=".96"/>`},
+  http: {svg:`<rect x="2.5" y="2.5" width="19" height="19" rx="5" fill="#64748b"/>
+    <g stroke="#fff" stroke-width="1.6" fill="none" opacity=".96"><circle cx="12" cy="12" r="5.4"/><path d="M12 6.6c1.7 1.6 2.6 3.4 2.6 5.4s-.9 3.8-2.6 5.4c-1.7-1.6-2.6-3.4-2.6-5.4s.9-3.8 2.6-5.4z"/><path d="M6.9 10.4h10.2M6.9 13.6h10.2"/></g>`},
+};
+// 规格条：用钉钉图标演示四种尺寸
+['i16','i24','i32','i40'].forEach((id,i)=>{
+  const size=[16,24,32,40][i];
+  document.getElementById(id).innerHTML = `<svg viewBox="0 0 24 24" width="${size}" height="${size}">${ICONS.dingtalk.svg}</svg>`;
+});
+const IN = [
+  ['dingtalk','钉钉（自建应用）','把钉钉通讯录的组织与账号同步到本地，支持扫码 / 工作台登录。'],
+  ['wecom','企业微信','同步企业微信的部门与成员，支持企微扫码登录。'],
+  ['feishu','飞书','同步飞书组织与成员，支持飞书扫码登录。'],
+  ['lark','Lark（飞书国际版）','面向海外团队，同步 Lark 组织与成员。'],
+  ['ad','AD 域控','以 LDAP/AD 为源，导入域账号与组织，支持域账号登录。'],
+  ['ldap','OpenLDAP','连接自建目录服务，导入组织与账号。'],
+  ['scim','SCIM 2.0（上游）','对接支持 SCIM 的上游系统，按标准协议拉取用户与组。'],
+  ['database','数据库','从 PostgreSQL / MySQL 的业务表按字段映射导入账号。'],
+];
+const OUT = [
+  ['dingtalk','钉钉','把本地账号推送到钉钉，支持建号 / 禁用 / 删除。'],
+  ['feishu','飞书','把本地账号推送到飞书，支持建号 / 改密 / 禁用。'],
+  ['wecom','企业微信','把本地账号推送到企业微信。'],
+  ['ad','AD 域控','在 AD 中创建与管理账号，支持密码重置。'],
+  ['ldap','OpenLDAP','在 OpenLDAP 中创建与管理账号。'],
+  ['scim','SCIM 2.0（下游）','以 SCIM 2.0 推送账号，覆盖面最广。'],
+  ['http','通用 HTTP','按 RESTful 契约对接自有应用（现有能力）。'],
+];
+function renderGrid(el, rows){
+  el.innerHTML = rows.map(([k,name,desc])=>{
+    const ic = ICONS[k];
+    return `<div class="cat"><div class="head"><svg viewBox="0 0 24 24" width="40" height="40">${ic.svg}</svg>
+      <div><div class="name">${name}</div><div class="kind">${k}</div></div></div>
+      <p>${desc}</p><button class="add">添加</button></div>`;
+  }).join('');
+}
+renderGrid(document.getElementById('in-grid'), IN);
+renderGrid(document.getElementById('out-grid'), OUT);
+document.querySelectorAll('[data-ic]').forEach(el=>{
+  const ic = ICONS[el.getAttribute('data-ic')];
+  el.innerHTML = `<svg viewBox="0 0 24 24" width="40" height="40">${ic.svg}</svg>`;
+});
+document.getElementById('dark-row').insertAdjacentHTML('afterbegin',
+  ['dingtalk','wecom','feishu','lark','ad','ldap','scim','database','oidc','http'].map(k=>`<svg viewBox="0 0 24 24" width="32" height="32">${ICONS[k].svg}</svg>`).join(''));
+</script>
+</body>
+</html>

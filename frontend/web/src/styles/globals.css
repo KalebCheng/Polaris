@@ -1,0 +1,405 @@
+@import 'tailwindcss';
+
+/* 主题变体：dark class 由 next-themes 控制 */
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * 设计令牌（唯一载体，明暗双值）
+ * 设计语言：**精密控制台（Control Plane，2026-10 UI 重构）**——
+ *   浅蓝灰画布（canvas）+ 纯白浮层面板 + 宝石蓝主色 + 反相墨色胶囊（选中态），
+ *   青绿成功 / 琥珀警示点缀；大圆角、克制的描边、极轻的投影。
+ * 品牌氛围（星场 / 玻璃）仅用于登录 / OAuth 回调页（`.auth-scope`）。
+ *
+ * 三层结构：`--canvas` 是页面底色，`--card` 是浮在上面的面板，`--ink` 是"反相强调色"
+ * （顶部导航选中胶囊、分段控件选中项）——三者都不随主色变化，因此主色只用于动作与链接。
+ */
+:root {
+  /* 圆角：控件 12px、小面板 18px、卡片 24px */
+  --radius: 0.75rem;
+
+  /* 画布与浮层 */
+  --canvas: oklch(0.941 0.015 265);
+  --background: var(--canvas);
+  --foreground: oklch(0.285 0.03 265);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.285 0.03 265);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.285 0.03 265);
+
+  /* 主色：宝石蓝（动作 / 链接 / 焦点） */
+  --primary: oklch(0.535 0.15 259);
+  --primary-foreground: oklch(0.99 0.004 259);
+
+  /* 墨色：反相强调（导航选中胶囊 / 分段控件选中项） */
+  --ink: oklch(0.3 0.028 265);
+  --ink-foreground: oklch(0.985 0.004 265);
+
+  --secondary: oklch(0.966 0.01 262);
+  --secondary-foreground: oklch(0.38 0.03 265);
+  --muted: oklch(0.958 0.01 265);
+  --muted-foreground: oklch(0.585 0.02 265);
+  --accent: oklch(0.955 0.018 258);
+  --accent-foreground: oklch(0.33 0.04 262);
+  --destructive: oklch(0.6 0.17 22);
+  --destructive-foreground: oklch(0.99 0.004 22);
+
+  --border: oklch(0.925 0.01 265);
+  --input: oklch(0.905 0.012 265);
+  --ring: oklch(0.535 0.15 259);
+
+  /* 状态色（文字与柔和底色共用；柔和底一律用 `/12` 透明度） */
+  --success-500: oklch(0.6 0.13 165);
+  --success-foreground: oklch(0.99 0.004 165);
+  --warning-500: oklch(0.635 0.145 55);
+  --warning-foreground: oklch(0.99 0.004 55);
+  --info-500: oklch(0.6 0.14 252);
+  --info-foreground: oklch(0.99 0.004 252);
+
+  /* 图表色板（映射品牌色） */
+  --chart-1: oklch(0.535 0.15 259);
+  --chart-2: oklch(0.62 0.12 172);
+  --chart-3: oklch(0.64 0.14 300);
+  --chart-4: oklch(0.7 0.14 60);
+  --chart-5: oklch(0.62 0.12 235);
+
+  --sidebar: oklch(1 0 0);
+  --sidebar-foreground: oklch(0.285 0.03 265);
+  --sidebar-primary: oklch(0.535 0.15 259);
+  --sidebar-primary-foreground: oklch(0.99 0.004 259);
+  --sidebar-accent: oklch(0.958 0.016 258);
+  --sidebar-accent-foreground: oklch(0.42 0.11 259);
+  --sidebar-border: oklch(0.925 0.01 265);
+  --sidebar-ring: oklch(0.535 0.15 259);
+
+  /* 投影：浅色下用极轻的蓝灰，避免"灰扑扑"的默认阴影 */
+  --elevation-soft: 0 1px 2px oklch(0.35 0.05 265 / 0.04), 0 6px 20px -14px oklch(0.3 0.06 265 / 0.18);
+  --elevation-lifted: 0 2px 6px -2px oklch(0.32 0.05 265 / 0.08), 0 16px 36px -20px oklch(0.3 0.06 265 / 0.24);
+  --elevation-pop: 0 24px 60px -24px oklch(0.28 0.06 265 / 0.32), 0 4px 12px -6px oklch(0.3 0.05 265 / 0.12);
+
+  /* 画布光晕：冷蓝与青，只作氛围，不承载信息 */
+  --canvas-glow-a: oklch(0.9 0.055 268 / 0.85);
+  --canvas-glow-b: oklch(0.92 0.05 232 / 0.8);
+
+  /* 字标渐变：与标识光球同族（蓝 → 紫），浅色下压深以保证对比 */
+  --brand-wordmark-from: oklch(0.47 0.155 262);
+  --brand-wordmark-to: oklch(0.5 0.2 292);
+
+  /* 动效令牌：弹性缓动＝终点前后各有一小段回弹（"跟手 + 收得住"），只用于"位置/尺寸"这类空间变化 */
+  --motion-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --motion-pill-move: 420ms;
+  --motion-pill-size: 340ms;
+}
+
+.dark {
+  --canvas: oklch(0.168 0.013 265);
+  --background: var(--canvas);
+  --foreground: oklch(0.955 0.006 265);
+  --card: oklch(0.218 0.015 265);
+  --card-foreground: oklch(0.955 0.006 265);
+  --popover: oklch(0.245 0.016 265);
+  --popover-foreground: oklch(0.955 0.006 265);
+
+  --primary: oklch(0.7 0.135 259);
+  --primary-foreground: oklch(0.17 0.02 259);
+
+  /* 暗色下"反相胶囊"反过来是浅色实心块 */
+  --ink: oklch(0.93 0.008 265);
+  --ink-foreground: oklch(0.18 0.015 265);
+
+  --secondary: oklch(0.275 0.018 265);
+  --secondary-foreground: oklch(0.955 0.006 265);
+  --muted: oklch(0.268 0.015 265);
+  --muted-foreground: oklch(0.705 0.015 265);
+  --accent: oklch(0.3 0.03 262);
+  --accent-foreground: oklch(0.955 0.006 265);
+  --destructive: oklch(0.66 0.18 22);
+  --destructive-foreground: oklch(0.16 0.02 22);
+
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 14%);
+  --ring: oklch(0.7 0.135 259);
+
+  --success-500: oklch(0.74 0.12 166);
+  --success-foreground: oklch(0.16 0.02 166);
+  --warning-500: oklch(0.79 0.135 62);
+  --warning-foreground: oklch(0.18 0.03 62);
+  --info-500: oklch(0.74 0.12 252);
+  --info-foreground: oklch(0.16 0.02 252);
+
+  --chart-1: oklch(0.7 0.135 259);
+  --chart-2: oklch(0.74 0.11 172);
+  --chart-3: oklch(0.74 0.13 300);
+  --chart-4: oklch(0.8 0.13 62);
+  --chart-5: oklch(0.74 0.11 235);
+
+  --sidebar: oklch(0.2 0.014 265);
+  --sidebar-foreground: oklch(0.955 0.006 265);
+  --sidebar-primary: oklch(0.7 0.135 259);
+  --sidebar-primary-foreground: oklch(0.17 0.02 259);
+  --sidebar-accent: oklch(0.29 0.03 262);
+  --sidebar-accent-foreground: oklch(0.9 0.04 259);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.7 0.135 259);
+
+  /* 暗色下投影看不到，靠描边分层——同款令牌减到几乎为零，避免黑上加黑 */
+  --elevation-soft: 0 1px 2px oklch(0 0 0 / 0.3);
+  --elevation-lifted: 0 4px 16px -8px oklch(0 0 0 / 0.5);
+  --elevation-pop: 0 20px 50px -20px oklch(0 0 0 / 0.6);
+
+  --canvas-glow-a: oklch(0.42 0.07 268 / 0.22);
+  --canvas-glow-b: oklch(0.44 0.06 232 / 0.18);
+
+  /* 暗色下字标反向提亮（同色相，靠明度而非换色） */
+  --brand-wordmark-from: oklch(0.84 0.1 262);
+  --brand-wordmark-to: oklch(0.8 0.14 292);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-ink: var(--ink);
+  --color-ink-foreground: var(--ink-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-success: var(--success-500);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning-500);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info-500);
+  --color-info-foreground: var(--info-foreground);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* 圆角刻度：控件 12px、小面板 18px、卡片 24px */
+  --radius-sm: 0.5rem;
+  --radius-md: 0.625rem;
+  --radius-lg: var(--radius);
+  --radius-xl: 1.125rem;
+  --radius-2xl: 1.5rem;
+  --radius-3xl: 2rem;
+
+  --shadow-soft: var(--elevation-soft);
+  --shadow-lifted: var(--elevation-lifted);
+  --shadow-pop: var(--elevation-pop);
+
+  --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, monospace;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* 画布：浅蓝灰底 + 顶部两处极淡的品牌光晕（暗色下自动退化为中性底） */
+  .app-canvas {
+    background-color: var(--canvas);
+    background-image:
+      radial-gradient(60rem 32rem at 8% -8%, var(--canvas-glow-a), transparent 62%),
+      radial-gradient(52rem 30rem at 96% -14%, var(--canvas-glow-b), transparent 60%);
+    background-attachment: fixed;
+  }
+
+  /* 细滚动条：长列表页（用户 / 审计）滚动时不再出现系统粗条 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 9999px;
+    background-clip: content-box;
+    background-color: var(--border);
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--input);
+  }
+
+  /* 键盘可达性：统一焦点环 */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  /*
+   * 认证舞台（登录 / OAuth 回调）：极简白场 + 墨黑主按钮。
+   *
+   * 品牌色只保留在标识与焦点环上，其余一律中性——高级感来自留白、字阶与克制的描边。
+   * 这里重映射语义令牌，使 @/shared/ui 的组件在本作用域内自动落到极简配色，页面无需逐个传 class。
+   */
+  .auth-scope {
+    color-scheme: dark;
+    /* color 在 body 上即已按全局令牌解析并被继承；此处必须重新声明，
+       作用域内的令牌重映射才会真正生效（否则浅色主题下正文会残留深色而不可读） */
+    color: var(--foreground);
+
+    --background: oklch(0.16 0.008 275);
+    --foreground: oklch(0.96 0.004 275);
+    --card: oklch(0.215 0.012 275);
+    --card-foreground: oklch(0.96 0.004 275);
+    --muted: oklch(0.24 0.01 275);
+    --muted-foreground: oklch(0.72 0.012 275);
+    --accent: oklch(0.26 0.012 285);
+    --accent-foreground: oklch(0.96 0.004 275);
+    --border: oklch(1 0 0 / 12%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.72 0.14 288);
+    /* 主按钮＝亮墨实心（暗色下的反相主按钮） */
+    --primary: oklch(0.96 0.004 275);
+    --primary-foreground: oklch(0.19 0.01 275);
+    /* 反相胶囊随作用域一起反转：深色舞台上的选中项是亮墨实心 */
+    --ink: oklch(0.96 0.004 275);
+    --ink-foreground: oklch(0.19 0.01 275);
+    /* 字标在深色舞台上必须提亮，否则全局的深色渐变在近黑底上不可读 */
+    --brand-wordmark-from: oklch(0.86 0.09 275);
+    --brand-wordmark-to: oklch(0.82 0.13 300);
+    --canvas-glow-a: transparent;
+    --canvas-glow-b: transparent;
+
+    background: var(--background);
+  }
+
+  /* 浅色：纯白舞台 + 墨黑实心主按钮（folk 式高级感） */
+  html:not(.dark) .auth-scope {
+    color-scheme: light;
+
+    --background: oklch(0.985 0.003 285);
+    --foreground: oklch(0.21 0.01 275);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.21 0.01 275);
+    --muted: oklch(0.97 0.003 285);
+    --muted-foreground: oklch(0.55 0.012 275);
+    --accent: oklch(0.96 0.004 285);
+    --accent-foreground: oklch(0.21 0.01 275);
+    --border: oklch(0.9 0.006 285);
+    --input: oklch(0.9 0.006 285);
+    --ring: oklch(0.55 0.16 288);
+    --primary: oklch(0.23 0.012 275);
+    --primary-foreground: oklch(0.99 0.002 285);
+    --ink: oklch(0.23 0.012 275);
+    --ink-foreground: oklch(0.99 0.002 285);
+    --brand-wordmark-from: oklch(0.45 0.15 275);
+    --brand-wordmark-to: oklch(0.5 0.19 300);
+    --canvas-glow-a: transparent;
+    --canvas-glow-b: transparent;
+
+    background: var(--background);
+  }
+
+  .brand-mark {
+    animation: brand-breathe 7s ease-in-out infinite;
+  }
+
+  /*
+   * 弹性滑块：一块跟着选中项走的墨色胶囊（顶栏导航 + 分段控件 Tabs 共用，渲染在 shared/ui 的
+   * SlidingPill 里）。
+   *
+   * 位移与宽度用**不同时长**是刻意的——位移先到、宽度稍慢，滑块在换项时会被"拉长再收回"，
+   * 这就是弹性手感的来源；缓动本身带终点回弹（`--motion-spring`）。
+   * 首帧用 `data-ready="false"` 关掉过渡：否则页面加载时滑块会从最左侧"飞"过去。
+   */
+  .sliding-pill-indicator {
+    transition:
+      transform var(--motion-pill-move) var(--motion-spring),
+      width var(--motion-pill-size) var(--motion-spring),
+      height var(--motion-pill-size) var(--motion-spring);
+    will-change: transform, width, height;
+  }
+
+  .sliding-pill-indicator[data-ready='false'] {
+    transition: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .sliding-pill-indicator {
+      transition: none;
+    }
+  }
+
+  /* 单次编排的入场：整列内容轻微上浮淡入，而不是逐元素散落动画 */
+  .auth-rise {
+    animation: auth-rise 620ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  @keyframes brand-breathe {
+    0%,
+    100% {
+      opacity: 0.88;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 1;
+      transform: scale(1.03);
+    }
+  }
+
+  @keyframes auth-rise {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .brand-mark,
+    .auth-rise {
+      animation: none;
+    }
+  }
+}

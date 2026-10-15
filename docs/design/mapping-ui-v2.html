@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>字段映射 · 重做后</title>
+<style>
+  :root{--bg:#f6f7fb;--card:#fff;--fg:#26262f;--muted:#6b6b7b;--border:#e7e7ef;--primary:#6d5bf5;--destructive:#d9463f}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}
+  .wrap{max-width:1060px;margin:0 auto;padding:24px}
+  h1{font-size:17px;margin:0 0 4px}
+  h2{font-size:14px;margin:26px 0 10px;font-weight:600;color:#454553}
+  .step{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--muted);margin-bottom:18px}
+  .step b{color:var(--fg)}
+  .dot{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:11px;border:1px solid var(--border)}
+  .dot.done{background:rgba(109,91,245,.12);border-color:rgba(109,91,245,.3);color:var(--primary)}
+  .dot.cur{background:var(--primary);border-color:var(--primary);color:#fff}
+  .panel{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px 20px}
+  .hint{color:var(--muted);font-size:12px;margin:0 0 14px}
+  .rows{border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--card)}
+  .row{display:grid;grid-template-columns:208px minmax(0,1fr) auto;align-items:start;gap:16px 24px;padding:16px}
+  .row+.row{border-top:1px solid var(--border)}
+  .name{width:auto}
+  .name .lbl{font-size:13px;font-weight:500}
+  .name .key{color:var(--muted);font:11px ui-monospace,Menlo,monospace}
+  .name .tip{color:var(--muted);font-size:11px;margin-top:3px;display:flex;gap:4px}
+  .controls{display:flex;min-width:0;flex-wrap:wrap;align-items:center;gap:12px}
+  .sel,.inp{height:36px;border:1px solid var(--border);border-radius:8px;background:#fff;display:flex;align-items:center;
+            padding:0 10px;font-size:13px;color:#3c3c4a;white-space:nowrap;justify-content:space-between;gap:8px}
+  .sel.rule{width:128px;flex:0 0 auto}
+  .sel.value{flex:1 1 240px;min-width:0}
+  .sel.disabled,.inp.disabled{opacity:.55;background:#fafafd}
+  .chev{color:#9a9aab;font-size:10px}
+  .right{display:flex;align-items:center;gap:16px;justify-self:end}
+  .swwrap{display:flex;align-items:center;gap:8px;white-space:nowrap;cursor:pointer}
+  .sw{width:34px;height:20px;border-radius:999px;background:#dcdce6;position:relative;flex:0 0 auto}
+  .sw.on{background:var(--primary)}
+  .sw b{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff}
+  .sw.on b{left:16px}
+  .swlbl{font-size:11px;color:var(--muted)}
+  .btn{height:34px;border-radius:8px;border:1px solid var(--border);background:#fff;color:#3c3c4a;font-size:12.5px;
+       display:inline-flex;align-items:center;gap:6px;padding:0 12px;white-space:nowrap}
+  .btn.ghost{border-color:transparent;background:transparent;padding:0 8px}
+  .btn.disabled{opacity:.5}
+  .fallback{display:flex;align-items:center;gap:8px}
+  .fallback .sel{flex:1 1 200px}
+  .fallbacknote{color:var(--muted);font-size:11px}
+  .col{display:flex;flex-direction:column;gap:8px;min-width:0}
+  /* 下拉展开示意 */
+  .menu{position:relative;margin-top:6px;width:360px;background:#fff;border:1px solid var(--border);border-radius:10px;
+        box-shadow:0 10px 30px rgba(40,30,90,.12);padding:6px;z-index:2}
+  .opt{display:flex;justify-content:space-between;gap:16px;padding:8px 10px;border-radius:8px;font-size:13px}
+  .opt .src{color:var(--muted);font:11px ui-monospace,Menlo,monospace;white-space:nowrap}
+  .opt.active{background:#f1efff}
+  .badge{font-size:11px;color:var(--muted)}
+  .note{color:var(--muted);font-size:12px;margin:12px 0 0}
+</style></head>
+<body><div class="wrap">
+  <h1>身份连接 · 字段映射（重做后）</h1>
+  <div class="step">
+    <span class="dot done">✓</span><b>基本信息</b><span>—</span>
+    <span class="dot done">✓</span><b>连接配置</b><span>—</span>
+    <span class="dot done">✓</span><b>同步范围与计划</b><span>—</span>
+    <span class="dot cur">4</span><b>字段映射</b>
+    <span style="margin-left:auto">取消　上一步　创建</span>
+  </div>
+
+  <h2>第 4 / 4 步 · 字段映射（内容区在这步放宽到 1024px）</h2>
+  <div class="panel">
+    <p class="hint">把本地字段映射到外部数据源的字段；未映射时按默认字段取值。
+      选择每个本地字段取自外部数据源的哪个字段（仅列出该接入方式能提供的源字段）。</p>
+
+    <div class="rows">
+      <!-- 已映射（选好源字段） -->
+      <div class="row">
+        <div class="name">
+          <div class="lbl"><span style="color:var(--destructive)">* </span>账号名</div>
+          <div class="key">user.name</div>
+          <div class="tip"><span>ⓘ</span><span>登录用的账号名，必填</span></div>
+        </div>
+        <div class="controls">
+          <div class="sel rule">选择字段 <span class="chev">⌄</span></div>
+          <div class="sel value">工号　<span class="src" style="color:var(--muted);font:11px ui-monospace">job_number</span> <span class="chev">⌄</span></div>
+        </div>
+        <div class="right">
+          <label class="swwrap"><span class="sw"><b></b></span><span class="swlbl">已映射</span></label>
+          <button class="btn">＋ 添加</button>
+          <button class="btn ghost">⋯</button>
+        </div>
+      </div>
+
+      <!-- 未映射（开关打开） -->
+      <div class="row">
+        <div class="name">
+          <div class="lbl">姓名</div><div class="key">user.display_name</div>
+        </div>
+        <div class="controls">
+          <div class="sel rule disabled">选择字段 <span class="chev">⌄</span></div>
+          <div class="sel value disabled">选择字段 <span class="chev">⌄</span></div>
+        </div>
+        <div class="right">
+          <label class="swwrap"><span class="sw on"><b></b></span><span class="swlbl">未映射</span></label>
+          <button class="btn disabled">＋ 添加</button>
+          <button class="btn ghost">⋯</button>
+        </div>
+      </div>
+
+      <!-- 备选源字段 -->
+      <div class="row">
+        <div class="name">
+          <div class="lbl">手机号</div><div class="key">user.phone</div>
+        </div>
+        <div class="col" style="grid-column:2">
+          <div class="controls">
+            <div class="sel rule">选择字段 <span class="chev">⌄</span></div>
+            <div class="sel value">手机号码　<span class="src" style="color:var(--muted);font:11px ui-monospace">mobile</span> <span class="chev">⌄</span></div>
+          </div>
+          <div class="fallback">
+            <div class="sel value">分机号　<span class="src" style="color:var(--muted);font:11px ui-monospace">telephone</span> <span class="chev">⌄</span></div>
+            <button class="btn ghost">✕</button>
+          </div>
+          <div class="fallbacknote">按顺序取第一个非空的源字段</div>
+        </div>
+        <div class="right">
+          <label class="swwrap"><span class="sw"><b></b></span><span class="swlbl">已映射</span></label>
+          <button class="btn">＋ 添加</button><button class="btn ghost">⋯</button>
+        </div>
+      </div>
+
+      <!-- 固定值 -->
+      <div class="row">
+        <div class="name">
+          <div class="lbl">所在地</div><div class="key">user.location</div>
+        </div>
+        <div class="controls">
+          <div class="sel rule">固定值 <span class="chev">⌄</span></div>
+          <div class="inp value" style="color:#9a9aab">固定值内容</div>
+        </div>
+        <div class="right">
+          <label class="swwrap"><span class="sw"><b></b></span><span class="swlbl">已映射</span></label>
+          <button class="btn disabled">＋ 添加</button><button class="btn ghost">⋯</button>
+        </div>
+      </div>
+
+      <!-- 源字段下拉展开示意：名称 + 源字段键 -->
+      <div class="row">
+        <div class="name">
+          <div class="lbl">手机区号</div><div class="key">user.phone_region</div>
+          <div class="tip"><span>ⓘ</span><span>手机号的国际区号，如 86</span></div>
+        </div>
+        <div class="controls" style="align-items:flex-start">
+          <div class="sel rule">选择字段 <span class="chev">⌄</span></div>
+          <div style="flex:1 1 240px;min-width:0">
+            <div class="sel value" style="border-color:#c9c2ff;box-shadow:0 0 0 3px rgba(109,91,245,.12)">国际电话区号　<span class="src" style="color:var(--muted);font:11px ui-monospace">state_code</span> <span class="chev">⌃</span></div>
+            <div class="menu">
+              <div class="opt">用户 ID<span class="src">userid</span></div>
+              <div class="opt">员工名称<span class="src">name</span></div>
+              <div class="opt active">国际电话区号<span class="src">state_code</span></div>
+              <div class="opt">手机号码<span class="src">mobile</span></div>
+              <div class="opt">工号<span class="src">job_number</span></div>
+              <div class="opt">职位<span class="src">title</span></div>
+              <div class="opt">个人邮箱<span class="src">email</span></div>
+              <div class="opt">企业邮箱<span class="src">org_email</span></div>
+              <div class="opt">工作地<span class="src">work_place</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="right" style="margin-top:0">
+          <label class="swwrap"><span class="sw on"><b></b></span><span class="swlbl">未映射</span></label>
+          <button class="btn disabled">＋ 添加</button><button class="btn ghost">⋯</button>
+        </div>
+      </div>
+    </div>
+
+    <p class="note">未映射或不填写的字段不会保存；留空的字段将按内置默认字段取值，账号名必须有来源。</p>
+  </div>
+</div></body></html>
