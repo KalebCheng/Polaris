@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	bizerrors "polaris/internal/errors"
+	"polaris/internal/repository"
 	"polaris/pkg/dbclient"
 )
 
@@ -71,6 +72,17 @@ func (b *queryBuilder) where() string {
 	return " WHERE " + strings.Join(b.conds, " AND ")
 }
 
+// applyQueryFilters 把 ListQuery.Filters 追加为等值条件（AND 语义）。
+// 列名只来自服务层构造的固定字段，不接受外部原文；调用方仍需保证列存在。
+func applyQueryFilters(b *queryBuilder, filters []repository.ColumnFilter) {
+	for _, f := range filters {
+		if f.Field == "" {
+			continue
+		}
+		b.add(`t.` + columnExpr(f.Field) + `=` + b.arg(f.Value))
+	}
+}
+
 // orderLimit 追加排序与分页片段。
 func (b *queryBuilder) orderLimit(order string, offset, limit int) string {
 	sql := ""
@@ -101,7 +113,7 @@ func orEmptyMap(v map[string]string) map[string]string {
 }
 
 // reservedColumns 在 SQL 中必须加双引号才能作为列名使用的保留字。
-// 例：app_accounts / provision_history 的 "user"、syncers 的 "table"。
+// 例：application_accounts / provision_history 的 "user"、syncers 的 "table"。
 var reservedColumns = map[string]bool{
 	"user": true, "table": true, "group": true, "order": true,
 	"select": true, "from": true, "where": true, "default": true, "check": true,
@@ -169,4 +181,16 @@ func existingNames(ctx context.Context, db *dbclient.Client, table string, insti
 		out[name] = true
 	}
 	return out, mapError(rows.Err(), "")
+}
+
+// idFilterValue 过滤字段以 _id 结尾时按 BIGINT 传参。
+// 动机：ListQuery.Value 是字符串（历史约定），而主键列是 bigint——直接传字符串会触发
+// PostgreSQL 的 "bigint = text" 类型冲突（§3.6 的同一类坑）。这里只做类型转换，不做语义兜底。
+func idFilterValue(field, value string) interface{} {
+	if strings.HasSuffix(field, "_id") {
+		if n, err := strconv.ParseInt(value, 10, 64); err == nil {
+			return n
+		}
+	}
+	return value
 }

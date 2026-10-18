@@ -1,0 +1,12 @@
+DROP INDEX IF EXISTS user_identities_inst_user_idx;
+DROP INDEX IF EXISTS user_identities_user_idx;
+ALTER TABLE user_identities DROP CONSTRAINT IF EXISTS user_identities_inst_provider_key;
+ALTER TABLE user_identities DROP CONSTRAINT IF EXISTS user_identities_provider_id_fkey;
+ALTER TABLE user_identities DROP CONSTRAINT IF EXISTS user_identities_user_id_fkey;
+ALTER TABLE user_identities ADD COLUMN "user" TEXT NOT NULL DEFAULT '';
+ALTER TABLE user_identities ADD COLUMN provider TEXT NOT NULL DEFAULT '';
+UPDATE user_identities ui SET "user" = u.name FROM users u WHERE u.id = ui.user_id;
+UPDATE user_identities ui SET provider = p.name FROM providers p WHERE p.id = ui.provider_id;
+ALTER TABLE user_identities DROP COLUMN user_id;
+ALTER TABLE user_identities DROP COLUMN provider_id;
+ALTER TABLE user_identities ADD CONSTRAINT user_identities_provider_key UNIQUE (provider, provider_user_id);

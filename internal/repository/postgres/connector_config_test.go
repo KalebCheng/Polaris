@@ -1,10 +1,35 @@
 package postgres
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"testing"
 
 	"polaris/internal/repository"
 )
+
+// jsonbText 模拟"参数经 jsonb 列往返后读回"的文本形态——仓储层的编码缺陷只在这一步暴露，
+// 因此凡涉及配置编解码的断言都必须走这里，而不是直接拿 shrink 的返回值喂给 expand。
+func jsonbText(v interface{}) []byte { return []byte(encodeJSONB(v)) }
+
+// jsonbTypeOf 返回 JSON 文本的顶层类型（等价于 PostgreSQL 的 jsonb_typeof(col)）。
+func jsonbTypeOf(t *testing.T, payload []byte) string {
+	t.Helper()
+	var v interface{}
+	if err := json.Unmarshal(payload, &v); err != nil {
+		t.Fatalf("JSONB 文本不是合法 JSON: %s", payload)
+	}
+	switch v.(type) {
+	case map[string]interface{}:
+		return "object"
+	case string:
+		return "string"
+	case []interface{}:
+		return "array"
+	default:
+		return "other"
+	}
+}
 
 // 回归：入方向配置的"扁平字段 ↔ JSONB"往返必须无损（存储换形态、契约不变）。
 func TestSyncerConfigRoundTrip(t *testing.T) {
@@ -18,7 +43,7 @@ func TestSyncerConfigRoundTrip(t *testing.T) {
 	config, secrets, fieldMapping := shrinkSyncer(original)
 
 	restored := &repository.Syncer{}
-	expandSyncer(restored, config, secrets, fieldMapping)
+	expandSyncer(restored, jsonbText(config), jsonbText(secrets), jsonbText(fieldMapping))
 
 	if restored.Host != original.Host || restored.Port != original.Port || restored.User != original.User {
 		t.Fatalf("连接配置丢失: %+v", restored)
@@ -44,17 +69,17 @@ func TestSyncerConfigRoundTrip(t *testing.T) {
 // 回归：空值不得写入 JSONB——否则 "未配置" 会被当成 "已配置"（has_* 会误报）。
 func TestSyncerConfigSkipsEmptyValues(t *testing.T) {
 	config, secrets, fieldMapping := shrinkSyncer(&repository.Syncer{Host: "db.local"})
-	if string(config) != `{"host":"db.local"}` {
-		t.Fatalf("config 应只含非空项，实际 %s", config)
+	if got := encodeJSONB(config); got != `{"host":"db.local"}` {
+		t.Fatalf("config 应只含非空项，实际 %s", got)
 	}
-	if string(secrets) != `{}` {
-		t.Fatalf("secrets 应为空对象，实际 %s", secrets)
+	if got := encodeJSONB(secrets); got != `{}` {
+		t.Fatalf("secrets 应为空对象，实际 %s", got)
 	}
-	if string(fieldMapping) != `{}` {
-		t.Fatalf("field_mapping 应为空对象，实际 %s", fieldMapping)
+	if got := encodeJSONB(fieldMapping); got != `{}` {
+		t.Fatalf("field_mapping 应为空对象，实际 %s", got)
 	}
 	emptyConfig, _, _ := shrinkSyncer(&repository.Syncer{})
-	if got := string(emptyConfig); got != `{}` {
+	if got := encodeJSONB(emptyConfig); got != `{}` {
 		t.Fatalf("全空配置应落 {}，实际 %s", got)
 	}
 }
@@ -62,8 +87,8 @@ func TestSyncerConfigSkipsEmptyValues(t *testing.T) {
 // 回归：端口 0 不写入（连接器各有默认端口）；非法端口值展开为 0 而不是 panic。
 func TestSyncerPortHandling(t *testing.T) {
 	config, _, _ := shrinkSyncer(&repository.Syncer{Port: 0})
-	if string(config) != `{}` {
-		t.Fatalf("端口 0 不应写入，实际 %s", config)
+	if got := encodeJSONB(config); got != `{}` {
+		t.Fatalf("端口 0 不应写入，实际 %s", got)
 	}
 	restored := &repository.Syncer{}
 	expandSyncer(restored, []byte(`{"port":"not-a-number"}`), nil, nil)
@@ -100,7 +125,7 @@ func TestConnectorConfigRoundTrip(t *testing.T) {
 	}
 	config, secrets := shrinkConnector(original)
 	restored := &repository.Connector{}
-	expandConnector(restored, config, secrets)
+	expandConnector(restored, jsonbText(config), jsonbText(secrets))
 
 	for _, key := range []string{"provider_url", "principal", "app_id"} {
 		if restored.Values[key] != original.Values[key] {
@@ -121,5 +146,100 @@ func TestConnectorConfigRoundTrip(t *testing.T) {
 	expandConnector(legacy, nil, nil)
 	if legacy.Type != "http" {
 		t.Fatalf("缺省类型应为 http，实际 %q", legacy.Type)
+	}
+}
+
+// 回归（飞书 10003 invalid param 的根因）：配置与凭据落库必须是 JSON **对象**。
+//
+// 历史缺陷：shrinkSyncer/shrinkConnector 返回的已是 json.Marshal 过的 []byte，
+// Create/Update 又把它交给 encodeJSONB（再 Marshal 一次），于是列里存成
+// base64 字符串（jsonb_typeof = 'string'）；读回时 Unmarshal 成 map 必然失败，
+// config/secrets 变成空表 → 连接器的 app_id / app_secret 全空 → 飞书
+// tenant_access_token 接口回 10003 invalid param（钉钉、企业微信同理）。
+func TestSyncerJSONBPayloadIsObject(t *testing.T) {
+	original := &repository.Syncer{
+		AppID: "cli_aa5bc049ac785d2e", AppSecret: "enc:app-secret",
+		Host: "ldap.example.com", UserMapping: map[string]string{"name": "sAMAccountName"},
+	}
+	config, secrets, fieldMapping := shrinkSyncer(original)
+	for _, payload := range [][]byte{jsonbText(config), jsonbText(secrets), jsonbText(fieldMapping)} {
+		if kind := jsonbTypeOf(t, payload); kind != "object" {
+			t.Fatalf("JSONB 载荷必须是对象，实际 %s: %s", kind, payload)
+		}
+	}
+
+	restored := &repository.Syncer{}
+	expandSyncer(restored, jsonbText(config), jsonbText(secrets), jsonbText(fieldMapping))
+	if restored.AppID != original.AppID {
+		t.Fatalf("应用标识读回为空（连接器会以空 app_id 调外部接口）: %q", restored.AppID)
+	}
+	if restored.AppSecret != original.AppSecret {
+		t.Fatalf("应用密钥读回为空: %q", restored.AppSecret)
+	}
+	if restored.UserMapping["name"] != "sAMAccountName" {
+		t.Fatalf("字段映射读回为空: %+v", restored.UserMapping)
+	}
+}
+
+// 回归：出方向连接器同样必须是 JSON 对象（同一缺陷的另一个入口）。
+func TestConnectorJSONBPayloadIsObject(t *testing.T) {
+	original := &repository.Connector{
+		Type:       "feishu",
+		Values:     map[string]string{"app_id": "cli_aa5bc049ac785d2e", "app_secret": "enc:app-secret"},
+		HasSecrets: map[string]bool{"app_secret": true},
+	}
+	config, secrets := shrinkConnector(original)
+	for _, payload := range [][]byte{jsonbText(config), jsonbText(secrets)} {
+		if kind := jsonbTypeOf(t, payload); kind != "object" {
+			t.Fatalf("JSONB 载荷必须是对象，实际 %s: %s", kind, payload)
+		}
+	}
+	restored := &repository.Connector{}
+	expandConnector(restored, jsonbText(config), jsonbText(secrets))
+	if restored.Values["app_id"] != "cli_aa5bc049ac785d2e" || !restored.HasSecrets["app_secret"] {
+		t.Fatalf("出方向配置读回为空: %+v", restored)
+	}
+}
+
+// 回归：缺陷版本已经写进库的行（jsonb 里是 base64 字符串）必须仍可读，
+// 否则升级后存量连接的凭据会"凭空消失"，只能靠人工重新填写。
+func TestExpandLegacyDoubleEncodedPayload(t *testing.T) {
+	// 缺陷版本写入的形态：json.Marshal([]byte) → jsonb 编解码器再编码一次
+	legacy := func(v interface{}) []byte {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("构造历史载荷失败: %v", err)
+		}
+		quoted, err := json.Marshal(base64.StdEncoding.EncodeToString(raw))
+		if err != nil {
+			t.Fatalf("构造历史载荷失败: %v", err)
+		}
+		return quoted
+	}
+
+	sy := &repository.Syncer{}
+	expandSyncer(sy,
+		legacy(map[string]string{"app_id": "cli_aa5bc049ac785d2e"}),
+		legacy(map[string]string{"app_secret": "enc:app-secret"}),
+		legacy(map[string]map[string]string{"account": {"name": "sAMAccountName"}}))
+	if sy.AppID != "cli_aa5bc049ac785d2e" || sy.AppSecret != "enc:app-secret" {
+		t.Fatalf("历史行的配置/凭据未还原: app_id=%q has_secret=%v", sy.AppID, sy.AppSecret != "")
+	}
+	if sy.UserMapping["name"] != "sAMAccountName" {
+		t.Fatalf("历史行的字段映射未还原: %+v", sy.UserMapping)
+	}
+
+	// 出方向同理
+	c := &repository.Connector{}
+	expandConnector(c, legacy(map[string]string{"app_id": "cli_x"}), legacy(map[string]string{"app_secret": "enc:s"}))
+	if c.Values["app_id"] != "cli_x" || !c.HasSecrets["app_secret"] {
+		t.Fatalf("历史行的出方向配置未还原: %+v", c)
+	}
+
+	// 非 base64 的普通字符串（脏数据）不得 panic，退化为空配置即可
+	dirty := &repository.Syncer{}
+	expandSyncer(dirty, []byte(`"not-base64"`), nil, nil)
+	if dirty.AppID != "" || dirty.Config == nil {
+		t.Fatalf("脏数据应退化为空配置: %+v", dirty)
 	}
 }

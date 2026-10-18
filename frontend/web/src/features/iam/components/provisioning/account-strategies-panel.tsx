@@ -20,17 +20,16 @@ import {
   Switch,
   Textarea,
 } from '@/shared/ui'
-import { PageShell } from '@/widgets/layout/page-shell'
 import { ListToolbar } from '@/widgets/layout/list-toolbar'
 import { ConfirmDialog } from '@/shared/components/confirm-dialog'
 import { RowActionsMenu } from '@/shared/components/row-actions-menu'
+import { useAuth } from '@/features/auth/auth-context'
 import type { AccountStrategy } from '@/shared/api/types'
-import { accountStrategyApi } from '../api'
-import { useWorkspaceInstitution } from '../institution-context'
-import { useListQuery } from '../hooks/use-list-query'
-import { useMutation } from '../hooks/use-mutation'
-import { Field } from '../components/field'
-import { ResourceTable, type Column } from '../components/resource-table'
+import { accountStrategyApi } from '../../api'
+import { useListQuery } from '../../hooks/use-list-query'
+import { useMutation } from '../../hooks/use-mutation'
+import { Field } from '../field'
+import { ResourceTable, type Column } from '../resource-table'
 
 const createWhenOptions = ['manual', 'onCreate', 'onGrant', 'jit'] as const
 const revokeWhenOptions = ['disable', 'delete', 'offboard'] as const
@@ -51,7 +50,6 @@ const revokeWhenLabelKeys: Record<string, string> = {
 const emptyForm = {
   name: '',
   display_name: '',
-  application: '',
   is_enabled: true,
   createWhen: 'onCreate',
   revokeWhen: 'disable',
@@ -80,13 +78,32 @@ function textToMapping(text: string): Record<string, string> {
   return out
 }
 
-/** 账号策略：建号 / 回收时机与本地→下游属性映射 */
-export default function AccountStrategiesPage() {
+interface AccountStrategiesPanelProps {
+  institution: string
+  applicationId: number
+  applicationCode: string
+}
+
+/**
+ * 应用详情内的账号策略面板。
+ *
+ * 策略按应用维护（application_id），因此这里不再让用户手填应用标识；
+ * 新建 / 编辑一律携带当前应用主键，避免出现"填了 code、运行时却按默认策略走"的假配置。
+ */
+export function AccountStrategiesPanel({
+  institution,
+  applicationId,
+  applicationCode,
+}: AccountStrategiesPanelProps) {
   const { t } = useTranslation()
-  const institution = useWorkspaceInstitution()
+  const { can } = useAuth()
+  const canCreate = can('account_strategy', 'create')
+  const canUpdate = can('account_strategy', 'update')
+  const canDelete = can('account_strategy', 'delete')
 
   const list = useListQuery<AccountStrategy>((params) => accountStrategyApi.list(params), {
     institution: institution || undefined,
+    filters: { application_id: applicationId },
   })
   const { pending, run } = useMutation()
 
@@ -106,7 +123,6 @@ export default function AccountStrategiesPage() {
     setForm({
       name: strategy.name,
       display_name: strategy.display_name,
-      application: strategy.application ?? '',
       is_enabled: strategy.is_enabled,
       createWhen: strategy.policy?.createWhen ?? 'onCreate',
       revokeWhen: strategy.policy?.revokeWhen ?? 'disable',
@@ -120,9 +136,10 @@ export default function AccountStrategiesPage() {
     if (!institution) return
     const payload: Partial<AccountStrategy> = {
       institution_id: Number(institution),
+      application_id: applicationId,
+      application: applicationCode,
       name: form.name,
       display_name: form.display_name,
-      application: form.application,
       is_enabled: form.is_enabled,
       mapping: textToMapping(form.mapping),
       policy: { createWhen: form.createWhen, revokeWhen: form.revokeWhen },
@@ -146,16 +163,6 @@ export default function AccountStrategiesPage() {
           <span className="text-muted-foreground truncate text-xs">{strategy.display_name}</span>
         </div>
       ),
-    },
-    {
-      key: 'application',
-      headerKey: 'accountStrategies.application',
-      render: (strategy) =>
-        strategy.application ? (
-          <Badge variant="secondary">{strategy.application}</Badge>
-        ) : (
-          <span className="text-muted-foreground text-xs">-</span>
-        ),
     },
     {
       key: 'createWhen',
@@ -184,29 +191,53 @@ export default function AccountStrategiesPage() {
         </Badge>
       ),
     },
-    {
-      key: 'actions',
-      headerKey: 'common.actions',
-      headClassName: 'text-right',
-      render: (strategy) => (
-        <RowActionsMenu
-          primary={{ labelKey: 'common.edit', onSelect: () => openEdit(strategy), disabled: pending }}
-          actions={[{ labelKey: 'common.delete', destructive: true, onSelect: () => setRemoving(strategy) }]}
-        />
-      ),
-    },
+    ...(canUpdate || canDelete
+      ? [{
+          key: 'actions',
+          headerKey: 'common.actions',
+          headClassName: 'text-right',
+          render: (strategy: AccountStrategy) => (
+            <RowActionsMenu
+              primary={
+                canUpdate
+                  ? { labelKey: 'common.edit', onSelect: () => openEdit(strategy), disabled: pending }
+                  : undefined
+              }
+              actions={
+                canDelete
+                  ? [{ labelKey: 'common.delete', destructive: true, onSelect: () => setRemoving(strategy) }]
+                  : []
+              }
+            />
+          ),
+        }]
+      : []),
   ]
 
   return (
-    <PageShell
-      titleKey="accountStrategies.title"
-      subtitleKey="accountStrategies.subtitle"
-      actions={
-        <Button onClick={openCreate}>
-          <Plus className="size-4" /> {t('common.create')}
-        </Button>
-      }
-    >
+    <div className="space-y-4">
+      <div className="border-border/60 bg-muted/30 rounded-xl border px-3.5 py-3">
+        <p className="text-sm font-medium">{t('accountStrategies.applicationScopedTitle')}</p>
+        <p className="text-muted-foreground mt-1 text-xs leading-relaxed">
+          {t('accountStrategies.applicationScopedHint', { application: applicationCode })}
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="min-w-0 flex-1">
+          <ListToolbar
+            keyword={list.keyword}
+            onKeywordChange={list.setKeyword}
+            onSubmit={list.search}
+          />
+        </div>
+        {canCreate ? (
+          <Button onClick={openCreate}>
+            <Plus className="size-4" /> {t('accountStrategies.add')}
+          </Button>
+        ) : null}
+      </div>
+
       <ResourceTable
         columns={columns}
         rows={list.items}
@@ -216,9 +247,6 @@ export default function AccountStrategiesPage() {
         size={list.size}
         total={list.total}
         onPageChange={list.setPage}
-        toolbar={
-          <ListToolbar keyword={list.keyword} onKeywordChange={list.setKeyword} onSubmit={list.search} />
-        }
       />
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -252,14 +280,14 @@ export default function AccountStrategiesPage() {
             <Field
               id="strategy-application"
               labelKey="accountStrategies.application"
-              hint={t('accountStrategies.applicationHint')}
+              hint={t('accountStrategies.applicationLockedHint')}
             >
-              <Input
+              <div
                 id="strategy-application"
-                value={form.application}
-                onChange={(event) => setForm({ ...form, application: event.target.value })}
-                placeholder="app-built-in"
-              />
+                className="border-input/70 bg-muted/40 flex h-10 items-center rounded-xl border px-3.5 text-[13px]"
+              >
+                <Badge variant="secondary">{applicationCode}</Badge>
+              </div>
             </Field>
 
             <div className="grid gap-4 sm:grid-cols-2">
@@ -346,6 +374,6 @@ export default function AccountStrategiesPage() {
           }
         }}
       />
-    </PageShell>
+    </div>
   )
 }

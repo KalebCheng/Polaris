@@ -23,7 +23,7 @@ type OIDCService struct {
 	users  repository.UserRepository
 	orgs   repository.InstitutionRepository
 	roles  repository.RoleRepository
-	groups repository.GroupRepository
+	groups repository.JobTitleRepository
 	tokens repository.TokenRepository
 	issuer *oidc.Issuer
 	audits *AuditRecorder
@@ -48,7 +48,7 @@ func NewOIDCService(
 	users repository.UserRepository,
 	orgs repository.InstitutionRepository,
 	roles repository.RoleRepository,
-	groups repository.GroupRepository,
+	groups repository.JobTitleRepository,
 	tokens repository.TokenRepository,
 	issuer *oidc.Issuer,
 	audits *AuditRecorder,
@@ -150,8 +150,8 @@ func (s *OIDCService) Authorize(ctx context.Context, p AuthorizeParams) (string,
 	code := s.issuer.NewCode()
 	rec := &repository.Token{
 		InstitutionID:       app.InstitutionID,
-		Application:         app.Code,
-		User:                user.Name,
+		ApplicationID:       &app.ID,
+		UserID:              &user.ID,
 		Name:                "code-" + randomHex(6),
 		Code:                code,
 		CodeChallenge:       p.CodeChallenge,
@@ -251,7 +251,7 @@ func (s *OIDCService) grantAuthorizationCode(ctx context.Context, app *repositor
 	if rec.CodeExpireIn > 0 && rec.CodeExpireIn < time.Now().Unix() {
 		return nil, bizerrors.ErrOAuthInvalidGrant.WithDetail("reason", "code_expired")
 	}
-	if rec.Application != app.Code {
+	if rec.ApplicationID == nil || *rec.ApplicationID != app.ID {
 		return nil, bizerrors.ErrOAuthInvalidGrant.WithDetail("reason", "client_mismatch")
 	}
 	if rec.CodeRedirectURI != "" && req.RedirectURI != "" && rec.CodeRedirectURI != req.RedirectURI {
@@ -285,7 +285,7 @@ func (s *OIDCService) grantRefreshToken(ctx context.Context, app *repository.App
 	if err != nil || rec.Revoked {
 		return nil, bizerrors.ErrOAuthInvalidGrant.WithDetail("reason", "refresh_invalid")
 	}
-	if rec.Application != app.Code {
+	if rec.ApplicationID == nil || *rec.ApplicationID != app.ID {
 		return nil, bizerrors.ErrOAuthInvalidGrant.WithDetail("reason", "client_mismatch")
 	}
 	if rec.ExpireTime != nil && rec.ExpireTime.Before(time.Now()) {
@@ -431,7 +431,7 @@ func (s *OIDCService) idTokenClaims(ctx context.Context, app *repository.Applica
 		if len(roles) > 0 {
 			claims["roles"] = roles
 		}
-		groups, _ := s.groups.GroupsForUser(ctx, user.InstitutionID, user.Name)
+		groups, _ := s.groups.JobTitlesForUser(ctx, user.InstitutionID, user.Name)
 		if len(groups) > 0 {
 			claims["groups"] = groups
 		}
@@ -455,16 +455,16 @@ func (s *OIDCService) storeToken(ctx context.Context, app *repository.Applicatio
 }
 
 func (s *OIDCService) storeTokenWithRefresh(ctx context.Context, app *repository.Application, user *repository.User, name, scope, accessToken, refreshToken, idToken string, exp time.Time, refreshExp *time.Time, grantType string) error {
-	userName := ""
+	var userID *int64
 	org := app.InstitutionID
 	if user != nil {
-		userName = user.Name
 		org = user.InstitutionID
+		userID = &user.ID
 	}
 	rec := &repository.Token{
 		InstitutionID:   org,
-		Application:     app.Code,
-		User:            userName,
+		ApplicationID:   &app.ID,
+		UserID:          userID,
 		Name:            name,
 		AccessToken:     accessToken,
 		RefreshToken:    refreshToken,

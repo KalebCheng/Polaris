@@ -50,7 +50,7 @@ describe('工作区侧栏（共享纵向菜单）', () => {
     expect(active.className).not.toContain('bg-ink')
     expect(active.className).not.toContain('bg-primary/10')
 
-    expect(screen.getByRole('link', { name: zh.nav.groups })).toHaveAttribute('data-active', 'false')
+    expect(screen.getByRole('link', { name: zh.nav.jobTitles })).toHaveAttribute('data-active', 'false')
   })
 
   it('总览用精确匹配：子页路径下不点亮总览，回到组织首页才点亮', () => {
@@ -75,8 +75,8 @@ describe('工作区侧栏（共享纵向菜单）', () => {
 
   it('分组抬头仍在（菜单列表只替换条目区，不吞掉分组结构）', () => {
     renderNav()
-    // 分组抬头是可折叠按钮，文案取自 nav-config 的 nav.groupOverview / nav.directory / nav.apps / nav.lifecycle
-    for (const label of [zh.nav.groupOverview, zh.nav.directory, zh.nav.apps, zh.nav.lifecycle]) {
+    // 分组抬头是可折叠按钮，文案取自 nav-config 的 nav.groupOverview / nav.directory / nav.apps
+    for (const label of [zh.nav.groupOverview, zh.nav.directory, zh.nav.apps]) {
       expect(screen.getByRole('button', { name: new RegExp(label) })).toBeInTheDocument()
     }
   })

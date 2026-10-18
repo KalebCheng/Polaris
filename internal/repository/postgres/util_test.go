@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	bizerrors "polaris/internal/errors"
+	"polaris/internal/repository"
 )
 
 // 回归：nil 切片/映射直接写入 NOT NULL 队列会触发 23502；仓库层必须统一兜底为空集合。
@@ -84,7 +85,7 @@ func TestDefaultStr(t *testing.T) {
 	}
 }
 
-// 回归：SQL 保留字列（如 app_accounts."user"）作为过滤字段时必须加引号，
+// 回归：SQL 保留字列（如 application_accounts."user"）作为过滤字段时必须加引号，
 // 否则 `WHERE user=$1` 会解析失败，导致按用户过滤的应用账号/供给历史查询静默返回空。
 func TestColumnExprQuotesReserved(t *testing.T) {
 	cases := map[string]string{
@@ -100,5 +101,21 @@ func TestColumnExprQuotesReserved(t *testing.T) {
 		if got := columnExpr(field); got != want {
 			t.Fatalf("columnExpr(%q) = %q, 期望 %q", field, got, want)
 		}
+	}
+}
+
+// 回归：应用详情按 application_id、出方向连接按 connector 过滤时，
+// 过滤条件必须作为独立的 AND 条件追加，不能被 Keyword 分支吞掉。
+func TestApplyQueryFilters(t *testing.T) {
+	b := &queryBuilder{}
+	applyQueryFilters(b, []repository.ColumnFilter{
+		{Field: "application_id", Value: int64(7)},
+		{Field: "connector", Value: "dingtalk"},
+	})
+	if got, want := b.where(), ` WHERE t.application_id=$1 AND t.connector=$2`; got != want {
+		t.Fatalf("where = %q, 期望 %q", got, want)
+	}
+	if len(b.args) != 2 || b.args[0] != int64(7) || b.args[1] != "dingtalk" {
+		t.Fatalf("过滤参数错误: %#v", b.args)
 	}
 }

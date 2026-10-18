@@ -179,7 +179,14 @@ export default function UserDetailPage() {
         {user.is_forbidden ? <Badge variant="destructive">{t('users.isForbidden')}</Badge> : null}
         {user.is_deleted ? <Badge variant="destructive">{t('users.isDeleted')}</Badge> : null}
         {user.is_online ? <Badge variant="success">{t('users.isOnline')}</Badge> : null}
-        {user.department_path ? <Badge variant="outline">{user.department_path}</Badge> : null}
+        {/* 多部门挂职（Spec Q2 = A）：全部展示，主部门在前；只有主部门时退化为单项 */}
+        {(user.department_paths?.length ? user.department_paths : user.department_path ? [user.department_path] : []).map(
+          (path) => (
+            <Badge key={path} variant="outline">
+              {path}
+            </Badge>
+          ),
+        )}
         <Badge variant={user.mfa_enabled ? 'secondary' : 'outline'}>
           {user.mfa_enabled ? <ShieldCheck className="size-3" /> : <ShieldOff className="size-3" />}
           {user.mfa_enabled ? t('users.mfa') : t('users.mfaNotBound')}

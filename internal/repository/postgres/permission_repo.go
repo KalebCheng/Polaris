@@ -60,12 +60,15 @@ func (r *PermissionRepository) createOrSetSubjects(ctx context.Context, p *repos
 
 func insertPermissionSubjects(ctx context.Context, tx pgx.Tx, id int64, users, groups, roles []string) error {
 	for _, u := range users {
-		if _, err := tx.Exec(ctx, `INSERT INTO permission_users (permission_id, "user") VALUES ($1,$2) ON CONFLICT DO NOTHING`, id, u); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO permission_users (permission_id, user_id)
+			SELECT $1, u.id FROM users u JOIN permissions p ON p.id = $1
+			WHERE u.institution_id = p.institution_id AND u.name = $2
+			ON CONFLICT DO NOTHING`, id, u); err != nil {
 			return mapError(err, "")
 		}
 	}
 	for _, g := range groups {
-		if _, err := tx.Exec(ctx, `INSERT INTO permission_groups (permission_id, "group") VALUES ($1,$2) ON CONFLICT DO NOTHING`, id, g); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO permission_job_titles (permission_id, "group") VALUES ($1,$2) ON CONFLICT DO NOTHING`, id, g); err != nil {
 			return mapError(err, "")
 		}
 	}
@@ -120,10 +123,11 @@ func (r *PermissionRepository) strings(ctx context.Context, sql string, args ...
 
 func (r *PermissionRepository) loadSubjects(ctx context.Context, p *repository.Permission) error {
 	var err error
-	if p.Users, err = r.strings(ctx, `SELECT "user" FROM permission_users WHERE permission_id=$1 ORDER BY "user"`, p.ID); err != nil {
+	if p.Users, err = r.strings(ctx, `SELECT u.name FROM permission_users pu JOIN users u ON u.id = pu.user_id
+		WHERE pu.permission_id=$1 ORDER BY u.name`, p.ID); err != nil {
 		return err
 	}
-	if p.Groups, err = r.strings(ctx, `SELECT "group" FROM permission_groups WHERE permission_id=$1 ORDER BY "group"`, p.ID); err != nil {
+	if p.JobTitles, err = r.strings(ctx, `SELECT job_title FROM permission_job_titles WHERE permission_id=$1 ORDER BY job_title`, p.ID); err != nil {
 		return err
 	}
 	if p.Roles, err = r.strings(ctx, `SELECT role FROM permission_roles WHERE permission_id=$1 ORDER BY role`, p.ID); err != nil {
@@ -144,13 +148,13 @@ func (r *PermissionRepository) Update(ctx context.Context, p *repository.Permiss
 		if _, err := tx.Exec(ctx, `DELETE FROM permission_users WHERE permission_id=$1`, p.ID); err != nil {
 			return mapError(err, "")
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM permission_groups WHERE permission_id=$1`, p.ID); err != nil {
+		if _, err := tx.Exec(ctx, `DELETE FROM permission_job_titles WHERE permission_id=$1`, p.ID); err != nil {
 			return mapError(err, "")
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM permission_roles WHERE permission_id=$1`, p.ID); err != nil {
 			return mapError(err, "")
 		}
-		return insertPermissionSubjects(ctx, tx, p.ID, p.Users, p.Groups, p.Roles)
+		return insertPermissionSubjects(ctx, tx, p.ID, p.Users, p.JobTitles, p.Roles)
 	})
 }
 
@@ -160,7 +164,7 @@ func (r *PermissionRepository) SetSubjects(ctx context.Context, permissionID int
 		if _, err := tx.Exec(ctx, `DELETE FROM permission_users WHERE permission_id=$1`, permissionID); err != nil {
 			return mapError(err, "")
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM permission_groups WHERE permission_id=$1`, permissionID); err != nil {
+		if _, err := tx.Exec(ctx, `DELETE FROM permission_job_titles WHERE permission_id=$1`, permissionID); err != nil {
 			return mapError(err, "")
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM permission_roles WHERE permission_id=$1`, permissionID); err != nil {

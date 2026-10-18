@@ -136,15 +136,15 @@ func (r *UserRepository) UpdatePassword(ctx context.Context, u *repository.User,
 		if err != nil {
 			return mapError(err, "user not found")
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO password_history (institution_id, "user", password_hash)
-			VALUES ($1,$2,$3)`, u.InstitutionID, u.Name, u.PasswordHash); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO password_history (institution_id, user_id, password_hash)
+			VALUES ($1,$2,$3)`, u.InstitutionID, u.ID, u.PasswordHash); err != nil {
 			return mapError(err, "")
 		}
 		if historyLimit > 0 {
-			_, err := tx.Exec(ctx, `DELETE FROM password_history WHERE institution_id=$1 AND "user"=$2
+			_, err := tx.Exec(ctx, `DELETE FROM password_history WHERE institution_id=$1 AND user_id=$2
 				AND id NOT IN (
-					SELECT id FROM password_history WHERE institution_id=$1 AND "user"=$2
-					ORDER BY created_at DESC LIMIT $3)`, u.InstitutionID, u.Name, historyLimit)
+					SELECT id FROM password_history WHERE institution_id=$1 AND user_id=$2
+					ORDER BY created_at DESC LIMIT $3)`, u.InstitutionID, u.ID, historyLimit)
 			if err != nil {
 				return mapError(err, "")
 			}
@@ -224,8 +224,9 @@ func (r *UserRepository) SetOnline(ctx context.Context, id int64, online bool) e
 
 // PasswordHistory 读取最近 N 条密码哈希
 func (r *UserRepository) PasswordHistory(ctx context.Context, institutionID int64, user string, limit int) ([]string, error) {
-	rows, err := r.db.Query(ctx, `SELECT password_hash FROM password_history
-		WHERE institution_id=$1 AND "user"=$2 ORDER BY created_at DESC LIMIT $3`, institutionID, user, limit)
+	rows, err := r.db.Query(ctx, `SELECT h.password_hash FROM password_history h
+		JOIN users u ON u.id = h.user_id
+		WHERE h.institution_id=$1 AND u.name=$2 ORDER BY h.created_at DESC LIMIT $3`, institutionID, user, limit)
 	if err != nil {
 		return nil, mapError(err, "")
 	}
@@ -241,11 +242,16 @@ func (r *UserRepository) PasswordHistory(ctx context.Context, institutionID int6
 	return hashes, mapError(rows.Err(), "")
 }
 
-const identityColumns = `id, institution_id, "user", provider, provider_user_id, email, created_at, updated_at`
+const identityColumns = `i.id, i.institution_id, i.user_id, i.provider_id, i.provider_user_id, i.email, i.created_at, i.updated_at,
+	COALESCE((SELECT u.name FROM users u WHERE u.id = i.user_id), '') AS "user",
+	COALESCE((SELECT p.name FROM providers p WHERE p.id = i.provider_id), '') AS provider`
+
+const identitySelect = `SELECT ` + identityColumns + ` FROM user_identities i`
 
 func scanIdentity(row interface{ Scan(...interface{}) error }) (*repository.UserIdentity, error) {
 	var i repository.UserIdentity
-	err := row.Scan(&i.ID, &i.InstitutionID, &i.User, &i.Provider, &i.ProviderUserID, &i.Email, &i.CreatedAt, &i.UpdatedAt)
+	err := row.Scan(&i.ID, &i.InstitutionID, &i.UserID, &i.ProviderID, &i.ProviderUserID, &i.Email, &i.CreatedAt, &i.UpdatedAt,
+		&i.User, &i.Provider)
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +260,8 @@ func scanIdentity(row interface{ Scan(...interface{}) error }) (*repository.User
 
 // GetIdentity 按 provider + providerUserID 查询外部身份绑定
 func (r *UserRepository) GetIdentity(ctx context.Context, provider, providerUserID string) (*repository.UserIdentity, error) {
-	i, err := scanIdentity(r.db.QueryRow(ctx, `SELECT `+identityColumns+` FROM user_identities WHERE provider=$1 AND provider_user_id=$2`, provider, providerUserID))
+	i, err := scanIdentity(r.db.QueryRow(ctx, identitySelect+` WHERE i.provider_id =
+		(SELECT id FROM providers WHERE name=$1 ORDER BY id LIMIT 1) AND i.provider_user_id=$2`, provider, providerUserID))
 	if err != nil {
 		return nil, mapError(err, "identity not bound")
 	}
@@ -263,7 +270,8 @@ func (r *UserRepository) GetIdentity(ctx context.Context, provider, providerUser
 
 // GetIdentitiesByUser 查询用户的外部身份绑定
 func (r *UserRepository) GetIdentitiesByUser(ctx context.Context, institutionID int64, user string) ([]*repository.UserIdentity, error) {
-	rows, err := r.db.Query(ctx, `SELECT `+identityColumns+` FROM user_identities WHERE institution_id=$1 AND "user"=$2 ORDER BY id ASC`, institutionID, user)
+	rows, err := r.db.Query(ctx, identitySelect+` WHERE i.institution_id=$1 AND i.user_id =
+		(SELECT id FROM users WHERE institution_id=$1 AND name=$2) ORDER BY i.id ASC`, institutionID, user)
 	if err != nil {
 		return nil, mapError(err, "")
 	}
@@ -296,9 +304,9 @@ func (r *UserRepository) CreateWithIdentity(ctx context.Context, u *repository.U
 		}
 		identity.InstitutionID = u.InstitutionID
 		identity.User = u.Name
-		if _, err := tx.Exec(ctx, `INSERT INTO user_identities (institution_id, "user", provider, provider_user_id, email)
-			VALUES ($1,$2,$3,$4,$5)`, identity.InstitutionID, identity.User, identity.Provider,
-			identity.ProviderUserID, identity.Email); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO user_identities (institution_id, user_id, provider_id, provider_user_id, email)
+			VALUES ($1,$2,(SELECT id FROM providers WHERE institution_id=$1 AND name=$3 LIMIT 1),$4,$5)`,
+			identity.InstitutionID, u.ID, identity.Provider, identity.ProviderUserID, identity.Email); err != nil {
 			return mapError(err, "")
 		}
 		return nil
@@ -313,8 +321,11 @@ func (r *UserRepository) CreateWithIdentity(ctx context.Context, u *repository.U
 // BindIdentity 绑定外部身份
 func (r *UserRepository) BindIdentity(ctx context.Context, identity *repository.UserIdentity) (int64, error) {
 	var id int64
-	err := r.db.QueryRow(ctx, `INSERT INTO user_identities (institution_id, "user", provider, provider_user_id, email)
-		VALUES ($1,$2,$3,$4,$5) RETURNING id`, identity.InstitutionID, identity.User, identity.Provider,
+	err := r.db.QueryRow(ctx, `INSERT INTO user_identities (institution_id, user_id, provider_id, provider_user_id, email)
+		SELECT $1, u.id, p.id, $4, $5
+		FROM users u LEFT JOIN providers p ON p.institution_id = $1 AND p.name = $3
+		WHERE u.institution_id = $1 AND u.name = $2
+		RETURNING id`, identity.InstitutionID, identity.User, identity.Provider,
 		identity.ProviderUserID, identity.Email).Scan(&id)
 	if err != nil {
 		return 0, mapError(err, "")

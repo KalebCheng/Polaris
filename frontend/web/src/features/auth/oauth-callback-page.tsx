@@ -9,7 +9,7 @@ import { AuthShell } from './auth-shell'
 import { useAuth } from './auth-context'
 
 /**
- * OAuth / OIDC 回调中间页。
+ * OAuth / OIDC 回调中间页（路由挂在前端命名空间 /sso/callback，与后端 /oauth/* 协议端点分开）。
  * 由身份提供方携带 code + state 回跳，这里完成凭据交换并回跳原页面（from 由 state 在服务端暂存）。
  * 与登录页共用同一套极简舞台，保持品牌一致。
  */

@@ -87,13 +87,25 @@ func (r *selfServiceRecordRepo) Count(_ context.Context, q repository.ListQuery)
 	return 0, nil
 }
 
-type selfServiceAppAccountRepo struct {
-	repository.AppAccountRepository
-	query repository.ListQuery
-	items []*repository.AppAccount
+type selfServiceProvisioningUserRepo struct {
+	repository.UserRepository
+	users map[string]*repository.User
 }
 
-func (r *selfServiceAppAccountRepo) List(_ context.Context, q repository.ListQuery) ([]*repository.AppAccount, error) {
+func (r *selfServiceProvisioningUserRepo) GetByName(_ context.Context, _ int64, name string) (*repository.User, error) {
+	if u := r.users[name]; u != nil {
+		return u, nil
+	}
+	return nil, errors.New("user not found")
+}
+
+type selfServiceApplicationAccountRepo struct {
+	repository.ApplicationAccountRepository
+	query repository.ListQuery
+	items []*repository.ApplicationAccount
+}
+
+func (r *selfServiceApplicationAccountRepo) List(_ context.Context, q repository.ListQuery) ([]*repository.ApplicationAccount, error) {
 	r.query = q
 	return r.items, nil
 }
@@ -115,6 +127,44 @@ func (r *selfServiceConnectorRepo) List(_ context.Context, q repository.ListQuer
 	return r.items, nil
 }
 
+func (r *selfServiceConnectorRepo) ListEnabled(_ context.Context, institutionID, applicationID int64) ([]*repository.Connector, error) {
+	if institutionID != 1 {
+		return nil, errors.New("租户过滤丢失")
+	}
+	out := make([]*repository.Connector, 0, len(r.items))
+	for _, item := range r.items {
+		if item.State != "active" {
+			continue
+		}
+		if applicationID != 0 && (item.ApplicationID == nil || *item.ApplicationID != applicationID) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+type selfServiceStrategyRepo struct {
+	repository.AccountStrategyRepository
+	items []*repository.AccountStrategy
+}
+
+func (r *selfServiceStrategyRepo) List(_ context.Context, q repository.ListQuery) ([]*repository.AccountStrategy, error) {
+	if q.InstitutionID != 1 {
+		return nil, errors.New("租户过滤丢失")
+	}
+	return r.items, nil
+}
+
+func (r *selfServiceStrategyRepo) FindForApplication(_ context.Context, _ int64, applicationID int64) (*repository.AccountStrategy, error) {
+	for _, item := range r.items {
+		if item.IsEnabled && item.ApplicationID != nil && *item.ApplicationID == applicationID {
+			return item, nil
+		}
+	}
+	return nil, errors.New("strategy not found")
+}
+
 func (r *selfServiceApplicationRepo) GetByCode(_ context.Context, institutionID int64, code string) (*repository.Application, error) {
 	if app := r.items[strconv.FormatInt(institutionID, 10)+"/"+code]; app != nil {
 		return app, nil
@@ -126,7 +176,7 @@ func TestUnbindOwnIdentityRejectsIdentityOwnedByAnotherUser(t *testing.T) {
 	repo := &selfServiceUserRepo{
 		identities: []*repository.UserIdentity{{ID: 7, InstitutionID: 1, User: "bob"}},
 	}
-	svc := NewUserService(repo, nil, nil, nil, nil, nil, nil, nil)
+	svc := NewUserService(repo, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	if err := svc.UnbindOwnIdentity(context.Background(), 1, "alice", 7); err == nil {
 		t.Fatal("不应允许当前用户解绑其他用户的身份")
@@ -242,28 +292,39 @@ func TestListForUserScopesAuditRecordsByTenantAndUser(t *testing.T) {
 }
 
 func TestListApplicationsForUserOnlyReturnsActiveProvisionedApps(t *testing.T) {
-	accounts := &selfServiceAppAccountRepo{items: []*repository.AppAccount{
+	accounts := &selfServiceApplicationAccountRepo{items: []*repository.ApplicationAccount{
 		{Application: "wiki", Status: "active"},
 		{Application: "wiki", Status: "active"},
 		{Application: "disabled-account-app", Status: "disabled"},
 		{Application: "disabled-app", Status: "active"},
 	}}
+	jitAppID := int64(3)
+	inactiveJITAppID := int64(4)
 	apps := &selfServiceApplicationRepo{items: map[string]*repository.Application{
-		"1/wiki":         {InstitutionID: 1, Code: "wiki", Name: "Wiki", State: "active"},
-		"1/disabled-app": {InstitutionID: 1, Code: "disabled-app", State: "disabled"},
-		"1/jit-app":      {InstitutionID: 1, Code: "jit-app", Name: "JIT App", State: "active"},
+		"1/wiki":             {InstitutionID: 1, Code: "wiki", Name: "Wiki", State: "active"},
+		"1/disabled-app":     {InstitutionID: 1, Code: "disabled-app", State: "disabled"},
+		"1/jit-app":          {ID: jitAppID, InstitutionID: 1, Code: "jit-app", Name: "JIT App", State: "active"},
+		"1/inactive-jit-app": {ID: inactiveJITAppID, InstitutionID: 1, Code: "inactive-jit-app", State: "disabled"},
 	}}
 	connectors := &selfServiceConnectorRepo{items: []*repository.Connector{
-		{InstitutionID: 1, Application: "jit-app", JustInTime: true, State: "active"},
-		{InstitutionID: 1, Application: "inactive-jit-app", JustInTime: true, State: "disabled"},
+		{InstitutionID: 1, ApplicationID: &jitAppID, Application: "jit-app", State: "active"},
+		{InstitutionID: 1, ApplicationID: &inactiveJITAppID, Application: "inactive-jit-app", State: "disabled"},
 	}}
-	svc := &ProvisioningService{accounts: accounts, apps: apps, connectors: connectors}
+	strategies := &selfServiceStrategyRepo{items: []*repository.AccountStrategy{
+		{InstitutionID: 1, ApplicationID: &jitAppID, Application: "jit-app", IsEnabled: true,
+			Policy: map[string]string{"createWhen": CreateWhenJIT}},
+		{InstitutionID: 1, ApplicationID: &inactiveJITAppID, Application: "inactive-jit-app", IsEnabled: false,
+			Policy: map[string]string{"createWhen": CreateWhenJIT}},
+	}}
+	// 供给链路按「主键」落库：账号名先解析为用户主键（§3.8）
+	users := &selfServiceProvisioningUserRepo{users: map[string]*repository.User{"alice": {ID: 42, InstitutionID: 1, Name: "alice"}}}
+	svc := &ProvisioningService{accounts: accounts, apps: apps, connectors: connectors, strategies: strategies, users: users}
 
 	items, err := svc.ListApplicationsForUser(context.Background(), 1, "alice")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if accounts.query.InstitutionID != 1 || accounts.query.Field != "user" || accounts.query.Value != "alice" {
+	if accounts.query.InstitutionID != 1 || accounts.query.Field != "user_id" || accounts.query.Value != "42" {
 		t.Fatalf("查询应限制到当前用户与租户: %+v", accounts.query)
 	}
 	if len(items) != 2 || items[0].Name != "wiki" || items[0].DisplayName != "Wiki" ||

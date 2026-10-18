@@ -131,6 +131,9 @@ func (s *AuthService) Signup(ctx context.Context, req SignupRequest, ip, userAge
 	s.audits.Record(ctx, name, org.ID, "user.signup", name, map[string]interface{}{
 		"application": applicationCode(app),
 	})
+	if app != nil {
+		s.addDefaultJobTitle(ctx, org.ID, app.DefaultGroup, created.Name)
+	}
 
 	// 自动登录（应用级开关，默认开启）
 	if app == nil || !app.SignupAutoSignin {

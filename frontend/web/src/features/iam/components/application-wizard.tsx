@@ -30,7 +30,7 @@ import { SigninMethodIcon } from '@/shared/components/signin-method-icon'
 import { TagInput } from '@/shared/components/tag-input'
 import { SwitchField } from '@/shared/components/switch-field'
 import { UploadOrURL } from '@/shared/components/upload-or-url'
-import type { Application, ApplicationAccess, Cert, Group, Provider } from '@/shared/api/types'
+import type { Application, ApplicationAccess, Cert, JobTitle, Provider } from '@/shared/api/types'
 import { ApplicationAccessEditor } from './application-access-editor'
 import { Field } from './field'
 import {
@@ -107,7 +107,7 @@ interface ApplicationWizardProps {
   /** 当前组织内的可选资源（用于下拉选择） */
   providers: Provider[]
   certs: Cert[]
-  groups: Group[]
+  jobTitles: JobTitle[]
   pending?: boolean
   onFinish: () => void
   finishLabelKey: string
@@ -130,7 +130,7 @@ export function ApplicationWizard({
   institution,
   providers,
   certs,
-  groups,
+  jobTitles,
   pending,
   onFinish,
   finishLabelKey,
@@ -145,9 +145,9 @@ export function ApplicationWizard({
     onChange({ ...form, [key]: value })
 
   const certOptions: SelectOption[] = certs.map((cert) => ({ value: cert.name, label: cert.name }))
-  const groupOptions: SelectOption[] = groups.map((group) => ({
-    value: group.name,
-    label: group.display_name || group.name,
+  const jobTitleOptions: SelectOption[] = jobTitles.map((jobTitle) => ({
+    value: jobTitle.name,
+    label: jobTitle.display_name || jobTitle.name,
   }))
 
   const [current, setCurrent] = useState(0)
@@ -843,7 +843,7 @@ export function ApplicationWizard({
                     hint={t('applications.defaultGroupHint')}
                   >
                     <Combobox
-                      options={groupOptions}
+                      options={jobTitleOptions}
                       value={form.default_group}
                       onChange={(value) => set('default_group', value)}
                       placeholder={t('applications.notSet')}

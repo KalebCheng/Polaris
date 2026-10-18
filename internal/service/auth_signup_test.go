@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"polaris/internal/repository"
@@ -67,5 +69,44 @@ func TestSignupValuesNormalizesKeys(t *testing.T) {
 	}
 	if got["first name"] != "Alice" {
 		t.Fatalf("自定义字段应小写归一化: %+v", got)
+	}
+}
+
+// stubDefaultJobTitleRepo 只实现默认职务接线需要的两个方法。
+type stubDefaultJobTitleRepo struct {
+	repository.JobTitleRepository
+	item    *repository.JobTitle
+	lookErr error
+	addedID int64
+	added   []string
+}
+
+func (s *stubDefaultJobTitleRepo) GetByName(context.Context, int64, string) (*repository.JobTitle, error) {
+	return s.item, s.lookErr
+}
+
+func (s *stubDefaultJobTitleRepo) AddMembers(_ context.Context, id int64, users []string) error {
+	s.addedID = id
+	s.added = append(s.added, users...)
+	return nil
+}
+
+// 回归：应用「默认职务」不能只写 users.signup_application，必须真正建立职务关系。
+func TestAddDefaultJobTitleAddsMember(t *testing.T) {
+	repo := &stubDefaultJobTitleRepo{item: &repository.JobTitle{ID: 41, InstitutionID: 3, Name: "AI"}}
+	svc := &AuthService{jobTitles: repo}
+	svc.addDefaultJobTitle(context.Background(), 3, "AI", "alice")
+	if repo.addedID != 41 || len(repo.added) != 1 || repo.added[0] != "alice" {
+		t.Fatalf("默认职务未加入新用户: id=%d users=%v", repo.addedID, repo.added)
+	}
+}
+
+// 回归：默认职务配置指向不存在的职务时，注册主流程不应失败。
+func TestAddDefaultJobTitleMissingIsIgnored(t *testing.T) {
+	repo := &stubDefaultJobTitleRepo{lookErr: errors.New("not found")}
+	svc := &AuthService{jobTitles: repo}
+	svc.addDefaultJobTitle(context.Background(), 3, "missing", "alice")
+	if repo.addedID != 0 || len(repo.added) != 0 {
+		t.Fatalf("职务不存在时不应写成员: %+v", repo)
 	}
 }

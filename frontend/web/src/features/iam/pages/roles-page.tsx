@@ -54,7 +54,7 @@ export default function RolesPage() {
   const [removing, setRemoving] = useState<Role | null>(null)
   const [relationsOpen, setRelationsOpen] = useState(false)
   const [relationsTarget, setRelationsTarget] = useState<Role | null>(null)
-  const [relations, setRelations] = useState({ users: '', groups: '', roles: '', permissions: '' })
+  const [relations, setRelations] = useState({ users: '', jobTitles: '', roles: '', permissions: '' })
 
   const openCreate = () => {
     setEditing(null)
@@ -77,7 +77,7 @@ export default function RolesPage() {
     setRelationsTarget(role)
     setRelations({
       users: (role.users ?? []).join(', '),
-      groups: (role.groups ?? []).join(', '),
+      jobTitles: (role.job_titles ?? []).join(', '),
       roles: (role.roles ?? []).join(', '),
       permissions: '',
     })
@@ -273,11 +273,11 @@ export default function RolesPage() {
                 rows={2}
               />
             </Field>
-            <Field id="role-groups" labelKey="roles.groups" hint={t('permissions.commaSeparated')}>
+            <Field id="role-job-titles" labelKey="roles.jobTitles" hint={t('permissions.commaSeparated')}>
               <Textarea
-                id="role-groups"
-                value={relations.groups}
-                onChange={(event) => setRelations({ ...relations, groups: event.target.value })}
+                id="role-job-titles"
+                value={relations.jobTitles}
+                onChange={(event) => setRelations({ ...relations, jobTitles: event.target.value })}
                 rows={2}
               />
             </Field>
@@ -311,7 +311,7 @@ export default function RolesPage() {
                     relationsTarget.id,
                     {
                       users: splitList(relations.users),
-                      groups: splitList(relations.groups),
+                      job_titles: splitList(relations.jobTitles),
                       roles: splitList(relations.roles),
                       permissions: splitList(relations.permissions),
                     },

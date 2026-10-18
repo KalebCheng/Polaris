@@ -90,6 +90,7 @@ func (c *DingTalkConnector) FetchUsers(ctx context.Context, s *repository.Syncer
 				}
 				mapping := s.UserMapping
 				users = append(users, ExternalUser{
+					Raw:           raw,
 					ID:            PickMapped(mapping, raw, "id", "userid"),
 					Username:      PickMapped(mapping, raw, "name", "userid"),
 					Name:          PickMapped(mapping, raw, "displayName", "name"),
@@ -115,10 +116,12 @@ type deptNode struct {
 	ID       int64
 	ParentID int64
 	Name     string
+	// IsRoot 源端根部门占位（钉钉 dept_id=1、name="1"）：不落库为部门（Spec Q4.5）
+	IsRoot bool
 }
 
 func (c *DingTalkConnector) departments(ctx context.Context, token string) ([]deptNode, error) {
-	nodes := []deptNode{{ID: 1, ParentID: 0, Name: "1"}}
+	nodes := []deptNode{{ID: 1, ParentID: 0, Name: "1", IsRoot: true}}
 	queue := []int64{1}
 	for len(queue) > 0 {
 		parent := queue[0]
@@ -168,7 +171,8 @@ func (c *DingTalkConnector) FetchGroups(ctx context.Context, s *repository.Synce
 			name = fmt.Sprintf("%d", node.ID)
 		}
 		groups = append(groups, ExternalGroup{
-			ID: fmt.Sprintf("%d", node.ID), Name: name, ParentID: parent,
+			ID: fmt.Sprintf("%d", node.ID), Name: name, ParentID: parent, IsRoot: node.IsRoot,
+			Raw: map[string]string{"dept_id": fmt.Sprintf("%d", node.ID), "name": node.Name},
 		})
 	}
 	return groups, nil

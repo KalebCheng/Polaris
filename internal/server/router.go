@@ -18,7 +18,8 @@ type Handlers struct {
 	Provider    *handler.ProviderHandler
 	Role        *handler.RoleHandler
 	Permission  *handler.PermissionHandler
-	Group       *handler.GroupHandler
+	JobTitle    *handler.JobTitleHandler
+	JobLevel    *handler.JobLevelHandler
 	Cert        *handler.CertHandler
 	Token       *handler.TokenHandler
 	Session     *handler.SessionHandler
@@ -117,7 +118,9 @@ func RegisterRoutes(engine *gin.Engine, mw *Middleware, h *Handlers) {
 	users.GET("/:id", mw.RequirePermission("user", "read"), h.User.Get)
 	// 资料部分更新（只改提交的字段；凭证与状态字段各有专用端点）
 	users.PUT("/:id", mw.RequirePermission("user", "update"), h.User.UpdateProfile)
-	users.PUT("/:id/department", mw.RequirePermission("user", "update"), h.User.SetDepartment)
+	// 部门归属（多值，Spec 第六阶段 Q2 = A）与职级（仅属性，Q4.1 = A）
+	users.PUT("/:id/departments", mw.RequirePermission("user", "update"), h.User.SetDepartments)
+	users.PUT("/:id/job-level", mw.RequirePermission("user", "update"), h.User.SetJobLevel)
 	// 设为 / 取消管理员（危险动作，服务层有"最后一个管理员"防呆）
 	users.PUT("/:id/admin", mw.RequirePermission("user", "update"), h.User.SetAdmin)
 	users.POST("/:id/disable", mw.RequirePermission("user", "update"), h.User.Disable)
@@ -131,10 +134,11 @@ func RegisterRoutes(engine *gin.Engine, mw *Middleware, h *Handlers) {
 	users.GET("/:id/security", mw.RequirePermission("user", "read"), h.User.Security)
 	users.GET("/:id/authorizations", mw.RequirePermission("user", "read"), h.User.Authorizations)
 	users.PUT("/:id/roles", mw.RequirePermission("role", "update"), h.User.SetRoles)
-	users.PUT("/:id/groups", mw.RequirePermission("user", "update"), h.User.SetGroups)
-	users.GET("/:id/app-accounts", mw.RequirePermission("app_account", "read"), h.User.AppAccounts)
+	users.PUT("/:id/job-titles", mw.RequirePermission("user", "update"), h.User.SetJobTitles)
+	users.GET("/:id/application-accounts", mw.RequirePermission("application_account", "read"), h.User.ApplicationAccounts)
 	users.GET("/:id/provision-history", mw.RequirePermission("provision_history", "read"), h.User.ProvisionHistory)
 	users.GET("/:id/records", mw.RequirePermission("record", "read"), h.User.Records)
+	users.GET("/:id/external-identities", mw.RequirePermission("user", "read"), h.User.ExternalIdentities)
 	users.GET("/:id/identities", mw.RequirePermission("user", "read"), h.User.Identities)
 	users.DELETE("/:id/identities/:identityID", mw.RequirePermission("user", "update"), h.User.UnbindIdentity)
 	users.POST("/:id/api-keys", mw.RequirePermission("user", "update"), h.User.IssueAPIKey)
@@ -184,16 +188,25 @@ func RegisterRoutes(engine *gin.Engine, mw *Middleware, h *Handlers) {
 	perms.DELETE("/:id", mw.RequirePermission("permission", "delete"), h.Permission.Delete)
 	perms.POST("/enforce", mw.RequirePermission("permission", "read"), h.Permission.Enforce)
 
-	// 用户组
-	groups := authGroup.Group("/groups")
-	groups.GET("", mw.RequirePermission("group", "read"), h.Group.List)
-	groups.POST("", mw.RequirePermission("group", "create"), h.Group.Create)
-	groups.GET("/:id", mw.RequirePermission("group", "read"), h.Group.Get)
-	groups.PUT("/:id", mw.RequirePermission("group", "update"), h.Group.Update)
-	groups.PUT("/:id/members", mw.RequirePermission("group", "update"), h.Group.SetMembers)
-	// 组详情：成员明细 + 关联角色 + 汇总权限（"这个组到底授了什么权"）
-	groups.GET("/:id/detail", mw.RequirePermission("group", "read"), h.Group.Detail)
-	groups.DELETE("/:id", mw.RequirePermission("group", "delete"), h.Group.Delete)
+	// 职务（原「用户组」；Spec 第六阶段 Q3 = A。权限资源名同步为 job_title）
+	jobTitles := authGroup.Group("/job-titles")
+	jobTitles.GET("", mw.RequirePermission("job_title", "read"), h.JobTitle.List)
+	jobTitles.POST("", mw.RequirePermission("job_title", "create"), h.JobTitle.Create)
+	jobTitles.GET("/:id", mw.RequirePermission("job_title", "read"), h.JobTitle.Get)
+	jobTitles.PUT("/:id", mw.RequirePermission("job_title", "update"), h.JobTitle.Update)
+	jobTitles.PUT("/:id/members", mw.RequirePermission("job_title", "update"), h.JobTitle.SetMembers)
+	// 职务详情：任职人员明细 + 关联角色 + 汇总权限（"这个职务到底授了什么权"）
+	jobTitles.GET("/:id/detail", mw.RequirePermission("job_title", "read"), h.JobTitle.Detail)
+	jobTitles.DELETE("/:id", mw.RequirePermission("job_title", "delete"), h.JobTitle.Delete)
+
+	// 职级（Spec 第六阶段 Q4：仅作用户属性，不参与授权）
+	jobLevels := authGroup.Group("/job-levels")
+	jobLevels.GET("", mw.RequirePermission("job_level", "read"), h.JobLevel.List)
+	jobLevels.GET("/distribution", mw.RequirePermission("job_level", "read"), h.JobLevel.Distribution)
+	jobLevels.POST("", mw.RequirePermission("job_level", "create"), h.JobLevel.Create)
+	jobLevels.GET("/:id", mw.RequirePermission("job_level", "read"), h.JobLevel.Get)
+	jobLevels.PUT("/:id", mw.RequirePermission("job_level", "update"), h.JobLevel.Update)
+	jobLevels.DELETE("/:id", mw.RequirePermission("job_level", "delete"), h.JobLevel.Delete)
 
 	// 证书
 	certs := authGroup.Group("/certs")
@@ -257,13 +270,13 @@ func RegisterRoutes(engine *gin.Engine, mw *Middleware, h *Handlers) {
 	strategies.DELETE("/:id", mw.RequirePermission("account_strategy", "delete"), h.Provision.DeleteStrategy)
 
 	// 应用账号
-	appAccounts := authGroup.Group("/app-accounts")
-	appAccounts.GET("", mw.RequirePermission("app_account", "read"), h.Provision.ListAppAccounts)
-	appAccounts.POST("", mw.RequirePermission("app_account", "create"), h.Provision.CreateAppAccount)
-	appAccounts.POST("/retry", mw.RequirePermission("app_account", "update"), h.Provision.RetryAppAccount)
-	appAccounts.DELETE("", mw.RequirePermission("app_account", "delete"), h.Provision.DeleteAppAccount)
+	applicationAccounts := authGroup.Group("/application-accounts")
+	applicationAccounts.GET("", mw.RequirePermission("application_account", "read"), h.Provision.ListApplicationAccounts)
+	applicationAccounts.POST("", mw.RequirePermission("application_account", "create"), h.Provision.CreateApplicationAccount)
+	applicationAccounts.POST("/retry", mw.RequirePermission("application_account", "update"), h.Provision.RetryApplicationAccount)
+	applicationAccounts.DELETE("", mw.RequirePermission("application_account", "delete"), h.Provision.DeleteApplicationAccount)
 	// 门户"我的应用账号"（当前用户自己的账号，只读）
-	authGroup.GET("/me/app-accounts", h.Provision.MyAppAccounts)
+	authGroup.GET("/me/application-accounts", h.Provision.MyApplicationAccounts)
 	authGroup.GET("/me/applications", h.Provision.MyApplications)
 
 	// 供给历史

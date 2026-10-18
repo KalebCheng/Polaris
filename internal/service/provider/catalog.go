@@ -389,7 +389,7 @@ func policyFields() []Field {
 		{Key: "allowed_domains", Label: "允许的邮箱域名", Group: GroupAdvanced, Type: FieldTags,
 			Policy: true, Placeholder: "corp.example.com", Hint: "留空表示不限制"},
 		{Key: "redirect_uri", Label: "回调地址覆盖", Group: GroupAdvanced, Type: FieldText,
-			Policy: true, Hint: "默认 /oauth/callback；仅在需要自定义时填写（必须是站内相对路径）"},
+			Policy: true, Hint: "默认 /sso/callback（前端命名空间）；仅在需要自定义时填写（必须是站内相对路径）"},
 	}
 }
 

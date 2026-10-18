@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { ArrowLeft, CheckCircle2, ExternalLink, Eye, Plus } from 'lucide-react'
 import {
@@ -13,6 +13,9 @@ import {
   DialogHeader,
   DialogTitle,
   Skeleton,
+  Tabs,
+  TabsList,
+  TabsTrigger,
 } from '@/shared/ui'
 import { PageShell } from '@/widgets/layout/page-shell'
 import { ConfirmDialog } from '@/shared/components/confirm-dialog'
@@ -22,14 +25,16 @@ import type {
   ApplicationAccess,
   ApplicationCreated,
   Cert,
-  Group,
+  JobTitle,
   Provider,
 } from '@/shared/api/types'
-import { applicationApi, certApi, groupApi, providerApi } from '../api'
+import { applicationApi, certApi, jobTitleApi, providerApi } from '../api'
 import { useWorkspaceInstitution } from '../institution-context'
 import { useMutation } from '../hooks/use-mutation'
+import { useAuth } from '@/features/auth/auth-context'
 import { buildAuthorizeUrl } from '../lib/authorize-url'
 import { ApplicationWizard } from '../components/application-wizard'
+import { ApplicationProvisioning } from '../components/provisioning/application-provisioning'
 import { LoginPagePreview } from '../components/login-page-preview'
 import {
   accessToFormValue,
@@ -52,8 +57,10 @@ import {
  */
 export default function ApplicationEditPage() {
   const { t } = useTranslation()
+  const { can } = useAuth()
   const institution = useWorkspaceInstitution()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { id = '' } = useParams()
   const appID = Number(id)
   const isCreate = !id || id === 'new'
@@ -66,12 +73,26 @@ export default function ApplicationEditPage() {
   const [confirmDiscard, setConfirmDiscard] = useState(false)
   const [providers, setProviders] = useState<Provider[]>([])
   const [certs, setCerts] = useState<Cert[]>([])
-  const [groups, setGroups] = useState<Group[]>([])
+  const [jobTitles, setJobTitles] = useState<JobTitle[]>([])
   // 访问授权（谁能使用该应用）：独立端点读写，与主表单一起参与「未保存修改」判定
   const [access, setAccess] = useState<ApplicationAccessFormValue>(emptyApplicationAccess)
   const [accessDetail, setAccessDetail] = useState<ApplicationAccess | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [previewMode, setPreviewMode] = useState<'signin' | 'signup'>('signin')
+  const canProvision =
+    can('account_strategy', 'read') ||
+    can('application_account', 'read') ||
+    can('provision_history', 'read')
+  const provisioningRequested = searchParams.get('tab') === 'provisioning'
+  const showProvisioning = Boolean(editing) && !created && canProvision
+  const view: 'config' | 'provisioning' =
+    showProvisioning && provisioningRequested ? 'provisioning' : 'config'
+  const setView = (next: 'config' | 'provisioning') => {
+    const nextParams = new URLSearchParams(searchParams)
+    if (next === 'provisioning') nextParams.set('tab', 'provisioning')
+    else nextParams.delete('tab')
+    setSearchParams(nextParams, { replace: true })
+  }
 
   // 脏值基线：用于「未保存修改」拦截（授权与主表单都是本页的未保存内容）
   const baseline = useRef<string>(
@@ -93,12 +114,12 @@ export default function ApplicationEditPage() {
           .list({ institution, category: 'oauth', size: 200 })
           .catch(() => ({ items: [] as Provider[] })),
         certApi.list({ institution, size: 200 }).catch(() => ({ items: [] as Cert[] })),
-        groupApi.list({ institution, size: 200 }).catch(() => ({ items: [] as Group[] })),
+        jobTitleApi.list({ institution, size: 200 }).catch(() => ({ items: [] as JobTitle[] })),
       ])
       if (cancelled) return
       setProviders(providerList.items ?? [])
       setCerts(certList.items ?? [])
-      setGroups(groupList.items ?? [])
+      setJobTitles(groupList.items ?? [])
     })()
     return () => {
       cancelled = true
@@ -374,11 +395,24 @@ export default function ApplicationEditPage() {
   return (
     <PageShell
       titleKey={titleKey}
-      subtitleKey="applications.subtitle"
+      title={view === 'provisioning' && editing ? editing.name || editing.code : undefined}
+      subtitleKey={view === 'provisioning' ? 'applications.provisioningSubtitle' : 'applications.subtitle'}
+      subnav={
+        showProvisioning ? (
+          <Tabs value={view} onValueChange={(value) => setView(value as 'config' | 'provisioning')}>
+            <TabsList className="self-start">
+              <TabsTrigger value="config">{t('applications.tabConfig')}</TabsTrigger>
+              <TabsTrigger value="provisioning">{t('applications.tabProvisioning')}</TabsTrigger>
+            </TabsList>
+          </Tabs>
+        ) : undefined
+      }
       actions={
-        <Button variant="outline" onClick={() => setPreviewOpen(true)}>
-          <Eye className="size-4" /> {t('applications.previewLogin')}
-        </Button>
+        view === 'config' ? (
+          <Button variant="outline" onClick={() => setPreviewOpen(true)}>
+            <Eye className="size-4" /> {t('applications.previewLogin')}
+          </Button>
+        ) : undefined
       }
     >
       {loading ? (
@@ -387,6 +421,12 @@ export default function ApplicationEditPage() {
             <Skeleton key={index} className="h-28 w-full" />
           ))}
         </div>
+      ) : view === 'provisioning' && editing ? (
+        <ApplicationProvisioning
+          institution={institution}
+          applicationId={editing.id}
+          applicationCode={editing.code}
+        />
       ) : (
         <ApplicationWizard
           form={form}
@@ -395,7 +435,7 @@ export default function ApplicationEditPage() {
           institution={institution}
           providers={providers}
           certs={certs}
-          groups={groups}
+          jobTitles={jobTitles}
           pending={pending}
           onFinish={() => void save()}
           finishLabelKey={editing ? 'common.save' : 'applications.createSubmit'}

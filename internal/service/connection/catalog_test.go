@@ -3,6 +3,8 @@ package connection
 import (
 	"strings"
 	"testing"
+
+	"polaris/internal/service/syncer"
 )
 
 // 目录中每个类型都必须有对应实现——杜绝"目录里能选、后端没实现"（AGENTS.md §3.1-10）。
@@ -244,8 +246,8 @@ func TestInboundSourceFieldsMatchConnectors(t *testing.T) {
 			"email", "org_email", "job_number", "title", "avatar", "work_place", "dept_id", "dept_name"),
 		"wecom": keys("userid", "name", "alias", "mobile", "telephone", "email", "title",
 			"avatar", "address", "dept_id", "dept_name"),
-		"lark": keys("user_id", "name", "en_name", "mobile", "email", "job_number", "title",
-			"avatar", "location", "open_department_id", "department_name"),
+		// lark 的账号侧候选直接取自连接器声明（目录/连接器/测试不再各写一份清单）
+		"lark": keys(append(syncer.FeishuUserSourceFieldKeys(), "open_department_id", "department_name")...),
 	}
 	for _, group := range Build().Directions {
 		if group.Direction != DirectionIn {

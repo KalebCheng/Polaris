@@ -88,7 +88,7 @@ type SubjectOptionPage struct {
 type ApplicationAccessService struct {
 	subjects repository.ApplicationSubjectRepository
 	users    repository.UserRepository
-	groups   repository.GroupRepository
+	jobTitles repository.JobTitleRepository
 	depts    repository.DepartmentRepository
 	sessions *auth.SessionManager
 	audits   *AuditRecorder
@@ -98,13 +98,13 @@ type ApplicationAccessService struct {
 func NewApplicationAccessService(
 	subjects repository.ApplicationSubjectRepository,
 	users repository.UserRepository,
-	groups repository.GroupRepository,
+	jobTitles repository.JobTitleRepository,
 	depts repository.DepartmentRepository,
 	sessions *auth.SessionManager,
 	audits *AuditRecorder,
 ) *ApplicationAccessService {
 	return &ApplicationAccessService{
-		subjects: subjects, users: users, groups: groups, depts: depts,
+		subjects: subjects, users: users, jobTitles: jobTitles, depts: depts,
 		sessions: sessions, audits: audits,
 	}
 }
@@ -137,7 +137,7 @@ func (s *ApplicationAccessService) Allowed(ctx context.Context, app *repository.
 		switch sub.SubjectType {
 		case repository.SubjectTypeUser:
 			users[sub.SubjectName] = true
-		case repository.SubjectTypeGroup:
+		case repository.SubjectTypeJobTitle:
 			groups[sub.SubjectName] = true
 		case repository.SubjectTypeDepartment:
 			depts[sub.SubjectName] = true
@@ -148,7 +148,7 @@ func (s *ApplicationAccessService) Allowed(ctx context.Context, app *repository.
 	}
 	if len(groups) > 0 {
 		// 授权父组覆盖整棵子树：取"直接归属 + 全部祖先组"后求交
-		names, err := s.groups.GroupsForUserWithAncestors(ctx, app.InstitutionID, user.Name)
+		names, err := s.jobTitles.JobTitlesForUser(ctx, app.InstitutionID, user.Name)
 		if err != nil {
 			return false, err
 		}
@@ -229,7 +229,7 @@ func (s *ApplicationAccessService) Access(ctx context.Context, app *repository.A
 		switch sub.SubjectType {
 		case repository.SubjectTypeUser:
 			userNames = append(userNames, sub.SubjectName)
-		case repository.SubjectTypeGroup:
+		case repository.SubjectTypeJobTitle:
 			groupNames = append(groupNames, sub.SubjectName)
 		case repository.SubjectTypeDepartment:
 			deptNames = append(deptNames, sub.SubjectName)
@@ -256,21 +256,19 @@ func (s *ApplicationAccessService) Access(ctx context.Context, app *repository.A
 		}
 	}
 	if len(groupNames) > 0 {
-		all, err := s.groups.List(ctx, repository.ListQuery{InstitutionID: app.InstitutionID})
+		all, err := s.jobTitles.List(ctx, repository.ListQuery{InstitutionID: app.InstitutionID})
 		if err != nil {
 			return nil, err
 		}
-		byName := map[string]*repository.Group{}
-		byID := map[int64]*repository.Group{}
+		byName := map[string]*repository.JobTitle{}
 		for _, g := range all {
 			byName[g.Name] = g
-			byID[g.ID] = g
 		}
 		for _, name := range groupNames {
 			view := SubjectView{Name: name, DisplayName: name}
 			if g, ok := byName[name]; ok {
 				view.DisplayName = firstNonEmptyStr(g.DisplayName, g.Name)
-				view.Path = groupPath(g, byID, 0)
+				view.Path = g.Name
 			} else {
 				view.Missing = true
 			}
@@ -324,7 +322,7 @@ func (s *ApplicationAccessService) SetAccess(ctx context.Context, actor string, 
 		next = append(next, repository.ApplicationSubject{SubjectType: repository.SubjectTypeUser, SubjectName: n})
 	}
 	for _, n := range groupNames {
-		next = append(next, repository.ApplicationSubject{SubjectType: repository.SubjectTypeGroup, SubjectName: n})
+		next = append(next, repository.ApplicationSubject{SubjectType: repository.SubjectTypeJobTitle, SubjectName: n})
 	}
 	for _, n := range deptNames {
 		next = append(next, repository.ApplicationSubject{SubjectType: repository.SubjectTypeDepartment, SubjectName: n})
@@ -415,25 +413,21 @@ func (s *ApplicationAccessService) SubjectOptions(
 				Name: u.Name, DisplayName: firstNonEmptyStr(u.DisplayName, u.Name),
 			})
 		}
-	case repository.SubjectTypeGroup:
-		items, err := s.groups.List(ctx, q)
+	case repository.SubjectTypeJobTitle:
+		items, err := s.jobTitles.List(ctx, q)
 		if err != nil {
 			return nil, err
 		}
-		total, err := s.groups.Count(ctx, q)
+		total, err := s.jobTitles.Count(ctx, q)
 		if err != nil {
 			return nil, err
 		}
 		page.Total = total
-		byID, err := s.groupIndex(ctx, institutionID)
-		if err != nil {
-			return nil, err
-		}
 		for _, g := range items {
 			page.Items = append(page.Items, SubjectOption{
 				Name:        g.Name,
 				DisplayName: firstNonEmptyStr(g.DisplayName, g.Name),
-				Path:        groupPath(g, byID, 0),
+				Path:        g.Name,
 			})
 		}
 	case repository.SubjectTypeDepartment:
@@ -476,12 +470,12 @@ func departmentOption(d *repository.Department) SubjectOption {
 }
 
 // groupIndex 组织内用户组的 id→实体索引（用于拼层级路径）
-func (s *ApplicationAccessService) groupIndex(ctx context.Context, institutionID int64) (map[int64]*repository.Group, error) {
-	all, err := s.groups.List(ctx, repository.ListQuery{InstitutionID: institutionID})
+func (s *ApplicationAccessService) groupIndex(ctx context.Context, institutionID int64) (map[int64]*repository.JobTitle, error) {
+	all, err := s.jobTitles.List(ctx, repository.ListQuery{InstitutionID: institutionID})
 	if err != nil {
 		return nil, err
 	}
-	byID := make(map[int64]*repository.Group, len(all))
+	byID := make(map[int64]*repository.JobTitle, len(all))
 	for _, g := range all {
 		byID[g.ID] = g
 	}
@@ -508,7 +502,7 @@ func (s *ApplicationAccessService) validateSubjects(ctx context.Context, institu
 		}
 	}
 	if len(groups) > 0 {
-		have, err := s.groups.ExistingNames(ctx, institutionID, groups)
+		have, err := s.jobTitles.ExistingNames(ctx, institutionID, groups)
 		if err != nil {
 			return err
 		}
@@ -568,13 +562,13 @@ func (s *ApplicationAccessService) revokeRemovedSessions(ctx context.Context, ap
 // ExpandUsers 把主体集合展开为用户名集合（含子部门 / 子用户组）。
 func (s *ApplicationAccessService) ExpandUsers(ctx context.Context, institutionID int64, subjects []repository.ApplicationSubject) ([]string, error) {
 	out := map[string]bool{}
-	var users, groups, depts []string
+	var users, jobTitles, depts []string
 	for _, sub := range subjects {
 		switch sub.SubjectType {
 		case repository.SubjectTypeUser:
 			users = append(users, sub.SubjectName)
-		case repository.SubjectTypeGroup:
-			groups = append(groups, sub.SubjectName)
+		case repository.SubjectTypeJobTitle:
+			jobTitles = append(jobTitles, sub.SubjectName)
 		case repository.SubjectTypeDepartment:
 			depts = append(depts, sub.SubjectName)
 		}
@@ -582,8 +576,8 @@ func (s *ApplicationAccessService) ExpandUsers(ctx context.Context, institutionI
 	for _, name := range users {
 		out[name] = true
 	}
-	if len(groups) > 0 {
-		names, err := s.groups.ExpandMembersWithDescendants(ctx, institutionID, groups)
+	if len(jobTitles) > 0 {
+		names, err := s.jobTitles.ExpandMembers(ctx, institutionID, jobTitles)
 		if err != nil {
 			return nil, err
 		}
@@ -608,17 +602,9 @@ func (s *ApplicationAccessService) ExpandUsers(ctx context.Context, institutionI
 	return result, nil
 }
 
-// groupPath 依据父链拼接用户组路径（如「研发中心 / VPN 用户」）；depth 防御环状数据。
-func groupPath(g *repository.Group, byID map[int64]*repository.Group, depth int) string {
-	name := firstNonEmptyStr(g.DisplayName, g.Name)
-	if g.ParentID == nil || depth > 16 {
-		return name
-	}
-	parent, ok := byID[*g.ParentID]
-	if !ok || parent.ID == g.ID {
-		return name
-	}
-	return groupPath(parent, byID, depth+1) + " / " + name
+// jobTitleName 职务展示名（职务扁平无层级，故不再拼接父链路径）。
+func jobTitleName(t *repository.JobTitle) string {
+	return firstNonEmptyStr(t.DisplayName, t.Name)
 }
 
 // normalizeAccessMode 空串按默认（全员可访问）解读——存量数据与未提交该字段的旧客户端。

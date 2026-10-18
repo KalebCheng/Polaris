@@ -17,7 +17,8 @@ type ListQuery struct {
 	// Filters 附加的等值过滤（AND 语义）。
 	// Value 必须是**与列类型匹配**的 Go 类型（布尔列传 bool、数字列传 int64、文本列传 string），
 	// 否则 PostgreSQL 会因 "boolean = text" 这类类型冲突直接报错（应用层不做隐式转换）。
-	// 说明：目前只有 users 仓库读取该字段，其他仓库忽略它（保持既有 Field/Value 语义不变）。
+	// 说明：users / account_strategies / application_accounts / provision_history 仓库读取该字段；
+	// 其它仓库保持既有 Field/Value 语义不变。
 	Filters []ColumnFilter
 }
 
@@ -65,6 +66,8 @@ type DepartmentRepository interface {
 	Delete(ctx context.Context, institutionID int64, name string) error
 	List(ctx context.Context, q ListQuery) ([]*Department, error)
 	Count(ctx context.Context, q ListQuery) (int64, error)
+	// GetRoot 返回组织根部门（Spec Q4.5：每个组织恰好一行 is_root = TRUE）
+	GetRoot(ctx context.Context, institutionID int64) (*Department, error)
 	// SetSortIndex 仅更新排序序号（同层内拖拽/上下移动用）
 	SetSortIndex(ctx context.Context, institutionID int64, name string, sortIndex int) error
 
@@ -156,7 +159,7 @@ type ProviderRepository interface {
 }
 
 // RoleRepository 角色仓库接口
-// 存储: PostgreSQL（roles / role_users / role_groups / role_roles / role_permissions）
+// 存储: PostgreSQL（roles / role_users / role_job_titles / role_roles / role_permissions）
 type RoleRepository interface {
 	Create(ctx context.Context, r *Role) (int64, error)
 	GetByID(ctx context.Context, id int64) (*Role, error)
@@ -176,24 +179,24 @@ type RoleRepository interface {
 	DirectRolesForUser(ctx context.Context, institutionID int64, user string) ([]string, error)
 	// SetDirectRoles 整体替换用户的直接角色（事务；角色名必须在组织内存在）
 	SetDirectRoles(ctx context.Context, institutionID int64, user string, roles []string) error
-	// PermissionBindingsForUser 返回有效权限的"来源"明细（直接 / 角色 X / 用户组 Y）
+	// PermissionBindingsForUser 返回有效权限的"来源"明细（直接 / 角色 X / 职务 Y）
 	PermissionBindingsForUser(ctx context.Context, institutionID int64, user string) ([]PermissionBinding, error)
-	// RolesForGroup 返回用户组关联的角色名（role_groups）
-	RolesForGroup(ctx context.Context, institutionID int64, group string) ([]string, error)
-	// PermissionsForGroup 返回用户组经角色获得的权限（去重）
-	PermissionsForGroup(ctx context.Context, institutionID int64, group string) ([]*Permission, error)
+	// RolesForJobTitle 返回职务关联的角色名（role_job_titles）
+	RolesForJobTitle(ctx context.Context, institutionID int64, jobTitle string) ([]string, error)
+	// PermissionsForJobTitle 返回职务经角色获得的权限（去重）
+	PermissionsForJobTitle(ctx context.Context, institutionID int64, jobTitle string) ([]*Permission, error)
 }
 
 // RoleRelations 角色的成员/子角色/权限关系
 type RoleRelations struct {
 	Users       []string
-	Groups      []string
+	JobTitles   []string
 	Roles       []string
 	Permissions []string
 }
 
 // PermissionRepository 权限仓库接口
-// 存储: PostgreSQL（permissions / permission_users / permission_groups / permission_roles）
+// 存储: PostgreSQL（permissions / permission_users / permission_job_titles / permission_roles）
 type PermissionRepository interface {
 	Create(ctx context.Context, p *Permission) (int64, error)
 	GetByID(ctx context.Context, id int64) (*Permission, error)
@@ -202,33 +205,78 @@ type PermissionRepository interface {
 	Delete(ctx context.Context, id int64) error
 	List(ctx context.Context, q ListQuery) ([]*Permission, error)
 	Count(ctx context.Context, q ListQuery) (int64, error)
-	SetSubjects(ctx context.Context, permissionID int64, users, groups, roles []string) error
+	SetSubjects(ctx context.Context, permissionID int64, users, jobTitles, roles []string) error
 }
 
-// GroupRepository 用户组仓库接口
-// 存储: PostgreSQL（groups / group_members）
-type GroupRepository interface {
-	Create(ctx context.Context, g *Group) (int64, error)
-	GetByID(ctx context.Context, id int64) (*Group, error)
-	GetByName(ctx context.Context, institutionID int64, name string) (*Group, error)
-	Update(ctx context.Context, g *Group) error
+// JobTitleRepository 职务仓库接口（Spec 第六阶段 Q3 = A：原「用户组」，扁平无层级）
+// 存储: PostgreSQL（job_titles / job_title_members）
+type JobTitleRepository interface {
+	Create(ctx context.Context, t *JobTitle) (int64, error)
+	GetByID(ctx context.Context, id int64) (*JobTitle, error)
+	GetByName(ctx context.Context, institutionID int64, name string) (*JobTitle, error)
+	Update(ctx context.Context, t *JobTitle) error
 	Delete(ctx context.Context, id int64) error
-	List(ctx context.Context, q ListQuery) ([]*Group, error)
+	List(ctx context.Context, q ListQuery) ([]*JobTitle, error)
 	Count(ctx context.Context, q ListQuery) (int64, error)
-	SetMembers(ctx context.Context, groupID int64, users []string) error
-	GroupsForUser(ctx context.Context, institutionID int64, user string) ([]string, error)
-	// SetGroupsForUser 整体替换某用户的用户组归属（事务；组名必须在组织内存在）
-	SetGroupsForUser(ctx context.Context, institutionID int64, user string, groups []string) error
-	// MemberCounts 返回组织内各用户组的成员数（列表页展示，避免 N 次查询）
+	// SetMembers 整体替换任职人员（事务；用户名必须在组织内存在）
+	SetMembers(ctx context.Context, jobTitleID int64, users []string) error
+	// AddMembers 追加任职人员（幂等；只增不删——同步派生的职务不得清掉管理员手工维护的关系）
+	AddMembers(ctx context.Context, jobTitleID int64, users []string) error
+	// JobTitlesForUser 返回用户任职的职务标识
+	JobTitlesForUser(ctx context.Context, institutionID int64, user string) ([]string, error)
+	// SetJobTitlesForUser 整体替换某用户的职务任职关系（事务；职务标识必须在组织内存在）
+	SetJobTitlesForUser(ctx context.Context, institutionID int64, user string, jobTitles []string) error
+	// MemberCounts 返回组织内各职务的任职人数（列表页展示，避免 N 次查询）
 	MemberCounts(ctx context.Context, institutionID int64) (map[string]int, error)
-
-	// GroupsForUserWithAncestors 返回用户直接归属的用户组**及其全部祖先组**。
-	// 与 GroupsForUser 的区别：应用授权遵循"授权父组 = 覆盖整个子树"，因此判定必须向上展开。
-	GroupsForUserWithAncestors(ctx context.Context, institutionID int64, user string) ([]string, error)
-	// ExpandMembersWithDescendants 展开"这些组 + 其全部子组"的成员用户名集合（应用授权影响面计算用）
-	ExpandMembersWithDescendants(ctx context.Context, institutionID int64, names []string) ([]string, error)
-	// ExistingNames 返回 names 中**确实存在于本组织**的用户组标识集合（授权名单校验用）
+	// ExpandMembers 展开"这些职务"的任职人员（职务扁平，无层级展开）
+	ExpandMembers(ctx context.Context, institutionID int64, names []string) ([]string, error)
+	// ExistingNames 返回 names 中确实存在于本组织的职务标识集合（授权名单校验用）
 	ExistingNames(ctx context.Context, institutionID int64, names []string) (map[string]bool, error)
+}
+
+// JobLevelRepository 职级仓库接口（Spec 第六阶段 Q4）
+// 存储: PostgreSQL（job_levels；用户侧经 users.job_level_id 单值引用）
+type JobLevelRepository interface {
+	Create(ctx context.Context, l *JobLevel) (int64, error)
+	GetByID(ctx context.Context, id int64) (*JobLevel, error)
+	GetByName(ctx context.Context, institutionID int64, name string) (*JobLevel, error)
+	Update(ctx context.Context, l *JobLevel) error
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context, q ListQuery) ([]*JobLevel, error)
+	Count(ctx context.Context, q ListQuery) (int64, error)
+	// CountByLevel 返回组织内各职级的用户数（组织概览的职级分布）
+	CountByLevel(ctx context.Context, institutionID int64) (map[int64]int, error)
+}
+
+// UserDepartmentRepository 用户 ↔ 部门多值归属仓库接口（Spec 第六阶段 Q2 = A）
+// 存储: PostgreSQL（user_departments）
+type UserDepartmentRepository interface {
+	// ReplaceForUser 整体替换某用户的部门归属；syncerID 非空时只替换"该连接写入的归属"
+	// （管理员手工维护的归属不被同步覆盖），并同步 users.department_id = 主部门。
+	ReplaceForUser(ctx context.Context, institutionID, userID int64, departmentIDs []int64, primaryID int64, syncerID *int64) error
+	// DepartmentIDsForUser 返回用户的全部部门归属（主部门优先）
+	DepartmentIDsForUser(ctx context.Context, userID int64) ([]int64, error)
+	// ListForUser 返回用户的部门归属明细（含主部门标记与来源连接）
+	ListForUser(ctx context.Context, userID int64) ([]*UserDepartment, error)
+	// ListBySyncer 返回"某连接写入的全部归属"（user_id → department_id 列表），
+	// 供同步引擎一次读入、避免逐账号查询
+	ListBySyncer(ctx context.Context, syncerID int64) (map[int64][]int64, error)
+	// UserIDsOfDepartments 返回"这些部门 + 其全部子部门"内的用户 id（部门保留层级语义）
+	UserIDsOfDepartments(ctx context.Context, institutionID int64, departmentIDs []int64) ([]int64, error)
+}
+
+// SyncerLinkRepository 外部身份映射仓库接口（Spec 第六阶段 FR-1）
+// 存储: PostgreSQL（syncer_user_links / syncer_department_links / syncer_job_title_links / syncer_job_level_links）
+// kind 取值：user | department | job_title | job_level
+type SyncerLinkRepository interface {
+	// LoadExternalIndex 返回「源端标识 → 本地对象 ID」索引（单连接内）
+	LoadExternalIndex(ctx context.Context, kind string, syncerID int64) (map[string]int64, error)
+	// Upsert 写入/更新一条映射
+	Upsert(ctx context.Context, kind string, institutionID, syncerID, localID int64, externalID string, raw []byte) error
+	// Prune 清理本连接中"源端已不存在"的映射行，返回被清理的本地对象 ID
+	Prune(ctx context.Context, kind string, syncerID int64, externalIDs []string) ([]int64, error)
+	// ListForLocal 返回某本地对象的外部身份明细（详情页展示源端报文）
+	ListForLocal(ctx context.Context, kind string, localID int64) ([]*ExternalIdentityRef, error)
 }
 
 // CertRepository 证书仓库接口
@@ -365,8 +413,8 @@ type ConnectorRepository interface {
 	Delete(ctx context.Context, id int64) error
 	List(ctx context.Context, q ListQuery) ([]*Connector, error)
 	Count(ctx context.Context, q ListQuery) (int64, error)
-	// ListForApplication 返回某应用下启用的连接器（供给派发用）
-	ListEnabled(ctx context.Context, institutionID int64, application string) ([]*Connector, error)
+	// ListEnabled 返回某应用（主键）下启用的连接器（applicationID 为 0 = 租户内全部启用连接器）
+	ListEnabled(ctx context.Context, institutionID int64, applicationID int64) ([]*Connector, error)
 	// UpdateRunResult 写回最近一次供给状态（不触碰业务配置字段）
 	UpdateRunResult(ctx context.Context, id int64, status, message string, at time.Time) error
 }
@@ -381,20 +429,20 @@ type AccountStrategyRepository interface {
 	Delete(ctx context.Context, id int64) error
 	List(ctx context.Context, q ListQuery) ([]*AccountStrategy, error)
 	Count(ctx context.Context, q ListQuery) (int64, error)
-	// FindForApplication 返回指定应用启用的策略（应用专属优先，其次租户默认）
-	FindForApplication(ctx context.Context, institutionID int64, application string) (*AccountStrategy, error)
+	// FindForApplication 返回指定应用（主键）启用的策略（应用专属优先，其次租户默认；applicationID 为 0 = 只看默认）
+	FindForApplication(ctx context.Context, institutionID int64, applicationID int64) (*AccountStrategy, error)
 }
 
-// AppAccountRepository 应用账号仓库接口
-// 存储: PostgreSQL（app_accounts）；幂等键 (institution, application, user)
-type AppAccountRepository interface {
-	Create(ctx context.Context, a *AppAccount) (int64, error)
-	GetByID(ctx context.Context, id int64) (*AppAccount, error)
-	// GetByUserApp 按幂等键查询（不存在返回错误）
-	GetByUserApp(ctx context.Context, institutionID int64, application, user string) (*AppAccount, error)
-	Update(ctx context.Context, a *AppAccount) error
+// ApplicationAccountRepository 应用账号仓库接口
+// 存储: PostgreSQL（application_accounts）；幂等键 (institution_id, application_id, user_id)
+type ApplicationAccountRepository interface {
+	Create(ctx context.Context, a *ApplicationAccount) (int64, error)
+	GetByID(ctx context.Context, id int64) (*ApplicationAccount, error)
+	// GetByUserApp 按幂等键查询（主键；不存在返回错误）
+	GetByUserApp(ctx context.Context, institutionID int64, applicationID, userID int64) (*ApplicationAccount, error)
+	Update(ctx context.Context, a *ApplicationAccount) error
 	Delete(ctx context.Context, id int64) error
-	List(ctx context.Context, q ListQuery) ([]*AppAccount, error)
+	List(ctx context.Context, q ListQuery) ([]*ApplicationAccount, error)
 	Count(ctx context.Context, q ListQuery) (int64, error)
 }
 

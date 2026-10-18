@@ -38,7 +38,8 @@ vi.mock('../api', () => ({
         const level = parentId === undefined ? candidates.department ?? [] : deptChildren[parentId] ?? []
         return { items: level.slice(offset, offset + limit), total: level.length }
       }
-      const matched = (candidates[type] ?? []).filter((item) =>
+      // 主体类型取值与后端一致：'job_title'（原 'group'）
+      const matched = (candidates[type === 'job_title' ? 'group' : type] ?? []).filter((item) =>
         (keyword ?? '') === '' ? true : item.name.includes(keyword ?? '') || item.display_name.includes(keyword ?? ''),
       )
       return { items: matched.slice(offset, offset + limit), total: matched.length }
@@ -121,11 +122,11 @@ describe('ApplicationAccessEditor（授权类型 / 名单 左右布局）', () =
       detailWith([{ name: 'zhangsan', display_name: '张三' }], [{ name: 'tech', display_name: '技术部', path: '技术部' }]),
     )
     expect(screen.getByText('授权类型')).toBeInTheDocument()
-    // 三类类型都在，且各自数量可见（用户 1 / 用户组 0 / 部门 1）
+    // 三类类型都在，且各自数量可见（用户 1 / 职务 0 / 部门 1）
     const typeList = screen.getByRole('button', { name: '用户' }).parentElement?.parentElement
     expect(typeList).toBeTruthy()
     expect(screen.getByRole('button', { name: '用户' })).toHaveTextContent('1')
-    expect(screen.getByRole('button', { name: '用户组' })).toHaveTextContent('0')
+    expect(screen.getByRole('button', { name: '职务' })).toHaveTextContent('0')
     expect(screen.getByRole('button', { name: '部门' })).toHaveTextContent('1')
     // 默认选中「用户」，右侧只展示用户类名单（部门不在同一张表里）
     expect(screen.getByText('张三')).toBeInTheDocument()
@@ -153,7 +154,7 @@ describe('ApplicationAccessEditor（授权类型 / 名单 左右布局）', () =
   it('空名单：只给可操作的引导空态，不堆解释性文案', () => {
     renderEditor(restrictedEmpty)
     expect(screen.getByText('还没有授权任何主体')).toBeInTheDocument()
-    expect(screen.getByText('点「添加授权」，选择允许登录本应用的用户 / 用户组 / 部门')).toBeInTheDocument()
+    expect(screen.getByText('点「添加授权」，选择允许登录本应用的用户 / 职务 / 部门')).toBeInTheDocument()
     // 空名单允许保存：界面上没有任何"拦截"类文案
     expect(screen.queryByText(/无人可访问/)).toBeNull()
   })
@@ -209,8 +210,8 @@ describe('ApplicationAccessEditor（授权类型 / 名单 左右布局）', () =
     await user.click(screen.getByRole('checkbox', { name: '全选当前列出的主体' }))
     expect(screen.getByText('已选 0 项')).toBeInTheDocument()
 
-    // 切到「用户组」：类型切换后候选跟着换
-    await user.click(screen.getByRole('button', { name: '用户组' }))
+    // 切到「职务」：类型切换后候选跟着换
+    await user.click(screen.getByRole('button', { name: '职务' }))
     expect(await screen.findByText('VPN 用户')).toBeInTheDocument()
   })
 
@@ -310,13 +311,13 @@ describe('ApplicationAccessEditor（授权类型 / 名单 左右布局）', () =
     })
   })
 
-  it('右侧面板展示覆盖语义文案（部门含子部门 / 用户组含子组）', async () => {
+  it('右侧面板展示覆盖语义文案（部门含子部门 / 职务含子组）', async () => {
     const user = userEvent.setup()
     renderEditor(restrictedEmpty)
     expect(screen.getByText('被授权的用户可以登录本应用')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '部门' }))
     expect(screen.getByText('授权一个部门即覆盖其全部子部门')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '用户组' }))
-    expect(screen.getByText('授权一个用户组即覆盖其全部子组')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '职务' }))
+    expect(screen.getByText('授权一个职务即覆盖其全部任职人员')).toBeInTheDocument()
   })
 })

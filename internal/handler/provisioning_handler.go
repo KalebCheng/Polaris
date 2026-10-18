@@ -22,7 +22,7 @@ func NewProvisioningHandler(svc *service.ProvisioningService) *ProvisioningHandl
 // ── 连接器 ────────────────────────────────────────────────────
 
 // connectorRequest 连接器请求体：
-// 通用字段（name/display_name/application/type/state/just_in_time）走扁平键，
+// 通用字段（name/display_name/application/type/state）走扁平键，
 // 类型专属配置走 config（非敏感）与 secrets（明文敏感值），键由类型目录声明并校验。
 type connectorRequest struct {
 	InstitutionID int64             `json:"institution_id"`
@@ -31,7 +31,6 @@ type connectorRequest struct {
 	Application   string            `json:"application"`
 	Type          string            `json:"type"`
 	State         string            `json:"state"`
-	JustInTime    bool              `json:"just_in_time"`
 	Config        map[string]string `json:"config"`
 	Secrets       map[string]string `json:"secrets"`
 }
@@ -39,7 +38,7 @@ type connectorRequest struct {
 func (r connectorRequest) connector() *repository.Connector {
 	return &repository.Connector{
 		InstitutionID: r.InstitutionID, Name: r.Name, DisplayName: r.DisplayName,
-		Application: r.Application, Type: r.Type, State: r.State, JustInTime: r.JustInTime,
+		Application: r.Application, Type: r.Type, State: r.State,
 	}
 }
 
@@ -151,7 +150,7 @@ func (h *ProvisioningHandler) TestConnector(c *gin.Context) {
 // ListStrategies 分页列出账号策略
 func (h *ProvisioningHandler) ListStrategies(c *gin.Context) {
 	offset, limit, page, size := pageParams(c)
-	items, total, err := h.svc.ListStrategies(c.Request.Context(), instID(c), query(c, "keyword"), offset, limit)
+	items, total, err := h.svc.ListStrategies(c.Request.Context(), instID(c), query(c, "keyword"), queryIDValue(c, "application_id"), offset, limit)
 	if err != nil {
 		bizerrors.Fail(c, err)
 		return
@@ -212,19 +211,19 @@ func (h *ProvisioningHandler) DeleteStrategy(c *gin.Context) {
 
 // ── 应用账号 ──────────────────────────────────────────────────
 
-// ListAppAccounts 分页列出应用账号
-func (h *ProvisioningHandler) ListAppAccounts(c *gin.Context) {
+// ListApplicationAccounts 分页列出应用账号
+func (h *ProvisioningHandler) ListApplicationAccounts(c *gin.Context) {
 	offset, limit, page, size := pageParams(c)
-	items, total, err := h.svc.ListAppAccounts(c.Request.Context(), instID(c), query(c, "keyword"), offset, limit)
+	items, total, err := h.svc.ListApplicationAccounts(c.Request.Context(), instID(c), query(c, "keyword"), queryIDValue(c, "application_id"), offset, limit)
 	if err != nil {
 		bizerrors.Fail(c, err)
 		return
 	}
-	bizerrors.RenderSuccess(c, gin.H{"items": toAppAccountDTOs(items), "total": total, "page": page, "size": size})
+	bizerrors.RenderSuccess(c, gin.H{"items": toApplicationAccountDTOs(items), "total": total, "page": page, "size": size})
 }
 
-// CreateAppAccount 手动建号
-func (h *ProvisioningHandler) CreateAppAccount(c *gin.Context) {
+// CreateApplicationAccount 手动建号
+func (h *ProvisioningHandler) CreateApplicationAccount(c *gin.Context) {
 	var req struct {
 		Application string `json:"application"`
 		User        string `json:"user"`
@@ -232,15 +231,15 @@ func (h *ProvisioningHandler) CreateAppAccount(c *gin.Context) {
 	if !bindJSON(c, &req) {
 		return
 	}
-	if err := h.svc.CreateAppAccount(c.Request.Context(), currentUser(c), instID(c), req.Application, req.User); err != nil {
+	if err := h.svc.CreateApplicationAccount(c.Request.Context(), currentUser(c), instID(c), req.Application, req.User); err != nil {
 		bizerrors.Fail(c, err)
 		return
 	}
 	bizerrors.RenderSuccess(c, gin.H{"status": "ok"}, http.StatusCreated)
 }
 
-// RetryAppAccount 手动重试建号
-func (h *ProvisioningHandler) RetryAppAccount(c *gin.Context) {
+// RetryApplicationAccount 手动重试建号
+func (h *ProvisioningHandler) RetryApplicationAccount(c *gin.Context) {
 	var req struct {
 		Application string `json:"application"`
 		User        string `json:"user"`
@@ -248,38 +247,38 @@ func (h *ProvisioningHandler) RetryAppAccount(c *gin.Context) {
 	if !bindJSON(c, &req) {
 		return
 	}
-	if err := h.svc.RetryAppAccount(c.Request.Context(), currentUser(c), instID(c), req.User, req.Application); err != nil {
+	if err := h.svc.RetryApplicationAccount(c.Request.Context(), currentUser(c), instID(c), req.User, req.Application); err != nil {
 		bizerrors.Fail(c, err)
 		return
 	}
 	bizerrors.RenderSuccess(c, gin.H{"status": "ok"})
 }
 
-// DeleteAppAccount 删除应用账号
-func (h *ProvisioningHandler) DeleteAppAccount(c *gin.Context) {
+// DeleteApplicationAccount 删除应用账号
+func (h *ProvisioningHandler) DeleteApplicationAccount(c *gin.Context) {
 	institution := instID(c)
 	user := query(c, "user")
 	application := query(c, "application")
-	if err := h.svc.DeleteAppAccount(c.Request.Context(), currentUser(c), institution, user, application); err != nil {
+	if err := h.svc.DeleteApplicationAccount(c.Request.Context(), currentUser(c), institution, user, application); err != nil {
 		bizerrors.Fail(c, err)
 		return
 	}
 	bizerrors.RenderSuccess(c, gin.H{"status": "ok"})
 }
 
-// MyAppAccounts 当前用户自己的应用账号（门户只读视图）
-func (h *ProvisioningHandler) MyAppAccounts(c *gin.Context) {
+// MyApplicationAccounts 当前用户自己的应用账号（门户只读视图）
+func (h *ProvisioningHandler) MyApplicationAccounts(c *gin.Context) {
 	authCtx := auth.GetAuthContext(c)
 	if !authCtx.IsAuthenticated() {
 		bizerrors.Fail(c, bizerrors.ErrUnauthorized)
 		return
 	}
-	items, err := h.svc.ListAppAccountsForUser(c.Request.Context(), authCtx.InstitutionID, authCtx.Name)
+	items, err := h.svc.ListApplicationAccountsForUser(c.Request.Context(), authCtx.InstitutionID, authCtx.Name)
 	if err != nil {
 		bizerrors.Fail(c, err)
 		return
 	}
-	bizerrors.RenderSuccess(c, gin.H{"items": toAppAccountDTOs(items)})
+	bizerrors.RenderSuccess(c, gin.H{"items": toApplicationAccountDTOs(items)})
 }
 
 // MyApplications 返回当前用户可访问应用中心的应用及最小展示信息。
@@ -302,7 +301,7 @@ func (h *ProvisioningHandler) MyApplications(c *gin.Context) {
 // ListHistory 分页列出供给历史
 func (h *ProvisioningHandler) ListHistory(c *gin.Context) {
 	offset, limit, page, size := pageParams(c)
-	items, total, err := h.svc.ListHistory(c.Request.Context(), instID(c), query(c, "keyword"), offset, limit)
+	items, total, err := h.svc.ListHistory(c.Request.Context(), instID(c), query(c, "keyword"), queryIDValue(c, "application_id"), query(c, "connector"), offset, limit)
 	if err != nil {
 		bizerrors.Fail(c, err)
 		return

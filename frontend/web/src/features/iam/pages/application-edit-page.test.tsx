@@ -6,10 +6,15 @@ import { beforeAll, describe, expect, it, vi } from 'vitest'
 import i18n from '@/shared/i18n'
 import type { Application, ApplicationAccess } from '@/shared/api/types'
 import ApplicationEditPage from './application-edit-page'
+import { accountStrategyApi, appAccountApi, provisionHistoryApi } from '../api'
 
 vi.mock('../institution-context', () => ({
   useWorkspaceInstitution: () => '1',
   useWorkspaceInstitutionId: () => '1',
+}))
+
+vi.mock('@/features/auth/auth-context', () => ({
+  useAuth: () => ({ can: () => true }),
 }))
 
 /** 已存在的应用（带合法回跳地址，保证主表单校验能过） */
@@ -63,7 +68,22 @@ vi.mock('../api', () => ({
   },
   providerApi: { list: async () => ({ items: [] }) },
   certApi: { list: async () => ({ items: [] }) },
-  groupApi: { list: async () => ({ items: [] }) },
+  jobTitleApi: { list: async () => ({ items: [] }) },
+  accountStrategyApi: {
+    list: vi.fn(async () => ({ items: [], total: 0 })),
+    create: vi.fn(),
+    update: vi.fn(),
+    remove: vi.fn(),
+  },
+  appAccountApi: {
+    list: vi.fn(async () => ({ items: [], total: 0 })),
+    create: vi.fn(),
+    retry: vi.fn(),
+    remove: vi.fn(),
+  },
+  provisionHistoryApi: {
+    list: vi.fn(async () => ({ items: [], total: 0 })),
+  },
 }))
 
 function renderPage() {
@@ -119,5 +139,46 @@ describe('ApplicationEditPage 保存访问授权', () => {
       groups: [],
       departments: [],
     })
+  })
+})
+
+/**
+ * 回归：三个账号生命周期视图必须收在应用详情里，并按当前应用主键过滤，
+ * 不能再退回到“全局页面 + 手填应用标识”的形态。
+ */
+describe('ApplicationEditPage 账号供给', () => {
+  beforeAll(async () => {
+    await i18n.changeLanguage('zh')
+  })
+
+  it('策略 / 应用账号 / 同步记录都按 application_id=7 查询', async () => {
+    const user = userEvent.setup()
+    vi.mocked(accountStrategyApi.list).mockClear()
+    vi.mocked(appAccountApi.list).mockClear()
+    vi.mocked(provisionHistoryApi.list).mockClear()
+    renderPage()
+
+    await waitFor(() => expect(screen.getByDisplayValue('portal')).toBeInTheDocument())
+    await user.click(screen.getByRole('tab', { name: i18n.t('applications.tabProvisioning') }))
+
+    await waitFor(() =>
+      expect(vi.mocked(accountStrategyApi.list)).toHaveBeenCalledWith(
+        expect.objectContaining({ application_id: 7 }),
+      ),
+    )
+
+    await user.click(screen.getByRole('tab', { name: i18n.t('appAccounts.title') }))
+    await waitFor(() =>
+      expect(vi.mocked(appAccountApi.list)).toHaveBeenCalledWith(
+        expect.objectContaining({ application_id: 7 }),
+      ),
+    )
+
+    await user.click(screen.getByRole('tab', { name: i18n.t('provisioning.title') }))
+    await waitFor(() =>
+      expect(vi.mocked(provisionHistoryApi.list)).toHaveBeenCalledWith(
+        expect.objectContaining({ application_id: 7 }),
+      ),
+    )
   })
 })

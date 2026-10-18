@@ -1,0 +1,2 @@
+ALTER TABLE users DROP COLUMN IF EXISTS job_level_id;
+DROP TABLE IF EXISTS job_levels;

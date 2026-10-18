@@ -8,8 +8,8 @@ import { ListToolbar } from '@/widgets/layout/list-toolbar'
 import { ConfirmDialog } from '@/shared/components/confirm-dialog'
 import { RowActionsMenu } from '@/shared/components/row-actions-menu'
 import { formatRelative } from '@/shared/lib/format'
-import type { Department, User } from '@/shared/api/types'
-import { departmentApi, userApi } from '../api'
+import type { Department, JobLevel, User } from '@/shared/api/types'
+import { departmentApi, jobLevelApi, userApi } from '../api'
 import { useWorkspaceInstitution, useWorkspaceInstitutionId } from '../institution-context'
 import { useListQuery } from '../hooks/use-list-query'
 import { useMutation } from '../hooks/use-mutation'
@@ -31,7 +31,9 @@ export default function UsersPage() {
   const [status, setStatus] = useState('')
   const [mfaFilter, setMfaFilter] = useState('')
   const [departmentFilter, setDepartmentFilter] = useState('')
+  const [jobLevelFilter, setJobLevelFilter] = useState('')
   const [departments, setDepartments] = useState<Department[]>([])
+  const [jobLevels, setJobLevels] = useState<JobLevel[]>([])
 
   const list = useListQuery<User>((params) => userApi.list(params), {
     institution: institution || undefined,
@@ -39,6 +41,7 @@ export default function UsersPage() {
       status: status || undefined,
       mfa: mfaFilter ? mfaFilter === 'bound' : undefined,
       department_id: departmentFilter ? Number(departmentFilter) : undefined,
+      job_level_id: jobLevelFilter ? Number(jobLevelFilter) : undefined,
     },
   })
   const { pending, run } = useMutation()
@@ -56,6 +59,16 @@ export default function UsersPage() {
     }
   }, [institution])
   useOnceKey(`users:departments:${institution}`, loadDepartments)
+
+  const loadJobLevels = useCallback(async () => {
+    try {
+      const result = await jobLevelApi.list({ institution, page: 1, size: 200 })
+      setJobLevels(result.items ?? [])
+    } catch {
+      setJobLevels([])
+    }
+  }, [institution])
+  useOnceKey(`users:job-levels:${institution}`, loadJobLevels)
 
   const columns: Column<User>[] = [
     {
@@ -76,6 +89,11 @@ export default function UsersPage() {
       key: 'display',
       headerKey: 'users.displayName',
       render: (user) => <span className="whitespace-nowrap">{user.display_name || '-'}</span>,
+    },
+    {
+      key: 'job_level',
+      headerKey: 'users.jobLevel',
+      render: (user) => (user.job_level ? <Badge variant="secondary">{user.job_level}</Badge> : '-'),
     },
     {
       key: 'department',
@@ -171,6 +189,13 @@ export default function UsersPage() {
                 options: departments.map((dept) => ({ value: String(dept.id), label: dept.name_path || dept.name })),
                 onChange: setDepartmentFilter,
                 allLabel: t('users.filterDepartmentAll'),
+              },
+              {
+                label: t('users.filterJobLevel'),
+                value: jobLevelFilter,
+                options: jobLevels.map((level) => ({ value: String(level.id), label: level.name })),
+                onChange: setJobLevelFilter,
+                allLabel: t('users.filterJobLevelAll'),
               },
               {
                 label: t('users.filterMfa'),

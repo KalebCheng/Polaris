@@ -10,7 +10,7 @@ import (
 
 // deptColumns departments 表列清单（顺序与 scanDepartment 一致）。
 const deptColumns = `id, institution_id, name, display_name, description, parent_id,
-	code_path, name_path, level, has_child, sort_index, created_at, updated_at`
+	code_path, name_path, level, has_child, sort_index, is_root, created_at, updated_at`
 
 // DepartmentRepository 部门仓库（PostgreSQL 实现）
 type DepartmentRepository struct {
@@ -25,7 +25,7 @@ func NewDepartmentRepository(db *dbclient.Client) *DepartmentRepository {
 func scanDepartment(row interface{ Scan(...interface{}) error }) (*repository.Department, error) {
 	var d repository.Department
 	err := row.Scan(&d.ID, &d.InstitutionID, &d.Name, &d.DisplayName, &d.Description, &d.ParentID,
-		&d.CodePath, &d.NamePath, &d.Level, &d.HasChild, &d.SortIndex, &d.CreatedAt, &d.UpdatedAt)
+		&d.CodePath, &d.NamePath, &d.Level, &d.HasChild, &d.SortIndex, &d.IsRoot, &d.CreatedAt, &d.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -35,12 +35,12 @@ func scanDepartment(row interface{ Scan(...interface{}) error }) (*repository.De
 // Create 创建部门
 func (r *DepartmentRepository) Create(ctx context.Context, d *repository.Department) (int64, error) {
 	const q = `INSERT INTO departments (
-		institution_id, name, display_name, description, parent_id, code_path, name_path, level, has_child, sort_index)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		institution_id, name, display_name, description, parent_id, code_path, name_path, level, has_child, sort_index, is_root)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		RETURNING id`
 	var id int64
 	err := r.db.QueryRow(ctx, q, d.InstitutionID, d.Name, d.DisplayName, d.Description, d.ParentID,
-		d.CodePath, d.NamePath, d.Level, d.HasChild, d.SortIndex).Scan(&id)
+		d.CodePath, d.NamePath, d.Level, d.HasChild, d.SortIndex, d.IsRoot).Scan(&id)
 	if err != nil {
 		return 0, mapError(err, "department not found")
 	}
@@ -80,6 +80,15 @@ func (r *DepartmentRepository) Update(ctx context.Context, d *repository.Departm
 // Delete 删除部门（子部门通过 parent 外键 ON DELETE SET NULL 处理）
 func (r *DepartmentRepository) Delete(ctx context.Context, institutionID int64, name string) error {
 	return mapError(r.db.Exec(ctx, `DELETE FROM departments WHERE institution_id=$1 AND name=$2`, institutionID, name), "department not found")
+}
+
+// GetRoot 返回组织根部门（每个组织恰好一行 is_root = TRUE；见迁移 040）
+func (r *DepartmentRepository) GetRoot(ctx context.Context, institutionID int64) (*repository.Department, error) {
+	d := &repository.Department{}
+	if err := selectOne(ctx, r.db, "departments", d, "WHERE institution_id=$1 AND is_root", institutionID); err != nil {
+		return nil, err
+	}
+	return d, nil
 }
 
 // SetSortIndex 仅更新排序序号（同层内排序用；不触碰路径/层级等结构字段）

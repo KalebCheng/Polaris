@@ -10,20 +10,31 @@ import (
 	"polaris/internal/service"
 )
 
-// GroupHandler 用户组处理器
-type GroupHandler struct{ svc *service.GroupService }
+// JobTitleHandler 职务处理器
+type JobTitleHandler struct{ svc *service.JobTitleService }
 
-// NewGroupHandler 创建用户组处理器
-func NewGroupHandler(svc *service.GroupService) *GroupHandler { return &GroupHandler{svc: svc} }
+// NewJobTitleHandler 创建职务处理器
+func NewJobTitleHandler(svc *service.JobTitleService) *JobTitleHandler {
+	return &JobTitleHandler{svc: svc}
+}
 
-// groupListItem 用户组列表项（实体 + 成员数；成员数批量取，避免逐行查询）
-type groupListItem struct {
-	repository.Group
+// jobTitleListItem 职务列表项（实体 + 任职人数；人数批量取，避免逐行查询）
+type jobTitleListItem struct {
+	repository.JobTitle
 	MemberCount int `json:"member_count"`
 }
 
-// List 分页列出用户组
-func (h *GroupHandler) List(c *gin.Context) {
+// jobTitleDetailDTO 职务详情响应：顶层键与前端类型保持一致（jobTitle，而不是历史遗留的 group）。
+// members 必须走 toUserDTOs，避免把密码哈希 / MFA 密钥等实体字段直接下发。
+type jobTitleDetailDTO struct {
+	JobTitle    *repository.JobTitle     `json:"jobTitle"`
+	Members     []*userDTO               `json:"members"`
+	Roles       []string                 `json:"roles"`
+	Permissions []*repository.Permission `json:"permissions"`
+}
+
+// List 分页列出职务
+func (h *JobTitleHandler) List(c *gin.Context) {
 	offset, limit, page, size := pageParams(c)
 	items, total, err := h.svc.List(c.Request.Context(), instID(c), query(c, "keyword"), offset, limit)
 	if err != nil {
@@ -35,15 +46,15 @@ func (h *GroupHandler) List(c *gin.Context) {
 		bizerrors.Fail(c, err)
 		return
 	}
-	out := make([]groupListItem, 0, len(items))
+	out := make([]jobTitleListItem, 0, len(items))
 	for _, item := range items {
-		out = append(out, groupListItem{Group: *item, MemberCount: counts[item.Name]})
+		out = append(out, jobTitleListItem{JobTitle: *item, MemberCount: counts[item.Name]})
 	}
 	bizerrors.RenderSuccess(c, gin.H{"items": out, "total": total, "page": page, "size": size})
 }
 
-// Detail 用户组详情：成员明细 + 关联角色 + 汇总权限
-func (h *GroupHandler) Detail(c *gin.Context) {
+// Detail 职务详情：任职人员明细 + 关联角色 + 汇总权限
+func (h *JobTitleHandler) Detail(c *gin.Context) {
 	detail, err := h.svc.GetDetail(c.Request.Context(), instID(c), h.nameByID(c))
 	if err != nil {
 		bizerrors.Fail(c, err)
@@ -57,16 +68,20 @@ func (h *GroupHandler) Detail(c *gin.Context) {
 	if permissions == nil {
 		permissions = []*repository.Permission{}
 	}
-	bizerrors.RenderSuccess(c, gin.H{
-		"group":       detail.Group,
-		"members":     toUserDTOs(detail.Members),
-		"roles":       roles,
-		"permissions": permissions,
+	members := toUserDTOs(detail.Members)
+	if members == nil {
+		members = []*userDTO{}
+	}
+	bizerrors.RenderSuccess(c, jobTitleDetailDTO{
+		JobTitle:    detail.JobTitle,
+		Members:     members,
+		Roles:       roles,
+		Permissions: permissions,
 	})
 }
 
-// Get 查询用户组
-func (h *GroupHandler) Get(c *gin.Context) {
+// Get 查询职务
+func (h *JobTitleHandler) Get(c *gin.Context) {
 	g, err := h.svc.Get(c.Request.Context(), instID(c), h.nameByID(c))
 	if err != nil {
 		bizerrors.Fail(c, err)
@@ -75,9 +90,9 @@ func (h *GroupHandler) Get(c *gin.Context) {
 	bizerrors.RenderSuccess(c, g)
 }
 
-// Create 创建用户组
-func (h *GroupHandler) Create(c *gin.Context) {
-	var g repository.Group
+// Create 创建职务
+func (h *JobTitleHandler) Create(c *gin.Context) {
+	var g repository.JobTitle
 	if !bindJSON(c, &g) {
 		return
 	}
@@ -93,9 +108,9 @@ func (h *GroupHandler) Create(c *gin.Context) {
 	bizerrors.RenderSuccess(c, created, http.StatusCreated)
 }
 
-// Update 更新用户组
-func (h *GroupHandler) Update(c *gin.Context) {
-	var g repository.Group
+// Update 更新职务
+func (h *JobTitleHandler) Update(c *gin.Context) {
+	var g repository.JobTitle
 	if !bindJSON(c, &g) {
 		return
 	}
@@ -108,8 +123,8 @@ func (h *GroupHandler) Update(c *gin.Context) {
 	bizerrors.RenderSuccess(c, gin.H{"status": "ok"})
 }
 
-// SetMembers 设置用户组成员
-func (h *GroupHandler) SetMembers(c *gin.Context) {
+// SetMembers 设置职务成员
+func (h *JobTitleHandler) SetMembers(c *gin.Context) {
 	var req struct {
 		Users []string `json:"users"`
 	}
@@ -123,8 +138,8 @@ func (h *GroupHandler) SetMembers(c *gin.Context) {
 	bizerrors.RenderSuccess(c, gin.H{"status": "ok"})
 }
 
-// Delete 删除用户组
-func (h *GroupHandler) Delete(c *gin.Context) {
+// Delete 删除职务
+func (h *JobTitleHandler) Delete(c *gin.Context) {
 	if err := h.svc.Delete(c.Request.Context(), currentUser(c), instID(c), h.nameByID(c)); err != nil {
 		bizerrors.Fail(c, err)
 		return
@@ -134,7 +149,7 @@ func (h *GroupHandler) Delete(c *gin.Context) {
 
 // nameByID 解析路径中的资源 id 为该资源的 name（对外路径统一用 id，服务层仍以 name 语义访问存储）。
 // 解析失败返回空串：后续服务调用会以"未找到"收尾（404），避免每个调用点重复写响应。
-func (h *GroupHandler) nameByID(c *gin.Context) string {
+func (h *JobTitleHandler) nameByID(c *gin.Context) string {
 	id, ok := pathID(c, "id")
 	if !ok {
 		return ""

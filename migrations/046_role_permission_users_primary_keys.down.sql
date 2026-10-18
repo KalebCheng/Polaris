@@ -1,0 +1,14 @@
+DROP INDEX IF EXISTS permission_users_user_idx;
+DROP INDEX IF EXISTS role_users_user_idx;
+ALTER TABLE permission_users DROP CONSTRAINT IF EXISTS permission_users_user_id_fkey;
+ALTER TABLE role_users       DROP CONSTRAINT IF EXISTS role_users_user_id_fkey;
+ALTER TABLE permission_users DROP CONSTRAINT permission_users_pkey;
+ALTER TABLE role_users       DROP CONSTRAINT role_users_pkey;
+ALTER TABLE permission_users ADD COLUMN "user" TEXT NOT NULL DEFAULT '';
+ALTER TABLE role_users       ADD COLUMN "user" TEXT NOT NULL DEFAULT '';
+UPDATE permission_users pu SET "user" = u.name FROM users u WHERE u.id = pu.user_id;
+UPDATE role_users ru SET "user" = u.name FROM users u WHERE u.id = ru.user_id;
+ALTER TABLE permission_users DROP COLUMN user_id;
+ALTER TABLE role_users       DROP COLUMN user_id;
+ALTER TABLE permission_users ADD CONSTRAINT permission_users_pkey PRIMARY KEY (permission_id, "user");
+ALTER TABLE role_users       ADD CONSTRAINT role_users_pkey PRIMARY KEY (role_id, "user");

@@ -572,7 +572,7 @@ function signupFieldsFromApplication(app: Application): SignupFieldRow[] {
 export interface ApplicationAccessFormValue {
   /** all = 全员可访问（默认）| restricted = 受限（仅名单内主体可访问） */
   mode: string
-  /** 主体标识名（users.name / groups.name / departments.name） */
+  /** 主体标识名（users.name / jobTitles.name / departments.name） */
   users: string[]
   groups: string[]
   departments: string[]

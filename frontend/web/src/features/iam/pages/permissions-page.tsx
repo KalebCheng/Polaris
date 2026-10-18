@@ -63,7 +63,7 @@ export default function PermissionsPage() {
 
   const [subjectsOpen, setSubjectsOpen] = useState(false)
   const [subjectsTarget, setSubjectsTarget] = useState<Permission | null>(null)
-  const [subjects, setSubjects] = useState({ users: '', groups: '', roles: '' })
+  const [subjects, setSubjects] = useState({ users: '', jobTitles: '', roles: '' })
 
   const [enforceOpen, setEnforceOpen] = useState(false)
   const [enforceForm, setEnforceForm] = useState({
@@ -98,7 +98,7 @@ export default function PermissionsPage() {
     setSubjectsTarget(permission)
     setSubjects({
       users: (permission.users ?? []).join(', '),
-      groups: (permission.groups ?? []).join(', '),
+      jobTitles: (permission.job_titles ?? []).join(', '),
       roles: (permission.roles ?? []).join(', '),
     })
     setSubjectsOpen(true)
@@ -357,11 +357,11 @@ export default function PermissionsPage() {
                 rows={2}
               />
             </Field>
-            <Field id="subject-groups" labelKey="roles.groups" hint={t('permissions.commaSeparated')}>
+            <Field id="subject-job-titles" labelKey="roles.jobTitles" hint={t('permissions.commaSeparated')}>
               <Textarea
-                id="subject-groups"
-                value={subjects.groups}
-                onChange={(event) => setSubjects({ ...subjects, groups: event.target.value })}
+                id="subject-job-titles"
+                value={subjects.jobTitles}
+                onChange={(event) => setSubjects({ ...subjects, jobTitles: event.target.value })}
                 rows={2}
               />
             </Field>
@@ -387,7 +387,7 @@ export default function PermissionsPage() {
                     subjectsTarget.id,
                     {
                       users: splitList(subjects.users),
-                      groups: splitList(subjects.groups),
+                      job_titles: splitList(subjects.jobTitles),
                       roles: splitList(subjects.roles),
                     },
                     String(subjectsTarget.institution_id),

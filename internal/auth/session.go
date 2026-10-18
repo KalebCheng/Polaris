@@ -17,7 +17,7 @@ type SessionManager struct {
 	sessions   repository.SessionRepository
 	users      repository.UserRepository
 	roles      repository.RoleRepository
-	groups     repository.GroupRepository
+	groups     repository.JobTitleRepository
 	sessionTTL time.Duration
 }
 
@@ -26,7 +26,7 @@ func NewSessionManager(
 	sessions repository.SessionRepository,
 	users repository.UserRepository,
 	roles repository.RoleRepository,
-	groups repository.GroupRepository,
+	groups repository.JobTitleRepository,
 	sessionTTL time.Duration,
 ) *SessionManager {
 	return &SessionManager{sessions: sessions, users: users, roles: roles, groups: groups, sessionTTL: sessionTTL}

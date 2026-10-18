@@ -1,0 +1,6 @@
+ALTER INDEX application_accounts_institution_id_idx RENAME TO app_accounts_institution_id_idx;
+ALTER TABLE application_accounts RENAME CONSTRAINT application_accounts_inst_app_user_key TO app_accounts_inst_app_user_key;
+ALTER TABLE application_accounts RENAME CONSTRAINT application_accounts_institution_id_fkey TO app_accounts_institution_id_fkey;
+ALTER TABLE application_accounts RENAME CONSTRAINT application_accounts_pkey TO app_accounts_pkey;
+ALTER SEQUENCE application_accounts_id_seq RENAME TO app_accounts_id_seq;
+ALTER TABLE application_accounts RENAME TO app_accounts;

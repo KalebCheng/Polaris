@@ -193,7 +193,7 @@ interface ComboboxProps {
   className?: string
 }
 
-/** 下拉单选（可搜索）：用于证书、默认用户组等单选资源引用 */
+/** 下拉单选（可搜索）：用于证书、默认职务等单选资源引用 */
 export function Combobox({
   options,
   value,

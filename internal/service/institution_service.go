@@ -13,7 +13,9 @@ import (
 type InstitutionService struct {
 	orgs        repository.InstitutionRepository
 	users       repository.UserRepository
-	groups      repository.GroupRepository
+	jobTitles   repository.JobTitleRepository
+	jobLevels   repository.JobLevelRepository
+	depts       repository.DepartmentRepository
 	roles       repository.RoleRepository
 	permissions repository.PermissionRepository
 	apps        repository.ApplicationRepository
@@ -28,7 +30,9 @@ type InstitutionService struct {
 type InstitutionDeps struct {
 	Orgs        repository.InstitutionRepository
 	Users       repository.UserRepository
-	Groups      repository.GroupRepository
+	JobTitles   repository.JobTitleRepository
+	Depts       repository.DepartmentRepository
+	JobLevels   repository.JobLevelRepository
 	Roles       repository.RoleRepository
 	Permissions repository.PermissionRepository
 	Apps        repository.ApplicationRepository
@@ -42,7 +46,7 @@ type InstitutionDeps struct {
 // NewInstitutionService 创建组织服务
 func NewInstitutionService(deps InstitutionDeps) *InstitutionService {
 	return &InstitutionService{
-		orgs: deps.Orgs, users: deps.Users, groups: deps.Groups, roles: deps.Roles,
+		orgs: deps.Orgs, users: deps.Users, jobTitles: deps.JobTitles, depts: deps.Depts, jobLevels: deps.JobLevels, roles: deps.Roles,
 		permissions: deps.Permissions, apps: deps.Apps, providers: deps.Providers,
 		syncers: deps.Syncers, tokens: deps.Tokens, records: deps.Records, audits: deps.Audits,
 	}
@@ -67,6 +71,14 @@ func (s *InstitutionService) Create(ctx context.Context, actor string, org *repo
 		return nil, err
 	}
 	org.ID = id
+	// 组织根部门（Spec Q4.5：组织恒定作为部门树的根；新建组织必须有且只有一行根节点）
+	root := &repository.Department{
+		InstitutionID: org.ID, Name: org.Name, DisplayName: firstNonEmptyStr(org.DisplayName, org.Name),
+		CodePath: org.Name, NamePath: firstNonEmptyStr(org.DisplayName, org.Name), Level: 0, IsRoot: true,
+	}
+	if _, err := s.depts.Create(ctx, root); err != nil {
+		return nil, err
+	}
 	s.audits.Record(ctx, actor, org.ID, "institutionID.create", org.Name, nil)
 	return org, nil
 }

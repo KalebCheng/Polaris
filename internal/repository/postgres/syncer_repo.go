@@ -1,7 +1,9 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"strconv"
 	"time"
@@ -63,7 +65,11 @@ func expandSyncer(s *repository.Syncer, config, secrets, fieldMapping []byte) {
 }
 
 // shrinkSyncer 把运行期扁平字段回收为三个 JSONB 载荷；空值不写入（避免"空值被当成已配置"）。
-func shrinkSyncer(s *repository.Syncer) ([]byte, []byte, []byte) {
+//
+// 返回的是**待序列化的 Go 值**，序列化只能由 encodeJSONB 完成一次：绝不能在返回前先 json.Marshal，
+// 否则 jsonb 参数编解码器会把 []byte 当成"再序列化一次的对象"，落库成 base64 字符串
+// （历史缺陷：config/secrets 读不回来 → 凭据全为空 → 钉钉/飞书换 token 报 10003 invalid param）。
+func shrinkSyncer(s *repository.Syncer) (map[string]string, map[string]string, map[string]map[string]string) {
 	config := map[string]string{}
 	putIfNotEmpty(config, "host", s.Host)
 	if s.Port > 0 {
@@ -86,7 +92,7 @@ func shrinkSyncer(s *repository.Syncer) ([]byte, []byte, []byte) {
 		fieldMapping["account"] = s.UserMapping
 	}
 
-	return jsonOrEmptyObject(config), jsonOrEmptyObject(secrets), jsonOrEmptyObject(fieldMapping)
+	return config, secrets, fieldMapping
 }
 
 func putIfNotEmpty(m map[string]string, key, value string) {
@@ -106,12 +112,33 @@ func jsonOrEmptyObject(v interface{}) []byte {
 // encodeJSONB 以文本形式传参，由 PostgreSQL 按列类型（jsonb）解析。
 func encodeJSONB(v interface{}) string { return string(jsonOrEmptyObject(v)) }
 
+// normalizeJSONBPayload 还原"被二次编码的 JSONB 载荷"（历史缺陷行）。
+//
+// 缺陷版本先 json.Marshal 出字节、又交给 jsonb 编解码器编码，于是列里存的是
+// **JSON 字符串 + base64**（jsonb_typeof = 'string'）而不是 JSON 对象。
+// 这里识别该形态并解回原始 JSON，使存量连接在升级后即可用（保存一次就回写成正常对象）。
+func normalizeJSONBPayload(raw []byte) []byte {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '"' {
+		return raw
+	}
+	var encoded string
+	if err := json.Unmarshal(trimmed, &encoded); err != nil {
+		return raw
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return raw
+	}
+	return decoded
+}
+
 func decodeStringMap(raw []byte) map[string]string {
 	out := map[string]string{}
 	if len(raw) == 0 {
 		return out
 	}
-	_ = json.Unmarshal(raw, &out)
+	_ = json.Unmarshal(normalizeJSONBPayload(raw), &out)
 	return out
 }
 
@@ -120,7 +147,7 @@ func decodeFieldMapping(raw []byte) map[string]map[string]string {
 	if len(raw) == 0 {
 		return out
 	}
-	_ = json.Unmarshal(raw, &out)
+	_ = json.Unmarshal(normalizeJSONBPayload(raw), &out)
 	return out
 }
 

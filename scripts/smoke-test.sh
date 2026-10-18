@@ -23,6 +23,9 @@ TEST_ACCESS_USER="smoke-access-$RUN_ID"
 TEST_ACCESS_DEPT="smoke-access-dept-$RUN_ID"
 TEST_ACCESS_DEPT_CHILD="smoke-access-dept-child-$RUN_ID"
 TEST_DEPT5="smoke-dept5-$RUN_ID"
+TEST_LEVEL5="smoke-level-$(date +%s)"
+# 组织内手机号唯一（迁移 039）：冒烟号每次运行都必须不同
+SMOKE_PHONE5="139$(printf '%08d' $((RUN_ID % 100000000)))"
 TEST_GROUP5="smoke-group5-$RUN_ID"
 TEST_STORAGE="smoke-storage-$RUN_ID"
 TEST_STORAGE2="smoke-storage2-$RUN_ID"
@@ -48,7 +51,7 @@ cleanup() {
     done
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/users/${USER_ID:-0}" >/dev/null 2>&1 || true
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/users/${SIGNUP_USER_ID:-0}" >/dev/null 2>&1 || true
-    curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/groups/${GROUP5_ID:-0}" >/dev/null 2>&1 || true
+    curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/job-titles/${GROUP5_ID:-0}" >/dev/null 2>&1 || true
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/departments/${DEPT5_ID:-0}" >/dev/null 2>&1 || true
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/users/${USER5_ID:-0}" >/dev/null 2>&1 || true
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/users/${ACCESS_USER_ID:-0}" >/dev/null 2>&1 || true
@@ -84,7 +87,7 @@ expect_ok() {
   if [ "$out" = "OK" ]; then
     green "PASS  $1"
   else
-    red "FAIL  $1（$out）"
+    red "FAIL  $1（${out:-}）"
     exit 1
   fi
 }
@@ -248,7 +251,7 @@ expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/departments")" "GET /departments
 expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/applications")" "GET /applications → 200"
 expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/roles")" "GET /roles → 200"
 expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/permissions")" "GET /permissions → 200"
-expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/groups")" "GET /groups → 200"
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/job-titles")" "GET /job-titles → 200"
 expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/certs")" "GET /certs → 200"
 expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/syncers/types")" "GET /syncers/types → 200"
 expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/records")" "GET /records → 200"
@@ -314,7 +317,7 @@ expect_code 200 "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_ID")" "删
 step "10b. 用户详情与安全动作（第五阶段：详情 / 部分更新 / 重置 MFA / 解除锁定 / 授权 / 归属）"
 # 整页表单：一次提交完整资料字段（后端若丢弃任一字段，下面的断言会红）
 expect_code 201 "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
-  --data-raw "$(printf '{"institution_id":%s,"name":"%s","display_name":"阶段五用户","first_name":"Smoke5","last_name":"User5","email":"smoke5-%s@polaris.local","phone":"13800000005","country_code":"86","location":"杭州","address":"文一西路 1 号","affiliation":"冒烟机构","title":"smoke-title","homepage":"https://example.com/smoke5","bio":"smoke bio","language":"zh","gender":"other","birthday":"2000-01-01","education":"BSc","password":"Smoke5@12345"}' "$ORG_ID" "$TEST_USER5" "$RUN_ID")")" "创建用户（完整资料字段）→ 201"
+  --data-raw "$(printf '{"institution_id":%s,"name":"%s","display_name":"阶段五用户","first_name":"Smoke5","last_name":"User5","email":"smoke5-%s@polaris.local","phone":"%s","country_code":"86","location":"杭州","address":"文一西路 1 号","affiliation":"冒烟机构","title":"smoke-title","homepage":"https://example.com/smoke5","bio":"smoke bio","language":"zh","gender":"other","birthday":"2000-01-01","education":"BSc","password":"Smoke5@12345"}' "$ORG_ID" "$TEST_USER5" "$RUN_ID" "$SMOKE_PHONE5")")" "创建用户（完整资料字段）→ 201"
 USER5_ID="$(json_field id)"
 expect_ok "新建提交的全部资料字段都已落库（表单能填、后端不丢）" "
 import json
@@ -366,19 +369,47 @@ import json
 d = json.load(open('/tmp/polaris-smoke-body'))['data']
 print('OK' if d.get('direct_roles') == ['user'] and d.get('effective_permissions') else 'roles=%r effective=%d' % (d.get('direct_roles'), len(d.get('effective_permissions') or [])))"
 
-# 用户组归属 + 组详情（成员 / 关联角色 / 汇总权限）
-expect_code 201 "$(code -b "$JAR" -X POST "$BASE/api/v1/groups" -H 'Content-Type: application/json' \
-  --data-raw "$(printf '{"institution_id":%s,"name":"%s","display_name":"冒烟用户组"}' "$ORG_ID" "$TEST_GROUP5")")" "创建用户组 → 201"
+# 职务归属 + 组详情（成员 / 关联角色 / 汇总权限）
+expect_code 201 "$(code -b "$JAR" -X POST "$BASE/api/v1/job-titles" -H 'Content-Type: application/json' \
+  --data-raw "$(printf '{"institution_id":%s,"name":"%s","display_name":"冒烟职务"}' "$ORG_ID" "$TEST_GROUP5")")" "创建职务 → 201"
 GROUP5_ID="$(json_field id)"
-expect_code 200 "$(code -b "$JAR" -X PUT "$BASE/api/v1/users/$USER5_ID/groups" -H 'Content-Type: application/json' \
-  --data-raw "$(printf '{"groups":["%s"]}' "$TEST_GROUP5")")" "设置用户组归属 → 200"
-expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/groups/$GROUP5_ID/detail")" "GET 用户组详情 → 200"
+expect_code 200 "$(code -b "$JAR" -X PUT "$BASE/api/v1/users/$USER5_ID/job-titles" -H 'Content-Type: application/json' \
+  --data-raw "$(printf '{"job_titles":["%s"]}' "$TEST_GROUP5")")" "设置用户职务归属 → 200"
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/job-titles/$GROUP5_ID/detail")" "GET 职务详情 → 200"
 expect_ok "组详情含成员明细与权限字段" "
 import json
 d = json.load(open('/tmp/polaris-smoke-body'))['data']
 names = [m.get('name') for m in d.get('members', [])]
 print('OK' if names == ['$TEST_USER5'] and isinstance(d.get('permissions'), list) else 'members=%r' % names)"
-expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/groups")" "GET 用户组列表（含成员数）→ 200"
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/job-titles")" "GET 职务列表（含任职人数）→ 200"
+
+# 职级（Spec 第六阶段 Q4：字典 + 用户单值属性；不参与授权）
+expect_code 201 "$(code -b "$JAR" -X POST "$BASE/api/v1/job-levels" -H 'Content-Type: application/json' \
+  --data-raw "$(printf '{"institution_id":%s,"name":"%s","description":"冒烟职级","sort_order":100}' "$ORG_ID" "$TEST_LEVEL5")")" "创建职级 → 201"
+LEVEL5_ID="$(json_field id)"
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/job-levels")" "GET 职级列表 → 200"
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/job-levels/distribution")" "GET 职级分布 → 200"
+expect_code 200 "$(code -b "$JAR" -X PUT "$BASE/api/v1/users/$USER5_ID/job-level" -H 'Content-Type: application/json' \
+  --data-raw "$(printf '{"job_level_id":%s}' "$LEVEL5_ID")")" "设置用户职级 → 200"
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/users/$USER5_ID")" "读回用户（含职级）→ 200"
+expect_ok "用户职级已落库并可读回" "
+import json
+d = json.load(open('/tmp/polaris-smoke-body'))['data']
+print('OK' if d.get('job_level_id') == $LEVEL5_ID else 'job_level_id=%r' % d.get('job_level_id'))"
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/departments")" "GET 部门列表（取组织根）→ 200"
+ROOT_DEPT_ID="$(python3 -c "import json;d=json.load(open('/tmp/polaris-smoke-body'))['data']['items'];print(next((i['id'] for i in d if i.get('is_root')), ''))")"
+if [ -z "$ROOT_DEPT_ID" ]; then
+  red "组织根部门缺失（每个组织必须恰好一行 is_root）"
+  exit 1
+fi
+expect_code 200 "$(code -b "$JAR" -X PUT "$BASE/api/v1/users/$USER5_ID/departments" -H 'Content-Type: application/json' \
+  --data-raw "$(printf '{"department_ids":[%s],"primary_department_id":%s}' "$ROOT_DEPT_ID" "$ROOT_DEPT_ID")")" "设置用户部门归属（多值）→ 200"
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/users/$USER5_ID")" "读回用户（含部门归属）→ 200"
+expect_ok "用户主部门已随多值归属同步" "
+import json
+d = json.load(open('/tmp/polaris-smoke-body'))['data']
+print('OK' if d.get('department_id') == $ROOT_DEPT_ID else 'department_id=%r' % d.get('department_id'))"
+expect_code 200 "$(code -b "$JAR" -X DELETE "$BASE/api/v1/job-levels/$LEVEL5_ID")" "删除冒烟职级 → 200"
 expect_ok "组列表下发 member_count" "
 import json
 items = json.load(open('/tmp/polaris-smoke-body'))['data']['items']
@@ -440,14 +471,14 @@ expect_code 200 "$(code -c "$JAR5" -X POST "$BASE/api/v1/auth/login" -H 'Content
 expect_code 403 "$(code -b "$JAR5" -X POST "$BASE/api/v1/users/$ADMIN_ID/reset-mfa")" "普通用户重置他人 MFA → 403"
 expect_code 403 "$(code -b "$JAR5" -X POST "$BASE/api/v1/users/$ADMIN_ID/unlock")" "普通用户解除他人锁定 → 403"
 
-expect_code 200 "$(code -b "$JAR" -X DELETE "$BASE/api/v1/groups/$GROUP5_ID")" "删除冒烟用户组 → 200"
+expect_code 200 "$(code -b "$JAR" -X DELETE "$BASE/api/v1/job-titles/$GROUP5_ID")" "删除冒烟职务 → 200"
 GROUP5_ID=""
 expect_code 200 "$(code -b "$JAR" -X DELETE "$BASE/api/v1/departments/$DEPT5_ID")" "删除冒烟部门 → 200"
 DEPT5_ID=""
 expect_code 200 "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER5_ID")" "删除阶段五用户 → 200"
 USER5_ID=""
 
-step "11. 角色 / 权限 / 用户组关联"
+step "11. 角色 / 权限 / 职务关联"
 expect_code 201 "$(code -b "$JAR" -X POST "$BASE/api/v1/roles" -H 'Content-Type: application/json' \
   --data-raw "$(printf '{"institution_id":%s,"name":"%s","display_name":"冒烟角色"}' "$ORG_ID" "$TEST_ROLE")")" "创建角色 → 201"
 ROLE_ID="$(json_field id)"
@@ -894,9 +925,9 @@ expect_code 201 "$(code -b "$JAR" -X POST "$BASE/api/v1/account-strategies" -H '
   "创建账号策略 → 201"
 STRATEGY_ID="$(json_field id)"
 expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/account-strategies")" "GET /account-strategies → 200"
-expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/app-accounts")" "GET /app-accounts → 200"
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/application-accounts")" "GET /application-accounts → 200"
 expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/provisioning")" "GET /provisioning → 200"
-expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/me/app-accounts")" "GET /me/app-accounts → 200（门户只读）"
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/me/application-accounts")" "GET /me/application-accounts → 200（门户只读）"
 expect_code 200 "$(code -b "$JAR" -X DELETE "$BASE/api/v1/connectors/$CONNECTOR_ID")" "删除连接器 → 200"
 expect_code 200 "$(code -b "$JAR" -X DELETE "$BASE/api/v1/account-strategies/$STRATEGY_ID")" "删除账号策略 → 200"
 

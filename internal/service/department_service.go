@@ -37,6 +37,14 @@ func (s *DepartmentService) Create(ctx context.Context, actor string, d *reposit
 		return nil, bizerrors.New(bizerrors.CodeConflict, "department already exists")
 	}
 
+	// 根节点只能由系统创建（组织创建时/迁移 040），不接受手工创建
+	d.IsRoot = false
+	// 未指定父部门时挂到组织根之下（Spec Q4.5：组织恒定作为部门树的根）
+	if d.ParentID == nil {
+		if root, err := s.depts.GetRoot(ctx, d.InstitutionID); err == nil {
+			d.ParentID = &root.ID
+		}
+	}
 	// 依据父部门补齐 code_path / name_path / level，并标记父节点 has_child
 	d.CodePath = d.Name
 	d.NamePath = defaultIfEmpty(d.DisplayName, d.Name)
@@ -77,7 +85,11 @@ func (s *DepartmentService) Get(ctx context.Context, institutionID int64, name s
 func (s *DepartmentService) Update(ctx context.Context, actor string, d *repository.Department) error {
 	existing, err := s.depts.GetByName(ctx, d.InstitutionID, d.Name)
 	if err != nil {
-		return bizerrors.New(bizerrors.CodeInstitutionNotFound, "department not found").WithDetail("department", d.Name)
+		return bizerrors.ErrNotFound.WithDetail("department", d.Name)
+	}
+	if existing.IsRoot {
+		// 组织根是"组织本身"的投影：改名/移动/删除都会让部门树失去根（Spec Q4.5）
+		return bizerrors.ErrProtectedObject.WithDetail("department", d.Name)
 	}
 	// 展示字段按入参，结构性字段以现有为准
 	d.ID = existing.ID
@@ -189,6 +201,9 @@ func (s *DepartmentService) Delete(ctx context.Context, actor string, institutio
 	d, err := s.depts.GetByName(ctx, institutionID, name)
 	if err != nil {
 		return bizerrors.ErrNotFound.WithDetail("department", name)
+	}
+	if d.IsRoot {
+		return bizerrors.ErrProtectedObject.WithDetail("department", name)
 	}
 	if d.HasChild {
 		return bizerrors.New(bizerrors.CodeConflict, "department still has child departments")

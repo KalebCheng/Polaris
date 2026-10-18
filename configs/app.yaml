@@ -56,7 +56,8 @@ auth:
   oauth:
     base_url: http://127.0.0.1:8100
     success_redirect: http://127.0.0.1:5173/
-    redirect_uri: http://127.0.0.1:5173/oauth/callback
+    # SSO 回调中间页挂在前端命名空间 /sso/**（不与 OIDC 协议路径 /oauth/* 冲突）
+    redirect_uri: http://127.0.0.1:5173/sso/callback
     state_ttl: 600
     cookie_secure: false    # 生产必须为 true，POLARIS_COOKIE_SECURE=true
     # 说明（第四阶段起）：外部身份提供方的权威来源是控制台「提供商」（providers 表）。

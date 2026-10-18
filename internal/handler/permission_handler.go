@@ -76,13 +76,13 @@ func (h *PermissionHandler) Update(c *gin.Context) {
 func (h *PermissionHandler) SetSubjects(c *gin.Context) {
 	var req struct {
 		Users  []string `json:"users"`
-		Groups []string `json:"groups"`
+		JobTitles []string `json:"job_titles"`
 		Roles  []string `json:"roles"`
 	}
 	if !bindJSON(c, &req) {
 		return
 	}
-	if err := h.svc.SetSubjects(c.Request.Context(), currentUser(c), instID(c), h.nameByID(c), req.Users, req.Groups, req.Roles); err != nil {
+	if err := h.svc.SetSubjects(c.Request.Context(), currentUser(c), instID(c), h.nameByID(c), req.Users, req.JobTitles, req.Roles); err != nil {
 		bizerrors.Fail(c, err)
 		return
 	}

@@ -8,7 +8,7 @@ import (
 	"polaris/pkg/dbclient"
 )
 
-const recordColumns = `id, institution_id, name, client_ip, "user", method, request_uri, action,
+const recordColumns = `id, institution_id, name, client_ip, "user", user_id, method, request_uri, action,
 	language, object, response, status_code, detail, is_triggered, trace_id, created_at`
 
 // RecordRepository 审计记录仓库（PostgreSQL 实现）
@@ -19,7 +19,7 @@ func NewRecordRepository(db *dbclient.Client) *RecordRepository { return &Record
 
 func scanRecord(row interface{ Scan(...interface{}) error }) (*repository.Record, error) {
 	var r repository.Record
-	err := row.Scan(&r.ID, &r.InstitutionID, &r.Name, &r.ClientIP, &r.User, &r.Method, &r.RequestURI,
+	err := row.Scan(&r.ID, &r.InstitutionID, &r.Name, &r.ClientIP, &r.User, &r.UserID, &r.Method, &r.RequestURI,
 		&r.Action, &r.Language, &r.Object, &r.Response, &r.StatusCode, &r.Detail, &r.IsTriggered,
 		&r.TraceID, &r.CreatedAt)
 	if err != nil {
@@ -31,10 +31,10 @@ func scanRecord(row interface{ Scan(...interface{}) error }) (*repository.Record
 // Create 写入审计记录
 func (r *RecordRepository) Create(ctx context.Context, rec *repository.Record) (int64, error) {
 	var id int64
-	err := r.db.QueryRow(ctx, `INSERT INTO records (institution_id, name, client_ip, "user", method,
+	err := r.db.QueryRow(ctx, `INSERT INTO records (institution_id, name, client_ip, "user", user_id, method,
 		request_uri, action, language, object, response, status_code, detail, is_triggered, trace_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
-		rec.InstitutionID, rec.Name, rec.ClientIP, rec.User, rec.Method, rec.RequestURI, rec.Action,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
+		rec.InstitutionID, rec.Name, rec.ClientIP, rec.User, rec.UserID, rec.Method, rec.RequestURI, rec.Action,
 		rec.Language, rec.Object, rec.Response, rec.StatusCode, rec.Detail, rec.IsTriggered, rec.TraceID,
 	).Scan(&id)
 	if err != nil {

@@ -68,18 +68,18 @@ func (r *stubAccessUserRepo) List(context.Context, repository.ListQuery) ([]*rep
 }
 
 type stubAccessGroupRepo struct {
-	repository.GroupRepository
-	// groupsForUser：用户 → 直接归属 + 祖先组（模拟 GroupsForUserWithAncestors 的递归结果）
+	repository.JobTitleRepository
+	// groupsForUser：用户 → 任职职务（职务扁平，无祖先展开）
 	groupsForUser map[string][]string
-	all           []*repository.Group
+	all           []*repository.JobTitle
 	expand        map[string][]string
 }
 
-func (r *stubAccessGroupRepo) GroupsForUserWithAncestors(_ context.Context, _ int64, user string) ([]string, error) {
+func (r *stubAccessGroupRepo) JobTitlesForUser(_ context.Context, _ int64, user string) ([]string, error) {
 	return r.groupsForUser[user], nil
 }
 
-func (r *stubAccessGroupRepo) List(context.Context, repository.ListQuery) ([]*repository.Group, error) {
+func (r *stubAccessGroupRepo) List(context.Context, repository.ListQuery) ([]*repository.JobTitle, error) {
 	return r.all, nil
 }
 
@@ -95,7 +95,8 @@ func (r *stubAccessGroupRepo) ExistingNames(_ context.Context, _ int64, names []
 	return out, nil
 }
 
-func (r *stubAccessGroupRepo) ExpandMembersWithDescendants(_ context.Context, _ int64, names []string) ([]string, error) {
+// ExpandMembers 职务扁平：不展开层级，"这些职务的任职人员"即直接成员
+func (r *stubAccessGroupRepo) ExpandMembers(_ context.Context, _ int64, names []string) ([]string, error) {
 	out := []string{}
 	for _, n := range names {
 		out = append(out, r.expand[n]...)
@@ -158,12 +159,12 @@ func accessFixture(subjects []repository.ApplicationSubject) (*ApplicationAccess
 	}}
 	groups := &stubAccessGroupRepo{
 		groupsForUser: map[string][]string{
-			// vpn-dev 的成员在祖先闭包里同时含 vpn-users（"授权父组覆盖子组"的服务端结果）
+			// 职务扁平：直接任职关系，不再有"祖先职务"闭包
 			"zhangsan": {"vpn-dev", "vpn-users"},
 		},
-		all: []*repository.Group{
+		all: []*repository.JobTitle{
 			{ID: 1, InstitutionID: 1, Name: "vpn-users", DisplayName: "VPN 用户"},
-			{ID: 2, InstitutionID: 1, Name: "vpn-dev", DisplayName: "VPN 开发", ParentID: groupIDPtr(1)},
+			{ID: 2, InstitutionID: 1, Name: "vpn-dev", DisplayName: "VPN 开发"},
 		},
 		expand: map[string][]string{"vpn-users": {"zhangsan"}},
 	}
@@ -258,7 +259,7 @@ func TestAccessUserSubject(t *testing.T) {
 // 用户组主体：授权父组覆盖子组（服务端取"直接归属 + 祖先组"后求交）。
 func TestAccessGroupSubjectCoversChildGroup(t *testing.T) {
 	svc, _ := accessFixture([]repository.ApplicationSubject{
-		{SubjectType: repository.SubjectTypeGroup, SubjectName: "vpn-users"},
+		{SubjectType: repository.SubjectTypeJobTitle, SubjectName: "vpn-users"},
 	})
 	app := accessApp(repository.AccessModeRestricted)
 	if !allowedFor(t, svc, app, "zhangsan") {
@@ -388,7 +389,7 @@ func TestExpandUsersCoversSubtreeMembers(t *testing.T) {
 	svc, _ := accessFixture(nil)
 	names, err := svc.ExpandUsers(context.Background(), 1, []repository.ApplicationSubject{
 		{SubjectType: repository.SubjectTypeUser, SubjectName: "lisi"},
-		{SubjectType: repository.SubjectTypeGroup, SubjectName: "vpn-users"},
+		{SubjectType: repository.SubjectTypeJobTitle, SubjectName: "vpn-users"},
 		{SubjectType: repository.SubjectTypeDepartment, SubjectName: "tech"},
 	})
 	if err != nil {
@@ -513,11 +514,11 @@ func TestResolveAppContextScope(t *testing.T) {
 
 // stubAppAccountRepo 只覆盖 List（门户列表按"有效下游账号"驱动）。
 type stubAppAccountRepo struct {
-	repository.AppAccountRepository
-	items []*repository.AppAccount
+	repository.ApplicationAccountRepository
+	items []*repository.ApplicationAccount
 }
 
-func (r *stubAppAccountRepo) List(context.Context, repository.ListQuery) ([]*repository.AppAccount, error) {
+func (r *stubAppAccountRepo) List(context.Context, repository.ListQuery) ([]*repository.ApplicationAccount, error) {
 	return r.items, nil
 }
 
@@ -548,7 +549,7 @@ func TestPortalApplicationsFilteredByAccess(t *testing.T) {
 		"1/open": {ID: 3, InstitutionID: 1, Code: "open", Name: "开放", AccessMode: repository.AccessModeAll,
 			State: "active", RedirectURIs: []string{"https://rp.example.com/cb"}},
 	}}
-	accounts := &stubAppAccountRepo{items: []*repository.AppAccount{
+	accounts := &stubAppAccountRepo{items: []*repository.ApplicationAccount{
 		{InstitutionID: 1, Application: "allowed", User: "zhangsan", Status: "active"},
 		{InstitutionID: 1, Application: "denied", User: "zhangsan", Status: "active"},
 		{InstitutionID: 1, Application: "open", User: "zhangsan", Status: "active"},

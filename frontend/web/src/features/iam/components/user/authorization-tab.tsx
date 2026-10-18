@@ -21,7 +21,7 @@ import {
 import type { User, UserAuthorizations } from '@/shared/api/types'
 import { LoadError } from '@/shared/components/load-error'
 import { describeError } from '@/shared/lib/errors'
-import { groupApi, roleApi, userApi } from '../../api'
+import { jobTitleApi, roleApi, userApi } from '../../api'
 import { useMutation } from '../../hooks/use-mutation'
 import { useOnceKey } from '../../hooks/use-once-key'
 
@@ -33,7 +33,7 @@ interface AuthorizationTabProps {
 /**
  * 授权标签：能回答"这个人的权限到底从哪来"。
  *
- * 有效权限由三处并集而成（直接绑定 / 经角色（含嵌套）/ 经用户组），
+ * 有效权限由三处并集而成（直接绑定 / 经角色（含嵌套）/ 经职务），
  * 过去只能看到结果看不到来源，出问题时无法判断"该收回哪一条"。
  */
 export function AuthorizationTab({ user, onChanged }: AuthorizationTabProps) {
@@ -44,7 +44,7 @@ export function AuthorizationTab({ user, onChanged }: AuthorizationTabProps) {
   const [roleOptions, setRoleOptions] = useState<string[]>([])
   const [groupOptions, setGroupOptions] = useState<string[]>([])
   const [roles, setRoles] = useState<string[]>([])
-  const [groups, setGroups] = useState<string[]>([])
+  const [jobTitles, setJobTitles] = useState<string[]>([])
   // 读不到授权数据时必须显式报错：否则会显示成"这个人没有任何权限"
   const [error, setError] = useState('')
 
@@ -54,12 +54,12 @@ export function AuthorizationTab({ user, onChanged }: AuthorizationTabProps) {
     const [authzResult, roleResult, groupResult] = await Promise.allSettled([
       userApi.authorizations(user.id),
       roleApi.list({ page: 1, size: 200 }),
-      groupApi.list({ page: 1, size: 200 }),
+      jobTitleApi.list({ page: 1, size: 200 }),
     ])
     if (authzResult.status === 'fulfilled') {
       setData(authzResult.value)
       setRoles(authzResult.value.direct_roles)
-      setGroups(authzResult.value.groups)
+      setJobTitles(authzResult.value.job_titles)
     } else {
       setError(describeError(authzResult.reason, t))
     }
@@ -72,7 +72,7 @@ export function AuthorizationTab({ user, onChanged }: AuthorizationTabProps) {
   useOnceKey(`authorizations:${user.id}`, load)
 
   const rolesDirty = JSON.stringify([...roles].sort()) !== JSON.stringify([...(data?.direct_roles ?? [])].sort())
-  const groupsDirty = JSON.stringify([...groups].sort()) !== JSON.stringify([...(data?.groups ?? [])].sort())
+  const jobTitlesDirty = JSON.stringify([...jobTitles].sort()) !== JSON.stringify([...(data?.job_titles ?? [])].sort())
 
   return (
     <div className="space-y-4">
@@ -110,23 +110,23 @@ export function AuthorizationTab({ user, onChanged }: AuthorizationTabProps) {
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">{t('users.groupsLabel')}</CardTitle>
-            <CardDescription>{t('users.groupsHint')}</CardDescription>
+            <CardTitle className="text-base">{t('users.job_titlesLabel')}</CardTitle>
+            <CardDescription>{t('users.job_titlesHint')}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <MultiSelect
               options={groupOptions.map((name) => ({ value: name, label: name }))}
-              value={groups}
-              onChange={setGroups}
-              placeholder={t('users.groupsPlaceholder')}
+              value={jobTitles}
+              onChange={setJobTitles}
+              placeholder={t('users.job_titlesPlaceholder')}
             />
             <Button
               size="sm"
               variant="outline"
-              disabled={pending || !groupsDirty}
+              disabled={pending || !jobTitlesDirty}
               onClick={async () => {
                 const ok = await run(async () => {
-                  await userApi.setGroups(user.id, groups)
+                  await userApi.setJobTitles(user.id, jobTitles)
                   await load()
                   await onChanged()
                 })

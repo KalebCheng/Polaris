@@ -74,7 +74,7 @@
 | POST | `/auth/mfa/setup` `/verify` `/disable` | MFA 管理 |
 | POST | `/auth/change-password` | 改密 |
 | GET | `/me/applications` | 我的应用中心应用（含 `client_id` / `redirect_uri`，供一键 SSO） |
-| GET | `/me/app-accounts` | 我的应用账号（只读） |
+| GET | `/me/application-accounts` | 我的应用账号（只读） |
 
 ### 3.2 租户与部门
 
@@ -102,8 +102,14 @@
 | GET | `/users/:name/identities` | `user:read` |
 | DELETE | `/users/:name/identities/:identityID` | `user:update` |
 | POST | `/users/:name/api-keys` | `user:update` |
-| GET/POST | `/groups` · GET/PUT/DELETE `/groups/:name` | `group:*` |
-| PUT | `/groups/:name/members` | `group:update` |
+| GET/POST | `/job-titles` · GET/PUT/DELETE `/job-titles/:id` | `job_title:*` |
+| PUT | `/job-titles/:id/members` | `job_title:update` |
+| GET | `/job-titles/:id/detail` | `job_title:read` |
+| GET/POST | `/job-levels` · GET/PUT/DELETE `/job-levels/:id` | `job_level:*` |
+| GET | `/job-levels/distribution` | `job_level:read` |
+| PUT | `/users/:id/departments` | `user:update` |
+| PUT | `/users/:id/job-level` | `user:update` |
+| PUT | `/users/:id/job-titles` | `user:update` |
 | GET/POST | `/roles` · GET/PUT/DELETE `/roles/:name` | `role:*` |
 | PUT | `/roles/:name/relations` | `role:update` |
 | GET/POST | `/permissions` · GET/PUT/DELETE `/permissions/:name` | `permission:*` |
@@ -131,7 +137,7 @@
 
 - `PUT /applications/:name/access`：整体替换访问模式与名单，请求体 `{"access_mode":"restricted","users":["zhangsan"],"groups":["vpn-users"],"departments":["tech"]}`；
   **空名单是合法输入**（= 该应用暂时无人可访问，可保存后补授权）；不存在的主体一律 `INVALID_PARAMS`（不做静默忽略）。
-- 语义：部门含子部门、用户组含子组（"授权父级 = 覆盖整个子树"）；判定**对所有人一致，没有管理员直通**。
+- 语义：部门含子部门（"授权父级 = 覆盖整个子树"）；**职务是扁平的**——授权某职务即覆盖其全部任职人员，不再有"子职务"概念（Spec 第六阶段 Q4）。判定**对所有人一致，没有管理员直通**。
 - 判定作用域：只在请求携带**应用上下文**（`client_id` / `application`）时生效——应用的登录、授权码、令牌（含 `refresh_token` 轮换）与门户应用中心都被约束，
   而"不带应用上下文的登录"= 登录平台，**不做准入判定**（因此误配永远不会把人挡在控制台之外）。
 - 拒绝表现：登录族返回 `403 APP_ACCESS_DENIED` 且不建立会话；`/oauth/authorize` 按 OAuth2 规范回跳 `redirect_uri?error=access_denied&state=...`。
@@ -141,11 +147,36 @@
 **可授权主体候选（`GET /applications/subject-options`）**：按**组织**取（新建应用时还没有主键也能用），只需 `application:read`。
 
 - 返回 `{items: [...], total: N}`；扁平列表用 `offset`/`limit` 分页（`limit` 上限 200）。
-- `type=user|group`：扁平分页列表，`keyword` 同时匹配标识与展示名，`path` 为层级路径（用户组含父组链）。
+- `type=user|job_title`：扁平分页列表（**职务已扁平化**，无层级与父链），`keyword` 同时匹配标识与展示名。
+  ⚠️ 响应体里职务主体的 JSON 键仍是 **`groups`**（历史键名，仅存储层改名），请求参数 `type` 用 `job_title`。
 - `type=department`：
   - **带 `keyword`** → 跨层级的扁平搜索结果（带 `name_path`，便于按名字直达），与扁平列表一样分页；
   - **不带 `keyword`** → **按层返回直接子节点**（省略 `parent_id` 即顶层），每项带 `id`（展开时作为 `parent_id` 再取一层）与 `has_child`（决定是否画展开箭头）。控制台弹窗的部门树据此逐层懒加载，不会一次拉全整棵树。
 - `parent_id` **只对部门有意义**：传给其它类型、或与 `keyword` 同时出现，一律 `INVALID_PARAMS`（不静默忽略）。
+
+#### 主键关联（第六阶段 Q5：存储只认主键，对外契约不变）
+
+关联列一律 `<对象>_id` + 外键；**业务键（code / name）只出现在请求与响应里**，由服务层解析、
+读取时 JOIN 回名称下发。已完成：`tokens`（应用/用户）、供给域四表（`connectors` /
+`account_strategies` / `application_accounts` / `provision_history`）、`job_title_members`、
+`password_history`；审计 `records` 为**例外**——`user` 是事件当时的名称快照，另加可空 `user_id`
+（`ON DELETE SET NULL`），删除用户不会连带删除审计行。
+
+#### 职务 / 职级（第六阶段）
+
+- **职务 `job_titles`**（原「用户组」）：组织架构里的「人 × 职务」关系，是批量授权的载体——可挂角色（`role_job_titles`）、
+  可挂权限（`permission_job_titles`）、可作应用访问主体（`application_subjects.subject_type = 'job_title'`）。
+  **扁平无层级**：飞书职务字典无层级、钉钉 `title` / 企微 `position` 是自由文本，层级无源数据可填（且旧组层级在界面上无从设置）。
+  `manager` / `contact_email` 仅为展示信息，不参与任何判定。
+- **职级 `job_levels`**：用户属性（`users.job_level_id` 单值引用，按 `sort_order` 升序），**不参与授权**。
+  用途固定三处：用户表单/详情下拉、用户列表筛选与排序、组织概览职级分布。维护方式与职务同构（本地 CRUD + 身份源同步，**只拉不推**：
+  有映射行的职级以源端为准，无映射行的本地职级同步绝不修改）。
+- **外部身份映射（入方向）**：`syncer_user_links` / `syncer_department_links` / `syncer_job_title_links` / `syncer_job_level_links`，
+  键为 **(连接, 源端 ID)**；同步据此判定"新增 / 更新"，源端改名不再产生新对象。`raw` 存源端报文用于排障。
+- **多部门归属**：`user_departments` 是多值关系的真相；`users.department_id` 只是「主部门」的便利视图
+  （`PUT /users/:id/departments` 同时维护两者，`primary_department_id` 省略时取第一个）。
+- **组织根部门**：每个组织恰好一行 `is_root = TRUE` 的部门（`GET /departments` 的 `is_root` 字段），
+  顶层部门一律挂在它之下；它不可改名 / 移动 / 删除（`PROTECTED_OBJECT`）。外部系统的根占位节点（钉钉/企微 `1`、飞书 `0`）**不落库**。
 
 ### 3.5 会话 / 审计 / 同步器
 
@@ -244,8 +275,13 @@
 | POST | `/connectors/:name/test` | `connector:update` |
 | POST | `/connectors/:id/reconcile` | `connector:update` |
 | GET/POST | `/account-strategies` · GET/PUT/DELETE `/account-strategies/:name` | `account_strategy:*` |
-| GET/POST | `/app-accounts` · DELETE `/app-accounts` · POST `/app-accounts/retry` | `app_account:*` |
+| GET/POST | `/application-accounts` · DELETE `/application-accounts` · POST `/application-accounts/retry` | `application_account:*` |
 | GET | `/provisioning` | `provision_history:read` |
+
+> **列表过滤**：`/account-strategies`、`/application-accounts`、`/provisioning` 均支持 `application_id`
+> 过滤；`/provisioning` 另支持 `connector`（连接器名称）。
+> **控制台信息架构**：三个视图不再各占一级菜单，统一收进「应用详情 › 账号供给」；
+> 出方向身份连接卡片的「查看账号同步记录」按 `connector` 过滤同一份 `provision_history`。
 
 ---
 

@@ -228,10 +228,13 @@ func toCertDTOs(items []*repository.Cert) []*certDTO {
 
 // tokenDTO 令牌响应 DTO（令牌明文不下发，仅保留前缀用于识别）。
 type tokenDTO struct {
-	ID              int64      `json:"id"`
-	InstitutionID   int64      `json:"institution_id"`
-	Application     string     `json:"application,omitempty"`
-	User            string     `json:"user,omitempty"`
+	ID            int64  `json:"id"`
+	InstitutionID int64  `json:"institution_id"`
+	Application   string `json:"application,omitempty"`
+	User          string `json:"user,omitempty"`
+	// 主键关联（Spec Q5 第 1 批）：名称为兼容字段，主键用于精确引用
+	ApplicationID   *int64     `json:"application_id,omitempty"`
+	UserID          *int64     `json:"user_id,omitempty"`
 	Name            string     `json:"name"`
 	ClientIP        string     `json:"-"`
 	Scope           string     `json:"scope,omitempty"`
@@ -252,6 +255,7 @@ func toTokenDTO(t *repository.Token) *tokenDTO {
 	}
 	return &tokenDTO{
 		ID: t.ID, InstitutionID: t.InstitutionID, Application: t.Application, User: t.User,
+		ApplicationID: t.ApplicationID, UserID: t.UserID,
 		Name: t.Name, Scope: t.Scope, TokenType: t.TokenType, GrantType: t.GrantType,
 		ExpiresIn: t.ExpiresIn, Revoked: t.Revoked,
 		HasAccessToken: t.AccessToken != "", HasRefreshToken: t.RefreshToken != "",

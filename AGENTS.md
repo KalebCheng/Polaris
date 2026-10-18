@@ -103,6 +103,9 @@ frontend/web/               # 控制台前端
 - 常量：全大写 + 下划线（`SessionKeyPrefix`）
 - 错误变量：`Err` 前缀（`ErrNotFound`）
 - 表名/列名：蛇形、复数表名（`user_identities`、`syncer_runs`）
+- **表名禁止缩写**：一律用完整单词（`application_accounts` 而不是 `app_accounts`、
+  `account_strategies` 而不是 `acct_strategies`）；例外仅限迁移 001–034 已发布的历史表，
+  重命名随所属模块的下一次结构变更一并补（见 §3.8 的存量清单）。
 
 ### 3.3 错误处理
 
@@ -162,6 +165,25 @@ frontend/web/               # 控制台前端
 - **响应中 nil 集合必须归一化为空集合**（`[]` / `{}`），避免前端判空分支。
 - 实体新增/调整字段必须同步：迁移 → 仓库 CRUD → DTO → 前端 `types.ts` → 测试。
 
+### 3.8 关联一律用主键（禁止业务键关联）
+
+**规则**：表与表之间的引用，列必须是对方的主键：列名 `<对方单数>_id`、类型 `BIGINT`、带外键约束
+（`ON DELETE CASCADE` / `SET NULL` 按语义选择）。**禁止**用 `name` / `code` / `client_id` / 邮箱等业务键做关联列，
+也禁止"存一个字符串、心里当它是指向外键"。
+
+真实事故：`app_accounts.application` / `account_strategies.application` / `connectors.application` 存的是
+`applications.code`（字符串、无外键）；重命名迁移（013：`applications.name → code`）之后该列的含义**静默地**
+从"应用名"变成了"应用标识"，而引用完整性从未建立——账号策略可以配到**不存在的应用**、应用删除后留下孤儿行，
+迁移 018 之后连 `(institution, code)` 唯一约束都没了（code 可重名）。
+
+- 新增/改造的关联列一律按本规则落库；DTO 对外仍可暴露 `name` / `code`（人读友好），
+  但**存储只认主键**，服务层负责 `code → id` 解析，解析不到直接 `INVALID_PARAMS` / `NOT_FOUND`（不做隐式兜底）。
+- 前端必须用下拉选择真实资源（`Combobox` / `MultiSelect`），**禁止让用户自由输入应用标识/账号名**。
+- 存量待改造清单（按模块分批，禁止"顺手全改"）：`app_accounts.user` + `app_accounts.application`、
+  `account_strategies.application`、`connectors.application`、`provision_history.user` + `.application`、
+  `user_identities.user`、`tokens.user` + `.application`、`role_users.user`、`permission_users.user`、
+  `group_members.user`、`role_groups.group`、`permission_groups.group`。
+
 ## 4. 认证授权流程
 
 ```
@@ -179,7 +201,8 @@ frontend/web/               # 控制台前端
 **SSO（作为 SP）**：`Provider` 级配置独立信任策略（`mode`/`auto_create`/`link_by_email`/`allowed_domains`/`default_role`）。
 state 暂存于 Redis（一次性消费），登录后回跳地址经 `?from=` 传递并在服务端暂存，回跳目标必须是站内相对路径。
 
-**SSO 回调地址**：默认 `/oauth/callback`（前端中间页），可用 Provider 级 `redirect_uri` 覆盖；
+**SSO 回调地址**：默认 `/sso/callback`（前端中间页，挂在前端命名空间，不与 OIDC 协议路径 `/oauth/*` 冲突），
+可用 Provider 级 `redirect_uri` 覆盖（各 IdP 后台登记的重定向地址须与之逐字符一致）；
 **禁止把 `from` 等自定义参数拼进 redirect_uri**（IdP 精确匹配会拒绝）。
 
 **OIDC Provider（作为 IdP）**：`authorization_code` 必须校验 `client_id` / `redirect_uri` 注册值 /
@@ -200,6 +223,9 @@ make migrate-down          # 回滚最近 1 步
 - 约束（唯一 / 外键 / 检查）必须在迁移中声明，不依赖应用层兜底。
 - 多租户隔离：业务表以 `institution` 作为归属维度并对租户建立外键（`ON DELETE CASCADE`）。
 - `NOT NULL` 的数组/JSONB 列在仓库层必须用 `orEmpty` / `orEmptyMap` 兜底（历史教训：nil 切片写入触发 `23502`）。
+- **`DROP COLUMN` 会连带删除依赖该列的约束/索引**（真实事故：018 删 `institution` 列时，
+  `users` / `applications` / `groups` / `departments` / `syncers` … 的"租户内唯一"约束一并消失且从未补回）；
+  改表结构的迁移必须显式重建这些对象，并补一条"关键约束清单"回归测试（列出必须存在的唯一/外键，迁移后断言存在）。
 
 ## 6. 启动与测试
 
@@ -269,14 +295,18 @@ frontend/web/src/
 ```
 PLATFORM            平台级（跨组织）      Dashboard、Organizations、Roles、Permissions、Security、
                                         设置（存储设置 / 任务中心 asyncd / 审计日志）
-<当前组织>          组织内（工作区）      Overview / Users / Groups / Departments / Applications /
-                                        Providers（提供商）/ **Connections（身份连接：入方向同步 + 出方向供给）** /
-                                        Account strategies / App accounts / Provisioning
+<当前组织>          组织内（工作区）      Overview / Users / Groups / Departments /
+                                        Applications（含「账号供给」：策略 / 应用账号 / 同步记录）/
+                                        Providers（提供商）/ **Connections（身份连接：入方向同步 + 出方向供给）**
 ACCOUNT             账号级                Portal（/portal/**：应用中心 / 个人资料 / 安全 / 身份绑定 /
                                         应用账号 / 会话 / 活动）
 ```
 
 账号级能力都在**用户门户**里；控制台顶栏的账号菜单只放「跳到门户个人资料」这类入口，不重复实现一遍。
+
+- **账号生命周期不是一组一级菜单**：策略 / 应用账号 / 同步记录按应用收敛到
+  「应用详情 › 账号供给」；出方向连接卡片按 `connector` 查看同一份 `provision_history` 的
+  「账号同步记录」；用户详情「关联」保留个人维度的只读视图。
 
 - **组织内资源的地址由 URL 承载**：`/institutions/:inst/...`（可分享、可回退），
   页面通过 `useWorkspaceOrganization()` 读取并把组织同步进上下文；侧边栏切换器切换组织时保留当前子路径。
@@ -441,5 +471,10 @@ ACCOUNT             账号级                Portal（/portal/**：应用中心 
 | 任务中心只有"执行实例"，"任务定义 / 执行记录 / 执行器"三个维度全缺 | 一张队列表既当队列又当历史：任务清单取自"有执行记录的类型"（从未执行过的任务凭空消失）、重试覆盖 `last_error` 与 `finished_at`（第几次尝试失败、跑了多久查不到）、`locked_by` 只是个字符串（有几个实例在跑、谁掉线了答不了） | §7.4 + `docs/specs/261015-asyncd-task-model.md`：任务底盘固定四维度（定义 `asyncd_jobs` / 执行实例 `asyncd_job_runs` / 执行记录 `asyncd_job_run_attempts` / 执行器 `asyncd_workers`）；定义表是任务目录**唯一来源**（代码声明 + 启动 upsert）；每次尝试一行、执行器在线状态**由心跳算出**（不存派生列）；归属与状态一律落到列/外键上，不靠字符串约定 |
 | 删掉最后一个子部门后，父部门**永远删不掉**（409 still has child departments） | `DepartmentService.Delete` 用**存储的** `has_child` 标记判断"还有下级"，而删除路径从未刷新过它——只有"移动子部门层级"（走 `Update`）才会顺带刷新，于是必须"先动一下再删"这么反直觉 | 派生/冗余标记必须在**每条会改变它的写入路径**上同步（本次在删除后补 `refreshHasChild`，配回归测试）；新增这类标记时先问"还有什么操作会改变它" |
 
+| 钉钉一同步就多出 324 个用户，同一个人 6 行重复 | 迁移 018 用 `ALTER TABLE ... DROP COLUMN institution` 删列，PostgreSQL **连带删除**了该列参与的全部租户内唯一约束/索引（`users_inst_name_key`、邮箱/手机唯一索引、`applications` / `groups` / `departments` / `syncers` … 的 `*_inst_name_key`、`app_accounts_inst_app_user_key`），此后再无迁移补回；同时同步引擎按部门逐条拉取、整批计划内不去重 | 唯一性只能由数据库保证，且必须有测试盯着：补"关键约束清单"回归测试（迁移后断言约束存在）；删列/改名列的迁移一律显式重建依赖对象；入方向同步必须按"连接 + 源端 ID"去重（第六阶段 Spec） |
+| 账号策略能配到不存在的应用，应用删了留下孤儿行 | `app_accounts.application` / `account_strategies.application` / `connectors.application` 存的是 `applications.code` 字符串且无外键（006 建表时语义是"应用名"，013 改名后语义静默变成"标识"），`CreateStrategy` 也不校验应用是否存在，前端是自由文本输入 | §3.8：关联一律用主键 + 外键；业务键只出现在 DTO 层；前端必须下拉选择真实资源 |
+| 应用账号「删除」只删本地台账，下游账号仍在 | 服务层直接 `accounts.Delete`，绕过了 `processRecycle(delete)`，界面成功但下游没变 | 所有对外删除动作必须走**同一条下游回收链路**；回归测试断言"派发 delete 任务且成功前不删本地台账" |
+| JIT 建号有两个开关（策略 `createWhen=jit` + 连接器 `just_in_time`），配一个不生效 | 运行时读连接器字段，界面却把策略当权威来源 | 同一语义只保留一个配置源；迁移时先把旧字段回填到新来源（无策略则补 JIT 策略、manual 则改 jit），再删旧列，并补"策略触发"单测 |
+
 ---
-*最后更新：2026-10-15（asyncd 四维度重建：`asyncd_jobs` / `asyncd_job_runs` / `asyncd_job_run_attempts` / `asyncd_workers`；API 嵌套路径 `/asyncd/jobs/:id/runs`；任务中心三 Tab + 尝试明细 + 执行器视图）*
+*最后更新：2026-10-16（新增 §3.8「关联一律用主键」与「表名禁止缩写」；§5 补「删列连带删除约束」；此前 2026-10-15 为 asyncd 四维度重建：`asyncd_jobs` / `asyncd_job_runs` / `asyncd_job_run_attempts` / `asyncd_workers`）*

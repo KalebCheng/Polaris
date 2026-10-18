@@ -131,7 +131,7 @@ vi.mock('../api', () => ({
     }),
     test: vi.fn(),
   },
-  platformApi: { oauthInfo: async () => ({ callback_url: 'https://iam.example.com/oauth/callback', homepage_url: 'https://iam.example.com' }) },
+  platformApi: { oauthInfo: async () => ({ callback_url: 'https://iam.example.com/sso/callback', homepage_url: 'https://iam.example.com' }) },
 }))
 
 function renderPage(entry = '/institutions/acme/providers/new?category=oauth&type=oidc') {
@@ -159,6 +159,12 @@ describe('ProviderEditPage', () => {
       'Unique within the organization; cannot be changed after creation',
     )
     // 中文词条同样必须是字符串（界面语言可切换）
+    // 开发信息里的回调地址说明：类型专属词条也必须是字符串（对象会让界面显示 i18next 报错原文）
+    expect(i18n.t('providers.devCallbackHintByType.feishu')).toContain('Redirect URL')
+    expect(zh.providers.devCallbackHintByType.feishu).toContain('安全设置')
+    expect(zh.providers.devCallbackHintByType.feishu).toContain('桌面端主页')
+    expect(zh.providers.devCallbackHintByType.dingtalk).toContain('回调域名')
+    expect(zh.providers.devCallbackHintByType.wechat).toContain('域名')
     expect(zh.providers.field.name).toBe('标识')
     expect(zh.providers.field.client_id).toBe('客户端 ID')
     expect(zh.providers.field.aliyun.endpoint).toBe('接口地址')

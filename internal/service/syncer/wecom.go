@@ -119,7 +119,11 @@ func (c *WeComConnector) FetchGroups(ctx context.Context, s *repository.Syncer) 
 		if d.ParentID > 0 {
 			parent = fmt.Sprintf("%d", d.ParentID)
 		}
-		groups = append(groups, ExternalGroup{ID: fmt.Sprintf("%d", d.ID), Name: d.Name, ParentID: parent})
+		// 企业微信根部门（id=1，parentid=0）是"企业本身"，不落库为部门（Spec Q4.5）
+		groups = append(groups, ExternalGroup{
+			ID: fmt.Sprintf("%d", d.ID), Name: d.Name, ParentID: parent, IsRoot: d.ID == 1 && d.ParentID == 0,
+			Raw: map[string]string{"dept_id": fmt.Sprintf("%d", d.ID), "name": d.Name},
+		})
 	}
 	return groups, nil
 }

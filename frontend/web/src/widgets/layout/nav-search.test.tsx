@@ -68,15 +68,18 @@ describe('NavSearch', () => {
   })
 
   it('没有读权限的组织资源不进入结果（与导航同一套门禁）', async () => {
-    // 只禁掉「用户」，其余（用户组…）保持可见
-    can = (resource: string) => resource !== 'user'
+    // 只禁掉「职务」，其余组织内资源保持可见（空关键字 → 列出全部，便于直接断言门禁）
+    can = (resource: string) => resource !== 'job_title'
     institutionId = '1'
     renderSearch()
 
-    await openAndType('用户')
+    // 空关键字 → 列出全部目标，便于直接断言"同一套 can() 门禁"
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: '快速跳转' }))
+    await screen.findByRole('textbox', { name: '快速跳转' })
 
-    expect(screen.queryByRole('option', { name: '用户' })).toBeNull()
-    expect(screen.getByRole('option', { name: '用户组' })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: '职务' })).toBeNull()
+    expect(screen.getByRole('option', { name: '部门' })).toBeInTheDocument()
   })
 
   it('「设置」的二级页直接可搜：审计日志 / 任务中心不再是顶级菜单，但仍能直达', async () => {

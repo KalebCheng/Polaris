@@ -65,6 +65,14 @@ export interface Department {
 }
 
 export interface User {
+  /** 多值部门归属（Spec Q2 = A；仅详情端点下发） */
+  department_ids?: number[]
+  /** 全部部门归属的展示路径（与 department_ids 同序） */
+  department_paths?: string[]
+  /** 职级（Spec Q4.1 = A：仅属性） */
+  job_level_id?: number | null
+  /** 职级名称（服务端补全，列表/详情直接展示） */
+  job_level?: string
   id: number
   uid: string
   institution_id: number
@@ -135,7 +143,7 @@ export interface UserSecurity {
   lockouts: LoginLockout[]
 }
 
-/** 单条有效权限（含来源标注：user / role:<角色> / group:<用户组>） */
+/** 单条有效权限（含来源标注：user / role:<角色> / job_title:<职务>） */
 export interface EffectivePermission {
   name?: string
   resource: string
@@ -147,7 +155,7 @@ export interface EffectivePermission {
 export interface UserAuthorizations {
   direct_roles: string[]
   inherited_roles: string[]
-  groups: string[]
+  job_titles: string[]
   direct_permissions: string[]
   effective_permissions: EffectivePermission[]
 }
@@ -175,12 +183,22 @@ export interface UserProfileInput {
   education?: string
 }
 
-/** 用户组详情：成员明细 + 关联角色 + 汇总权限 */
-export interface GroupDetail {
-  group: Group
+/** 职务详情：成员明细 + 关联角色 + 汇总权限 */
+export interface JobTitleDetail {
+  jobTitle: JobTitle
   members: User[]
   roles: string[]
   permissions: Permission[]
+}
+
+/** 外部身份映射（身份连接侧；raw 为源端报文） */
+export interface ExternalIdentityRef {
+  syncer_id: number
+  syncer_name: string
+  syncer_type: string
+  external_id: string
+  raw?: string
+  updated_at: string
 }
 
 export interface UserIdentity {
@@ -286,7 +304,7 @@ export interface Application {
   ip_restriction?: string
   ip_whitelist?: string
 
-  /** 访问模式：all = 全员可访问（默认）；restricted = 仅授权名单内主体（含其子部门/子用户组） */
+  /** 访问模式：all = 全员可访问（默认）；restricted = 仅授权名单内主体（含其子部门） */
   access_mode: string
   /** 授权主体数（仅列表返回；详情走 GET /applications/:id/access） */
   access_subject_count?: number
@@ -344,7 +362,7 @@ export interface Application {
 export interface ApplicationSubjectView {
   name: string
   display_name: string
-  /** 层级路径：部门 name_path / 用户组父组链 */
+  /** 层级路径：部门 name_path / 职务（扁平，无父级） */
   path?: string
   email?: string
   missing: boolean
@@ -378,6 +396,7 @@ export interface ApplicationSubjectOptionPage {
 export interface ApplicationAccessInput {
   access_mode: string
   users: string[]
+  /** 职务主体名单（后端 JSON 键仍为 groups；主体类型取值 'job_title'） */
   groups: string[]
   departments: string[]
 }
@@ -554,7 +573,7 @@ export interface Role {
   is_enabled: boolean
   is_system: boolean
   users?: string[]
-  groups?: string[]
+  job_titles?: string[]
   roles?: string[]
   created_at: string
   updated_at: string
@@ -567,7 +586,7 @@ export interface Permission {
   display_name: string
   description: string
   users?: string[]
-  groups?: string[]
+  job_titles?: string[]
   roles?: string[]
   resource_type: string
   resources: string[]
@@ -580,7 +599,20 @@ export interface Permission {
   updated_at: string
 }
 
-export interface Group {
+/** 职级（Spec 第六阶段 Q4）：仅作用户属性（展示 / 筛选 / 统计），不参与授权 */
+export interface JobLevel {
+  id: number
+  institution_id: number
+  name: string
+  description: string
+  /** 对齐飞书 order 语义：数值越小越靠前 */
+  sort_order: number
+  is_enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface JobTitle {
   id: number
   institution_id: number
   name: string
@@ -747,7 +779,6 @@ export interface Connector {
   config: Record<string, string>
   /** 敏感键是否已配置（口令/密钥一律不下发明文） */
   has_secrets: Record<string, boolean>
-  just_in_time: boolean
   state: string
   last_run_time?: string | null
   last_status: string
@@ -760,6 +791,7 @@ export interface Connector {
 export interface AccountStrategy {
   id: number
   institution_id: number
+  application_id?: number
   application?: string
   name: string
   display_name: string
@@ -774,6 +806,7 @@ export interface AccountStrategy {
 export interface AppAccount {
   id: number
   institution_id: number
+  application_id?: number
   application: string
   user: string
   username: string
@@ -790,6 +823,7 @@ export interface ProvisionHistory {
   id: number
   institution_id: number
   connector?: string
+  application_id?: number
   application?: string
   user?: string
   action: string

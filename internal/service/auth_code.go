@@ -282,6 +282,7 @@ func (s *AuthService) findUserByCodeTarget(ctx context.Context, app *repository.
 	if _, err := s.users.Create(ctx, user); err != nil {
 		return nil, err
 	}
+	s.addDefaultJobTitle(ctx, app.InstitutionID, app.DefaultGroup, user.Name)
 	s.audits.Record(ctx, name, app.InstitutionID, "user.provision_code", name, map[string]interface{}{"kind": kind})
 	// 新建用户：触发"创建即建号"的账号策略（与管理员建号一致）
 	if s.provisioning != nil {

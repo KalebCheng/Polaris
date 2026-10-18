@@ -278,3 +278,51 @@ func TestAsyncdWorkerDTOState(t *testing.T) {
 		}
 	}
 }
+
+// 回归：账号生命周期 DTO 必须带应用主键，前端才能从用户详情跳到对应应用的「账号供给」。
+func TestProvisioningDTOsExposeApplicationID(t *testing.T) {
+	id := int64(7)
+	accounts, _ := json.Marshal(toApplicationAccountDTO(&repository.ApplicationAccount{ApplicationID: &id}))
+	if !strings.Contains(string(accounts), `"application_id":7`) {
+		t.Fatalf("应用账号 DTO 缺少 application_id: %s", accounts)
+	}
+	history, _ := json.Marshal(toProvisionHistoryDTO(&repository.ProvisionHistory{ApplicationID: &id}))
+	if !strings.Contains(string(history), `"application_id":7`) {
+		t.Fatalf("供给历史 DTO 缺少 application_id: %s", history)
+	}
+	strategy, _ := json.Marshal(toAccountStrategyDTO(&repository.AccountStrategy{ApplicationID: &id}))
+	if !strings.Contains(string(strategy), `"application_id":7`) {
+		t.Fatalf("账号策略 DTO 缺少 application_id: %s", strategy)
+	}
+}
+
+// 回归：职务详情顶层键必须是 jobTitle（前端契约）；历史实现错写成 group，
+// 导致前端读取 result.jobTitle 为 undefined 并误报"职务不存在"。
+func TestJobTitleDetailDTOUsesJobTitleKeyAndHidesUserSecrets(t *testing.T) {
+	u := &repository.User{
+		ID: 1, InstitutionID: 3, Name: "alice", PasswordHash: "$2a$10$secret",
+		MfaSecret: "ENCRYPTED-TOTP",
+	}
+	dto := jobTitleDetailDTO{
+		JobTitle:    &repository.JobTitle{ID: 41, InstitutionID: 3, Name: "AI"},
+		Members:     toUserDTOs([]*repository.User{u}),
+		Roles:       []string{},
+		Permissions: []*repository.Permission{},
+	}
+	b, err := json.Marshal(dto)
+	if err != nil {
+		t.Fatalf("序列化失败: %v", err)
+	}
+	body := string(b)
+	if !strings.Contains(body, `"jobTitle"`) {
+		t.Fatalf("职务详情应使用 jobTitle 键: %s", body)
+	}
+	if strings.Contains(body, `"group"`) {
+		t.Fatalf("不应再下发历史 group 键: %s", body)
+	}
+	for _, forbidden := range []string{"$2a$10$secret", "ENCRYPTED-TOTP", "password_hash", "mfa_secret"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("职务详情泄漏敏感字段 %q: %s", forbidden, body)
+		}
+	}
+}

@@ -26,7 +26,7 @@ func TestPersonalPortalRoutesAreRegistered(t *testing.T) {
 		Provider:    (*handler.ProviderHandler)(nil),
 		Role:        (*handler.RoleHandler)(nil),
 		Permission:  (*handler.PermissionHandler)(nil),
-		Group:       (*handler.GroupHandler)(nil),
+		JobTitle:       (*handler.JobTitleHandler)(nil),
 		Cert:        (*handler.CertHandler)(nil),
 		Token:       (*handler.TokenHandler)(nil),
 		Session:     (*handler.SessionHandler)(nil),
@@ -44,7 +44,7 @@ func TestPersonalPortalRoutesAreRegistered(t *testing.T) {
 	}
 	for _, route := range []string{
 		"GET /api/v1/me/applications",
-		"GET /api/v1/me/app-accounts",
+		"GET /api/v1/me/application-accounts",
 		"GET /api/v1/me/identities",
 		"POST /api/v1/me/identities/:provider/authorize",
 		"DELETE /api/v1/me/identities/:identityID",
@@ -79,7 +79,7 @@ func TestStorageRoutesAreRegistered(t *testing.T) {
 		Institution: (*handler.InstitutionHandler)(nil), Department: (*handler.DepartmentHandler)(nil),
 		Application: (*handler.ApplicationHandler)(nil), Provider: (*handler.ProviderHandler)(nil),
 		Role: (*handler.RoleHandler)(nil), Permission: (*handler.PermissionHandler)(nil),
-		Group: (*handler.GroupHandler)(nil), Cert: (*handler.CertHandler)(nil),
+		JobTitle: (*handler.JobTitleHandler)(nil), Cert: (*handler.CertHandler)(nil),
 		Token: (*handler.TokenHandler)(nil), Session: (*handler.SessionHandler)(nil),
 		Record: (*handler.RecordHandler)(nil), Syncer: (*handler.SyncerHandler)(nil),
 		Provision: (*handler.ProvisioningHandler)(nil), Storage: (*handler.StorageHandler)(nil),

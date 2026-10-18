@@ -39,27 +39,30 @@ type Application struct {
 	redis *redisclient.Client
 
 	// 仓库层
-	orgRepo             *postgres.InstitutionRepository
-	deptRepo            *postgres.DepartmentRepository
-	userRepo            *postgres.UserRepository
-	appRepo             *postgres.ApplicationRepository
-	appSubjectRepo      *postgres.ApplicationSubjectRepository
-	providerRepo        *postgres.ProviderRepository
-	storageSettingsRepo *postgres.StorageSettingsRepository
-	roleRepo            *postgres.RoleRepository
-	permRepo            *postgres.PermissionRepository
-	groupRepo           *postgres.GroupRepository
-	certRepo            *postgres.CertRepository
-	tokenRepo           *postgres.TokenRepository
-	recordRepo          *postgres.RecordRepository
-	syncerRepo          *postgres.SyncerRepository
-	connRepo            *postgres.ConnectorRepository
-	strategyRepo        *postgres.AccountStrategyRepository
-	appAccRepo          *postgres.AppAccountRepository
-	provisionRepo       *postgres.ProvisionHistoryRepository
-	sessionRepo         *redisrepo.SessionRepository
-	rateLimitRepo       *redisrepo.RateLimitRepository
-	stateStore          *redisrepo.StateStore
+	orgRepo                *postgres.InstitutionRepository
+	deptRepo               *postgres.DepartmentRepository
+	userRepo               *postgres.UserRepository
+	appRepo                *postgres.ApplicationRepository
+	appSubjectRepo         *postgres.ApplicationSubjectRepository
+	providerRepo           *postgres.ProviderRepository
+	storageSettingsRepo    *postgres.StorageSettingsRepository
+	roleRepo               *postgres.RoleRepository
+	permRepo               *postgres.PermissionRepository
+	jobTitleRepo           *postgres.JobTitleRepository
+	jobLevelRepo           *postgres.JobLevelRepository
+	userDeptRepo           *postgres.UserDepartmentRepository
+	linkRepo               *postgres.SyncerLinkRepository
+	certRepo               *postgres.CertRepository
+	tokenRepo              *postgres.TokenRepository
+	recordRepo             *postgres.RecordRepository
+	syncerRepo             *postgres.SyncerRepository
+	connRepo               *postgres.ConnectorRepository
+	strategyRepo           *postgres.AccountStrategyRepository
+	applicationAccountRepo *postgres.ApplicationAccountRepository
+	provisionRepo          *postgres.ProvisionHistoryRepository
+	sessionRepo            *redisrepo.SessionRepository
+	rateLimitRepo          *redisrepo.RateLimitRepository
+	stateStore             *redisrepo.StateStore
 
 	// 认证组件
 	jwtManager     *auth.JWTManager
@@ -82,7 +85,8 @@ type Application struct {
 	providerSvc    *service.ProviderService
 	roleSvc        *service.RoleService
 	permissionSvc  *service.PermissionService
-	groupSvc       *service.GroupService
+	jobTitleSvc    *service.JobTitleService
+	jobLevelSvc    *service.JobLevelService
 	certSvc        *service.CertService
 	tokenSvc       *service.TokenService
 	sessionSvc     *service.SessionService
@@ -220,14 +224,17 @@ func (a *Application) initRepositories() {
 	a.storageSettingsRepo = postgres.NewStorageSettingsRepository(a.db)
 	a.roleRepo = postgres.NewRoleRepository(a.db)
 	a.permRepo = postgres.NewPermissionRepository(a.db)
-	a.groupRepo = postgres.NewGroupRepository(a.db)
+	a.jobTitleRepo = postgres.NewJobTitleRepository(a.db)
+	a.jobLevelRepo = postgres.NewJobLevelRepository(a.db)
+	a.userDeptRepo = postgres.NewUserDepartmentRepository(a.db)
+	a.linkRepo = postgres.NewSyncerLinkRepository(a.db)
 	a.certRepo = postgres.NewCertRepository(a.db)
 	a.tokenRepo = postgres.NewTokenRepository(a.db)
 	a.recordRepo = postgres.NewRecordRepository(a.db)
 	a.syncerRepo = postgres.NewSyncerRepository(a.db)
 	a.connRepo = postgres.NewConnectorRepository(a.db)
 	a.strategyRepo = postgres.NewAccountStrategyRepository(a.db)
-	a.appAccRepo = postgres.NewAppAccountRepository(a.db)
+	a.applicationAccountRepo = postgres.NewApplicationAccountRepository(a.db)
 	a.provisionRepo = postgres.NewProvisionHistoryRepository(a.db)
 	a.sessionRepo = redisrepo.NewSessionRepository(a.redis)
 	a.rateLimitRepo = redisrepo.NewRateLimitRepository(a.redis)
@@ -252,7 +259,7 @@ func (a *Application) initAuth() error {
 	}
 
 	a.sessionManager = auth.NewSessionManager(
-		a.sessionRepo, a.userRepo, a.roleRepo, a.groupRepo,
+		a.sessionRepo, a.userRepo, a.roleRepo, a.jobTitleRepo,
 		time.Duration(a.cfg.Auth.SessionTTL)*time.Second,
 	)
 	// 提供商运行时：通知 / 存储 / 人机校验 / 外部身份提供方四处统一从这里读配置
@@ -397,18 +404,19 @@ func (a *Application) initIssuer() error {
 
 func (a *Application) initServices() {
 	a.audits = service.NewAuditRecorder(a.recordRepo)
+	a.audits.SetUserResolver(a.userRepo)
 	// 人机校验与验证码（需先于 AuthService / ProviderService 构造）
 	a.captchaSvc = service.NewCaptchaService(a.providerRuntime, a.orgRepo, redisrepo.NewCaptchaStore(a.redis, 5*time.Minute))
 	a.codeStore = redisrepo.NewCodeStore(a.redis)
 	a.magicLinkStore = redisrepo.NewMagicLinkStore(a.redis)
 	a.institutionSvc = service.NewInstitutionService(service.InstitutionDeps{
-		Orgs: a.orgRepo, Users: a.userRepo, Groups: a.groupRepo, Roles: a.roleRepo,
+		Orgs: a.orgRepo, Users: a.userRepo, JobTitles: a.jobTitleRepo, Depts: a.deptRepo, JobLevels: a.jobLevelRepo, Roles: a.roleRepo,
 		Permissions: a.permRepo, Apps: a.appRepo, Providers: a.providerRepo,
 		Syncers: a.syncerRepo, Tokens: a.tokenRepo, Records: a.recordRepo, Audits: a.audits,
 	})
 	a.departmentSvc = service.NewDepartmentService(a.deptRepo, a.orgRepo, a.userRepo, a.audits)
 	a.userSvc = service.NewUserService(
-		a.userRepo, a.orgRepo, a.roleRepo, a.groupRepo, a.deptRepo,
+		a.userRepo, a.orgRepo, a.roleRepo, a.jobTitleRepo, a.deptRepo, a.userDeptRepo, a.jobLevelRepo,
 		a.sessionManager, a.audits, a.secretCipher,
 	)
 	// 登录失败锁定（管理面枚举 + 解除；键结构与登录链路同源，见 service/login_lockout.go）
@@ -420,27 +428,28 @@ func (a *Application) initServices() {
 	a.applicationSvc = service.NewApplicationService(a.appRepo, a.orgRepo, a.audits)
 	// 应用访问授权（谁能使用该应用）：唯一判定入口，见 Spec 第六阶段
 	a.appAccessSvc = service.NewApplicationAccessService(
-		a.appSubjectRepo, a.userRepo, a.groupRepo, a.deptRepo, a.sessionManager, a.audits,
+		a.appSubjectRepo, a.userRepo, a.jobTitleRepo, a.deptRepo, a.sessionManager, a.audits,
 	)
 	a.storageSvc = service.NewStorageService(a.providerRuntime, a.userRepo, a.storageSettingsRepo, a.secretCipher, a.audits)
 	a.providerSvc = service.NewProviderService(
 		a.providerRepo, a.orgRepo, a.providerRuntime, a.oauthResolver, a.captchaSvc, a.storageSvc, a.audits,
 	)
-	a.roleSvc = service.NewRoleService(a.roleRepo, a.groupRepo, a.orgRepo, a.sessionManager, a.audits)
+	a.roleSvc = service.NewRoleService(a.roleRepo, a.jobTitleRepo, a.orgRepo, a.sessionManager, a.audits)
 	a.permissionSvc = service.NewPermissionService(a.permRepo, a.orgRepo, a.roleRepo, a.sessionManager, a.audits)
-	a.groupSvc = service.NewGroupService(a.groupRepo, a.orgRepo, a.userRepo, a.roleRepo, a.sessionManager, a.audits)
+	a.jobTitleSvc = service.NewJobTitleService(a.jobTitleRepo, a.orgRepo, a.userRepo, a.roleRepo, a.sessionManager, a.audits)
+	a.jobLevelSvc = service.NewJobLevelService(a.jobLevelRepo, a.orgRepo, a.audits)
 	a.certSvc = service.NewCertService(a.certRepo, a.orgRepo, a.audits)
 	a.tokenSvc = service.NewTokenService(a.tokenRepo, a.audits)
 	a.sessionSvc = service.NewSessionService(a.sessionManager, a.audits)
 	a.recordSvc = service.NewRecordService(a.recordRepo)
-	a.syncerSvc = service.NewSyncerService(a.syncerRepo, a.userRepo, a.deptRepo, a.orgRepo, a.secretCipher, a.audits)
+	a.syncerSvc = service.NewSyncerService(a.syncerRepo, a.userRepo, a.deptRepo, a.linkRepo, a.userDeptRepo, a.jobTitleRepo, a.orgRepo, a.secretCipher, a.audits)
 	// 供给服务（连接器 / 账号策略 / 应用账号 / 供给历史 + 工作池）
 	a.provisionSvc = service.NewProvisioningService(
-		a.connRepo, a.strategyRepo, a.appAccRepo, a.provisionRepo,
+		a.connRepo, a.strategyRepo, a.applicationAccountRepo, a.provisionRepo,
 		a.userRepo, a.appRepo, a.orgRepo, a.secretCipher, a.audits,
 	)
 	a.authSvc = service.NewAuthService(
-		a.orgRepo, a.userRepo, a.appRepo, a.providerRuntime, a.oauthResolver,
+		a.orgRepo, a.userRepo, a.appRepo, a.jobTitleRepo, a.providerRuntime, a.oauthResolver,
 		a.captchaSvc, a.codeStore, a.magicLinkStore,
 		a.userSvc, a.sessionManager, a.jwtManager,
 		a.stateStore, a.rateLimitRepo, a.audits,
@@ -451,13 +460,13 @@ func (a *Application) initServices() {
 			SessionTTL:  time.Duration(a.cfg.Auth.SessionTTL) * time.Second,
 		},
 	)
-	a.oidcSvc = service.NewOIDCService(a.appRepo, a.userRepo, a.orgRepo, a.roleRepo, a.groupRepo, a.tokenRepo, a.issuer, a.audits)
+	a.oidcSvc = service.NewOIDCService(a.appRepo, a.userRepo, a.orgRepo, a.roleRepo, a.jobTitleRepo, a.tokenRepo, a.issuer, a.audits)
 	// 后端登出服务（OIDC Back-Channel Logout）：会话结束时通知下游应用
 	a.backchannelSvc = service.NewBackchannelLogoutService(a.appRepo, a.tokenRepo, a.issuer, a.audits)
 	// 供给事件挂钩：用户创建/停用/离职、角色授予、组成员、登录 JIT
 	a.userSvc.SetProvisioning(a.provisionSvc)
 	a.roleSvc.SetProvisioning(a.provisionSvc)
-	a.groupSvc.SetProvisioning(a.provisionSvc)
+	a.jobTitleSvc.SetProvisioning(a.provisionSvc)
 	a.authSvc.SetProvisioning(a.provisionSvc)
 	// 后端登出挂钩：本地登出时通知下游 RP
 	a.authSvc.SetBackchannelLogout(a.backchannelSvc)
@@ -490,7 +499,7 @@ func (a *Application) initServer() {
 		Auth:        handler.NewAuthHandler(a.authSvc, a.userSvc, a.applicationSvc),
 		OIDC:        handler.NewOIDCHandler(a.oidcSvc, a.authSvc),
 		Health:      handler.NewHealthHandler(a.db, a.redis),
-		User:        handler.NewUserHandler(a.userSvc, a.lockoutSvc, a.sessionSvc, a.provisionSvc, a.recordSvc, a.tokenSvc, a.storageSvc),
+		User:        handler.NewUserHandler(a.userSvc, a.lockoutSvc, a.sessionSvc, a.provisionSvc, a.recordSvc, a.tokenSvc, a.storageSvc, a.linkRepo),
 		Institution: handler.NewInstitutionHandler(a.institutionSvc),
 		Department:  handler.NewDepartmentHandler(a.departmentSvc),
 		Application: handler.NewApplicationHandler(a.applicationSvc, a.appAccessSvc),
@@ -498,7 +507,8 @@ func (a *Application) initServer() {
 		Storage:     handler.NewStorageHandler(a.storageSvc),
 		Role:        handler.NewRoleHandler(a.roleSvc),
 		Permission:  handler.NewPermissionHandler(a.permissionSvc),
-		Group:       handler.NewGroupHandler(a.groupSvc),
+		JobTitle:    handler.NewJobTitleHandler(a.jobTitleSvc),
+		JobLevel:    handler.NewJobLevelHandler(a.jobLevelSvc),
 		Cert:        handler.NewCertHandler(a.certSvc),
 		Token:       handler.NewTokenHandler(a.tokenSvc),
 		Session:     handler.NewSessionHandler(a.sessionSvc),

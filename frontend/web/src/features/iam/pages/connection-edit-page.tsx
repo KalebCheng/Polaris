@@ -195,7 +195,7 @@ export default function ConnectionEditPage() {
         // 出方向的类型专属配置存在 connector.config 里（通用字段仍在实体上）：
         // 敏感键不回填明文（后端只下发 has_secrets），编辑态留空即"不修改"。
         const connectorConfig = (record as unknown as { config?: Record<string, string> }).config ?? {}
-        const genericFields = new Set(['name', 'display_name', 'application', 'state', 'just_in_time'])
+        const genericFields = new Set(['name', 'display_name', 'application', 'state'])
         for (const field of [...basicFields, ...configFields, ...scopeFields]) {
           if (direction === 'out' && !genericFields.has(field.key)) {
             if (field.secret) continue
@@ -534,7 +534,7 @@ function toConnectorPayload(
     secrets: {},
   }
   // 通用字段由连接器实体承载；其余按目录声明分流到 config（非敏感）与 secrets（敏感）
-  const generic = new Set(['name', 'display_name', 'application', 'state', 'just_in_time'])
+  const generic = new Set(['name', 'display_name', 'application', 'state'])
   for (const field of type.fields) {
     if (generic.has(field.key)) continue
     const value = values[field.key]

@@ -1,13 +1,11 @@
 import { useTranslation } from 'react-i18next'
 import { Badge } from '@/shared/ui'
-import { PageShell } from '@/widgets/layout/page-shell'
 import { ListToolbar } from '@/widgets/layout/list-toolbar'
 import { formatDateTime } from '@/shared/lib/format'
 import type { ProvisionHistory } from '@/shared/api/types'
-import { provisionHistoryApi } from '../api'
-import { useWorkspaceInstitution } from '../institution-context'
-import { useListQuery } from '../hooks/use-list-query'
-import { ResourceTable, type Column } from '../components/resource-table'
+import { provisionHistoryApi } from '../../api'
+import { useListQuery } from '../../hooks/use-list-query'
+import { ResourceTable, type Column } from '../resource-table'
 
 const actionLabelKeys: Record<string, string> = {
   create: 'provisioning.actionCreate',
@@ -17,13 +15,22 @@ const actionLabelKeys: Record<string, string> = {
   retry: 'provisioning.actionRetry',
 }
 
-/** 供给历史：建号 / 更新 / 禁用 / 删除 / 重试的可追溯记录（只读） */
-export default function ProvisioningPage() {
-  const { t } = useTranslation()
-  const institution = useWorkspaceInstitution()
+interface ProvisioningHistoryPanelProps {
+  institution: string
+  applicationId: number
+  applicationCode: string
+}
 
+/** 应用详情内的账号同步记录（只读）：建号 / 更新 / 禁用 / 删除 / 重试的流水。 */
+export function ProvisioningHistoryPanel({
+  institution,
+  applicationId,
+  applicationCode,
+}: ProvisioningHistoryPanelProps) {
+  const { t } = useTranslation()
   const list = useListQuery<ProvisionHistory>((params) => provisionHistoryApi.list(params), {
     institution: institution || undefined,
+    filters: { application_id: applicationId },
   })
 
   const columns: Column<ProvisionHistory>[] = [
@@ -51,11 +58,6 @@ export default function ProvisioningPage() {
       render: (record) => <span className="text-sm">{record.user || '-'}</span>,
     },
     {
-      key: 'application',
-      headerKey: 'provisioning.application',
-      render: (record) => <span className="text-sm">{record.application || '-'}</span>,
-    },
-    {
       key: 'connector',
       headerKey: 'provisioning.connector',
       render: (record) => <span className="text-sm">{record.connector || '-'}</span>,
@@ -75,7 +77,20 @@ export default function ProvisioningPage() {
   ]
 
   return (
-    <PageShell titleKey="provisioning.title" subtitleKey="provisioning.subtitle">
+    <div className="space-y-4">
+      <div className="border-border/60 bg-muted/30 rounded-xl border px-3.5 py-3">
+        <p className="text-sm font-medium">{t('provisioning.applicationScopedTitle')}</p>
+        <p className="text-muted-foreground mt-1 text-xs leading-relaxed">
+          {t('provisioning.applicationScopedHint', { application: applicationCode })}
+        </p>
+      </div>
+
+      <ListToolbar
+        keyword={list.keyword}
+        onKeywordChange={list.setKeyword}
+        onSubmit={list.search}
+      />
+
       <ResourceTable
         columns={columns}
         rows={list.items}
@@ -85,10 +100,7 @@ export default function ProvisioningPage() {
         size={list.size}
         total={list.total}
         onPageChange={list.setPage}
-        toolbar={
-          <ListToolbar keyword={list.keyword} onKeywordChange={list.setKeyword} onSubmit={list.search} />
-        }
       />
-    </PageShell>
+    </div>
   )
 }

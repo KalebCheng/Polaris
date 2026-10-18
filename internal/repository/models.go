@@ -103,6 +103,8 @@ type Department struct {
 	Level         int    `db:"level" json:"level"`
 	HasChild      bool   `db:"has_child" json:"has_child"`
 	SortIndex     int    `db:"sort_index" json:"sort_index"`
+	// IsRoot 组织根节点（每个组织恰好一行；名字随组织，禁止改名/移动/删除，见 Spec Q4.5）
+	IsRoot bool `db:"is_root" json:"is_root"`
 
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
 	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
@@ -116,8 +118,10 @@ type User struct {
 	Name          string `db:"name" json:"name"`
 	Type          string `db:"type" json:"type"` // normal | admin
 
-	// DepartmentID 所属部门（部门树节点；仅用于归属与筛选，不参与权限）
+	// DepartmentID 主部门（部门树节点；多值归属的真相在 user_departments，仅用于归属与筛选，不参与权限）
 	DepartmentID *int64 `db:"department_id" json:"department_id"`
+	// JobLevelID 职级（Spec Q4.1 = A：仅作属性用于展示 / 筛选 / 统计，不参与授权判定）
+	JobLevelID *int64 `db:"job_level_id" json:"job_level_id,omitempty"`
 
 	PasswordHash string `db:"password_hash" json:"password_hash"`
 	PasswordSalt string `db:"password_salt" json:"password_salt"`
@@ -342,14 +346,15 @@ func IsAccessMode(mode string) bool {
 
 // 应用授权主体类型（application_subjects.subject_type）。
 const (
-	SubjectTypeUser       = "user"
-	SubjectTypeGroup      = "group"
+	SubjectTypeUser = "user"
+	// SubjectTypeJobTitle 职务（原用户组；Spec 第六阶段 Q3 = A 改名，取值 group → job_title）
+	SubjectTypeJobTitle   = "job_title"
 	SubjectTypeDepartment = "department"
 )
 
 // IsSubjectType 判定主体类型取值是否受支持。
 func IsSubjectType(t string) bool {
-	return t == SubjectTypeUser || t == SubjectTypeGroup || t == SubjectTypeDepartment
+	return t == SubjectTypeUser || t == SubjectTypeJobTitle || t == SubjectTypeDepartment
 }
 
 // ApplicationSubject 应用授权主体：应用准入名单的一条（三类主体统一落一张表）。
@@ -440,9 +445,9 @@ type Role struct {
 	IsEnabled     bool   `db:"is_enabled" json:"is_enabled"`
 	IsSystem      bool   `db:"is_system" json:"is_system"`
 
-	Users  []string `db:"-" json:"users,omitempty"`  // 由关联表装配
-	Groups []string `db:"-" json:"groups,omitempty"` // 由关联表装配
-	Roles  []string `db:"-" json:"roles,omitempty"`  // 子角色
+	Users     []string `db:"-" json:"users,omitempty"`      // 由关联表装配
+	JobTitles []string `db:"-" json:"job_titles,omitempty"` // 由关联表装配（原 groups）
+	Roles     []string `db:"-" json:"roles,omitempty"`      // 子角色
 
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
 	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
@@ -456,9 +461,9 @@ type Permission struct {
 	DisplayName   string `db:"display_name" json:"display_name"`
 	Description   string `db:"description" json:"description"`
 
-	Users  []string `db:"-" json:"users,omitempty"`
-	Groups []string `db:"-" json:"groups,omitempty"`
-	Roles  []string `db:"-" json:"roles,omitempty"`
+	Users     []string `db:"-" json:"users,omitempty"`
+	JobTitles []string `db:"-" json:"job_titles,omitempty"`
+	Roles     []string `db:"-" json:"roles,omitempty"`
 
 	ResourceType string   `db:"resource_type" json:"resource_type"`
 	Resources    []string `db:"resources" json:"resources"`
@@ -476,24 +481,118 @@ type Permission struct {
 	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
 }
 
-// Group 用户组（组织内唯一；支持父子层级）
-type Group struct {
-	ID            int64             `db:"id" json:"id"`
-	InstitutionID int64             `db:"institution_id" json:"institution_id"`
-	Name          string            `db:"name" json:"name"`
-	DisplayName   string            `db:"display_name" json:"display_name"`
-	Manager       string            `db:"manager" json:"manager,omitempty"`
-	ContactEmail  string            `db:"contact_email" json:"contact_email,omitempty"`
-	Type          string            `db:"type" json:"type,omitempty"`
-	ParentID      *int64            `db:"parent_id" json:"parent_id,omitempty"`
-	IsTopGroup    bool              `db:"is_top_group" json:"is_top_group"`
-	IsEnabled     bool              `db:"is_enabled" json:"is_enabled"`
-	Properties    map[string]string `db:"properties" json:"properties"`
+// JobTitle 职务（组织内唯一；**扁平**，无层级）。
+//
+// 定位（Spec 第六阶段 Q3 / Q4）：组织架构里的「人 × 职务」关系，是批量授权的载体——
+// 可挂角色（role_job_titles）、可挂权限（permission_job_titles）、可作应用访问主体
+// （application_subjects.subject_type = 'job_title'）。
+//
+// 为什么没有层级：飞书职务字典没有层级、钉钉 title / 企微 position 是自由文本（无源数据可填）；
+// 且旧用户组层级在前端根本无从设置（实测 parent_id 全为 NULL），属"接了线但永不触发"的半死能力，
+// 按 §3.1-10 与 §1「配置即生效」拆除（连带 type / properties / is_top_group）。
+type JobTitle struct {
+	ID            int64  `db:"id" json:"id"`
+	InstitutionID int64  `db:"institution_id" json:"institution_id"`
+	Name          string `db:"name" json:"name"`
+	DisplayName   string `db:"display_name" json:"display_name"`
+	// Manager / ContactEmail 仅为展示信息（无任何运行时读取点），不参与授权判定。
+	Manager      string `db:"manager" json:"manager,omitempty"`
+	ContactEmail string `db:"contact_email" json:"contact_email,omitempty"`
+	IsEnabled    bool   `db:"is_enabled" json:"is_enabled"`
 
-	Users []string `db:"-" json:"users,omitempty"` // 由关联表装配
+	Users []string `db:"-" json:"users,omitempty"` // 由关联表装配（任职人员）
 
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
 	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
+}
+
+// JobLevel 职级（组织内唯一；按 SortOrder 升序展示）。
+//
+// 定位（Spec 第六阶段 Q4.1 = A）：**仅作为用户属性**，不参与授权（不建 role_job_levels /
+// permission_job_levels）。用途只有三处，且必须全部接线：用户表单/详情下拉、用户列表筛选与排序、
+// 组织概览分布统计。维护方式与职务同构：本地 CRUD + 身份源同步（飞书 job_level，只拉不推）。
+type JobLevel struct {
+	ID            int64  `db:"id" json:"id"`
+	InstitutionID int64  `db:"institution_id" json:"institution_id"`
+	Name          string `db:"name" json:"name"`
+	Description   string `db:"description" json:"description"`
+	// SortOrder 对齐飞书 order 语义：数值越小越靠前
+	SortOrder int       `db:"sort_order" json:"sort_order"`
+	IsEnabled bool      `db:"is_enabled" json:"is_enabled"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
+}
+
+// 外部身份映射（Spec 第六阶段 Q1 = A）：把"外部系统里的对象"锚定到"本地对象"，
+// 键为 **连接 + 源端唯一标识**。四张表结构一致，故共用一个实体；Repository 按连接类型分方法。
+type SyncerUserLink struct {
+	ID            int64     `db:"id" json:"id"`
+	InstitutionID int64     `db:"institution_id" json:"institution_id"`
+	SyncerID      int64     `db:"syncer_id" json:"syncer_id"`
+	LocalID       int64     `db:"user_id" json:"-"`
+	ExternalID    string    `db:"external_id" json:"external_id"`
+	Raw           []byte    `db:"raw" json:"raw,omitempty"`
+	CreatedAt     time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt     time.Time `db:"updated_at" json:"updated_at"`
+}
+
+type SyncerDepartmentLink struct {
+	ID            int64     `db:"id" json:"id"`
+	InstitutionID int64     `db:"institution_id" json:"institution_id"`
+	SyncerID      int64     `db:"syncer_id" json:"syncer_id"`
+	LocalID       int64     `db:"department_id" json:"-"`
+	ExternalID    string    `db:"external_id" json:"external_id"`
+	Raw           []byte    `db:"raw" json:"raw,omitempty"`
+	CreatedAt     time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt     time.Time `db:"updated_at" json:"updated_at"`
+}
+
+type SyncerJobTitleLink struct {
+	ID            int64     `db:"id" json:"id"`
+	InstitutionID int64     `db:"institution_id" json:"institution_id"`
+	SyncerID      int64     `db:"syncer_id" json:"syncer_id"`
+	LocalID       int64     `db:"job_title_id" json:"-"`
+	ExternalID    string    `db:"external_id" json:"external_id"`
+	Raw           []byte    `db:"raw" json:"raw,omitempty"`
+	CreatedAt     time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt     time.Time `db:"updated_at" json:"updated_at"`
+}
+
+type SyncerJobLevelLink struct {
+	ID            int64     `db:"id" json:"id"`
+	InstitutionID int64     `db:"institution_id" json:"institution_id"`
+	SyncerID      int64     `db:"syncer_id" json:"syncer_id"`
+	LocalID       int64     `db:"job_level_id" json:"-"`
+	ExternalID    string    `db:"external_id" json:"external_id"`
+	Raw           []byte    `db:"raw" json:"raw,omitempty"`
+	CreatedAt     time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt     time.Time `db:"updated_at" json:"updated_at"`
+}
+
+// ExternalIdentityRef 某本地对象在某个身份连接下的外部身份（详情页展示 + 排障用）。
+// Raw 是源端报文，存它是为了"同步结果对不上时能直接看到源端给了什么"，故必须有展示点（§1 同源约束）。
+type ExternalIdentityRef struct {
+	SyncerID   int64     `json:"syncer_id"`
+	SyncerName string    `json:"syncer_name"`
+	SyncerType string    `json:"syncer_type"`
+	ExternalID string    `json:"external_id"`
+	Raw        []byte    `json:"raw,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// UserDepartment 用户 ↔ 部门的多值归属（Spec 第六阶段 Q2 = A）。
+//
+// 真相来源：多值关系只存这里；users.department_id 保留为「主部门」（is_primary = TRUE），
+// 让既有 DTO / 列表筛选 / 应用访问判定继续可用。
+type UserDepartment struct {
+	ID            int64     `db:"id" json:"id"`
+	InstitutionID int64     `db:"institution_id" json:"institution_id"`
+	UserID        int64     `db:"user_id" json:"user_id"`
+	DepartmentID  int64     `db:"department_id" json:"department_id"`
+	IsPrimary     bool      `db:"is_primary" json:"is_primary"`
+	SyncerID      *int64    `db:"syncer_id" json:"syncer_id,omitempty"`
+	CreatedAt     time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt     time.Time `db:"updated_at" json:"updated_at"`
 }
 
 // Cert 证书（用于 id_token 签名 / SAML 等）
@@ -520,11 +619,15 @@ type Cert struct {
 
 // Token 令牌（授权码 / access / refresh / id token 记录，用于内省与吊销）
 type Token struct {
-	ID            int64  `db:"id" json:"id"`
-	InstitutionID int64  `db:"institution_id" json:"institution_id"`
-	Application   string `db:"application" json:"application"`
-	User          string `db:"user" json:"user"`
-	Name          string `db:"name" json:"name"`
+	ID            int64 `db:"id" json:"id"`
+	InstitutionID int64 `db:"institution_id" json:"institution_id"`
+	// ApplicationID / UserID 主键关联（Spec Q5 = 全量主键化；见迁移 041）
+	ApplicationID *int64 `db:"application_id" json:"application_id,omitempty"`
+	UserID        *int64 `db:"user_id" json:"user_id,omitempty"`
+	// Application / User 只读 JOIN 产物（应用 code / 用户账号名），仅为保持对外契约不变
+	Application string `db:"-" json:"application,omitempty"`
+	User        string `db:"-" json:"user,omitempty"`
+	Name        string `db:"name" json:"name"`
 
 	Code                string `db:"code" json:"code"`
 	CodeChallenge       string `db:"code_challenge" json:"code_challenge"`
@@ -555,30 +658,37 @@ type Token struct {
 
 // Record 审计记录（对应 Casdoor Record）
 type Record struct {
-	ID            int64     `db:"id" json:"id"`
-	InstitutionID int64     `db:"institution_id" json:"institution_id"`
-	Name          string    `db:"name" json:"name,omitempty"`
-	ClientIP      string    `db:"client_ip" json:"client_ip,omitempty"`
-	User          string    `db:"user" json:"user,omitempty"`
-	Method        string    `db:"method" json:"method,omitempty"`
-	RequestURI    string    `db:"request_uri" json:"request_uri,omitempty"`
-	Action        string    `db:"action" json:"action,omitempty"`
-	Language      string    `db:"language" json:"language,omitempty"`
-	Object        string    `db:"object" json:"object,omitempty"`
-	Response      string    `db:"response" json:"response,omitempty"`
-	StatusCode    int       `db:"status_code" json:"status_code"`
-	Detail        string    `db:"detail" json:"detail,omitempty"`
-	IsTriggered   bool      `db:"is_triggered" json:"is_triggered"`
-	TraceID       string    `db:"trace_id" json:"trace_id,omitempty"`
-	CreatedAt     time.Time `db:"created_at" json:"created_at"`
+	ID            int64  `db:"id" json:"id"`
+	InstitutionID int64  `db:"institution_id" json:"institution_id"`
+	Name          string `db:"name" json:"name,omitempty"`
+	ClientIP      string `db:"client_ip" json:"client_ip,omitempty"`
+	// User 事件发生时的操作者名称快照（审计不可变：对象改名/删除后仍可读）
+	User string `db:"user" json:"user,omitempty"`
+	// UserID 可空主键关联（Spec Q5 第 4 批：按人精确检索；用户删除时置空，不连带删审计行）
+	UserID      *int64    `db:"user_id" json:"user_id,omitempty"`
+	Method      string    `db:"method" json:"method,omitempty"`
+	RequestURI  string    `db:"request_uri" json:"request_uri,omitempty"`
+	Action      string    `db:"action" json:"action,omitempty"`
+	Language    string    `db:"language" json:"language,omitempty"`
+	Object      string    `db:"object" json:"object,omitempty"`
+	Response    string    `db:"response" json:"response,omitempty"`
+	StatusCode  int       `db:"status_code" json:"status_code"`
+	Detail      string    `db:"detail" json:"detail,omitempty"`
+	IsTriggered bool      `db:"is_triggered" json:"is_triggered"`
+	TraceID     string    `db:"trace_id" json:"trace_id,omitempty"`
+	CreatedAt   time.Time `db:"created_at" json:"created_at"`
 }
 
 // UserIdentity 外部身份绑定（provider 账号 ↔ 本地用户）
 type UserIdentity struct {
-	ID             int64     `db:"id" json:"id"`
-	InstitutionID  int64     `db:"institution_id" json:"institution_id"`
-	User           string    `db:"user" json:"user"`
-	Provider       string    `db:"provider" json:"provider"`
+	ID            int64 `db:"id" json:"id"`
+	InstitutionID int64 `db:"institution_id" json:"institution_id"`
+	// UserID / ProviderID 主键关联（Spec Q5 第 5 批；唯一键收敛为 institution + provider + 源端 ID）
+	UserID     int64  `db:"user_id" json:"user_id"`
+	ProviderID *int64 `db:"provider_id" json:"provider_id,omitempty"`
+	// User / Provider 只读 JOIN 产物（账号名 / provider 名），仅为保持对外契约不变
+	User           string    `db:"-" json:"user,omitempty"`
+	Provider       string    `db:"-" json:"provider,omitempty"`
 	ProviderUserID string    `db:"provider_user_id" json:"provider_user_id"`
 	Email          string    `db:"email" json:"email,omitempty"`
 	CreatedAt      time.Time `db:"created_at" json:"created_at"`
@@ -696,11 +806,14 @@ type SyncConfig struct {
 // 与 Syncer（上游目录拉取）相反：Connector 把本地账号推送到下游应用。
 // 复用 service/syncer 的 HTTP 客户端基础设施。
 type Connector struct {
-	ID            int64  `db:"id" json:"id"`
-	InstitutionID int64  `db:"institution_id" json:"institution_id"`
-	Application   string `db:"application" json:"application"` // 关联应用标识（code）；一个应用只能绑定一个连接器
-	Name          string `db:"name" json:"name"`
-	DisplayName   string `db:"display_name" json:"display_name"`
+	ID            int64 `db:"id" json:"id"`
+	InstitutionID int64 `db:"institution_id" json:"institution_id"`
+	// ApplicationID 关联应用主键（Spec Q5：存储只认主键）；nil = 通用连接器
+	ApplicationID *int64 `db:"application_id" json:"application_id,omitempty"`
+	// Application 只读 JOIN 产物（应用 code），仅为保持对外契约不变
+	Application string `db:"-" json:"application,omitempty"`
+	Name        string `db:"name" json:"name"`
+	DisplayName string `db:"display_name" json:"display_name"`
 	// Type 连接器类型（http | dingtalk | lark | wecom | ldap），决定使用哪个 provisioner 实现
 	Type string `db:"type" json:"type"`
 
@@ -715,8 +828,7 @@ type Connector struct {
 	// HasSecrets 各敏感键是否已配置（响应只表达"已配置"，不下发明文）
 	HasSecrets map[string]bool `db:"-" json:"-"`
 
-	JustInTime bool   `db:"just_in_time" json:"just_in_time"` // 首次登录即时建号（与账号策略 createWhen=jit 的归并见 Spec FR-10）
-	State      string `db:"state" json:"state"`               // active | disabled
+	State string `db:"state" json:"state"` // active | disabled
 
 	LastRunTime *time.Time `db:"last_run_time" json:"last_run_time"`
 	LastStatus  string     `db:"last_status" json:"last_status"` // idle | success | failed
@@ -729,12 +841,15 @@ type Connector struct {
 // AccountStrategy 账号策略（对应 MaxKey 的 AccountsStrategy）。
 // mapping：本地属性 → 下游属性；policy：何时建号 / 何时回收。
 type AccountStrategy struct {
-	ID            int64  `db:"id" json:"id"`
-	InstitutionID int64  `db:"institution_id" json:"institution_id"`
-	Application   string `db:"application" json:"application"` // 关联应用名（空 = 租户内默认策略）
-	Name          string `db:"name" json:"name"`
-	DisplayName   string `db:"display_name" json:"display_name"`
-	IsEnabled     bool   `db:"is_enabled" json:"is_enabled"`
+	ID            int64 `db:"id" json:"id"`
+	InstitutionID int64 `db:"institution_id" json:"institution_id"`
+	// ApplicationID 关联应用主键；nil = 租户内默认策略
+	ApplicationID *int64 `db:"application_id" json:"application_id,omitempty"`
+	// Application 只读 JOIN 产物（应用 code），仅为保持对外契约不变
+	Application string `db:"-" json:"application,omitempty"`
+	Name        string `db:"name" json:"name"`
+	DisplayName string `db:"display_name" json:"display_name"`
+	IsEnabled   bool   `db:"is_enabled" json:"is_enabled"`
 
 	Mapping map[string]string `db:"mapping" json:"mapping"` // 本地属性 → 下游属性
 	Policy  map[string]string `db:"policy" json:"policy"`   // 建号/回收触发策略
@@ -743,14 +858,19 @@ type AccountStrategy struct {
 	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
 }
 
-// AppAccount 应用账号（本地用户 × 应用 → 下游账号，对应 MaxKey 的 mxk_accounts）。
+// ApplicationAccount 应用账号（本地用户 × 应用 → 下游账号，对应 MaxKey 的 mxk_accounts）。
 // 幂等键：(institution, application, user)。
-type AppAccount struct {
-	ID            int64  `db:"id" json:"id"`
-	InstitutionID int64  `db:"institution_id" json:"institution_id"`
-	Application   string `db:"application" json:"application"`
-	User          string `db:"user" json:"user"`
-	Username      string `db:"username" json:"username"` // 本地用户名（= users.name）
+type ApplicationAccount struct {
+	ID            int64 `db:"id" json:"id"`
+	InstitutionID int64 `db:"institution_id" json:"institution_id"`
+	// ApplicationID / UserID 主键关联（Spec Q5 第 3 批；幂等键改为 (institution_id, application_id, user_id)）
+	ApplicationID *int64 `db:"application_id" json:"application_id,omitempty"`
+	UserID        *int64 `db:"user_id" json:"user_id,omitempty"`
+	// Application / User 只读 JOIN 产物（应用 code / 用户账号名），仅为保持对外契约不变
+	Application string `db:"-" json:"application,omitempty"`
+	User        string `db:"-" json:"user,omitempty"`
+
+	Username string `db:"username" json:"username"` // 本地用户名快照（= users.name）
 
 	RelatedUsername string `db:"related_username" json:"related_username"` // 下游应用中的账号名
 	// HasPassword 建号时是否向下游设置过初始口令。
@@ -767,15 +887,19 @@ type AppAccount struct {
 
 // ProvisionHistory 供给历史（对应 MaxKey 的 mxk_history_provisions）。
 type ProvisionHistory struct {
-	ID            int64     `db:"id" json:"id"`
-	InstitutionID int64     `db:"institution_id" json:"institution_id"`
-	Connector     string    `db:"connector" json:"connector"`
-	Application   string    `db:"application" json:"application"`
-	User          string    `db:"user" json:"user"`
-	Action        string    `db:"action" json:"action"` // create | update | disable | delete | retry
-	Status        string    `db:"status" json:"status"` // success | failed | pending
-	Message       string    `db:"message" json:"message,omitempty"`
-	CreatedAt     time.Time `db:"created_at" json:"created_at"`
+	ID            int64  `db:"id" json:"id"`
+	InstitutionID int64  `db:"institution_id" json:"institution_id"`
+	Connector     string `db:"connector" json:"connector"`
+	// ApplicationID / UserID 主键关联（可空：对象删除后保留历史行）
+	ApplicationID *int64 `db:"application_id" json:"application_id,omitempty"`
+	UserID        *int64 `db:"user_id" json:"user_id,omitempty"`
+	// Application / User 只读 JOIN 产物，仅为保持对外契约不变
+	Application string    `db:"-" json:"application,omitempty"`
+	User        string    `db:"-" json:"user,omitempty"`
+	Action      string    `db:"action" json:"action"` // create | update | disable | delete | retry
+	Status      string    `db:"status" json:"status"` // success | failed | pending
+	Message     string    `db:"message" json:"message,omitempty"`
+	CreatedAt   time.Time `db:"created_at" json:"created_at"`
 }
 
 // ── asyncd：任务定义 / 执行实例 / 执行记录 / 执行器实例 ───────────────────────────

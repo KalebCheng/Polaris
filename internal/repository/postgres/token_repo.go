@@ -8,10 +8,17 @@ import (
 	"polaris/pkg/dbclient"
 )
 
-const tokenColumns = `id, institution_id, application, "user", name, code, code_challenge,
-	code_challenge_method, code_is_used, code_expire_in, code_scope, code_redirect_uri, access_token,
-	refresh_token, id_token, access_token_hash, refresh_token_hash, id_token_hash, expires_in, scope,
-	token_type, grant_type, resource, session_id, revoked, expire_time, created_at`
+const tokenColumns = `t.id, t.institution_id, t.application_id, t.user_id, t.name, t.code, t.code_challenge,
+	t.code_challenge_method, t.code_is_used, t.code_expire_in, t.code_scope, t.code_redirect_uri, t.access_token,
+	t.refresh_token, t.id_token, t.access_token_hash, t.refresh_token_hash, t.id_token_hash, t.expires_in, t.scope,
+	t.token_type, t.grant_type, t.resource, t.session_id, t.revoked, t.expire_time, t.created_at`
+
+// tokenSelect：读取时把主键解析回展示名（应用 code / 用户账号名）。
+// 存储只认主键（§3.8），但对外契约保持 `application` / `user` 名称不变——前端与既有客户端零改动。
+const tokenSelect = `SELECT ` + tokenColumns + `,
+	COALESCE((SELECT a.code FROM applications a WHERE a.id = t.application_id), '') AS application,
+	COALESCE((SELECT u.name FROM users u WHERE u.id = t.user_id), '') AS "user"
+	FROM tokens t`
 
 // TokenRepository 令牌仓库（PostgreSQL 实现）
 type TokenRepository struct{ db *dbclient.Client }
@@ -21,11 +28,11 @@ func NewTokenRepository(db *dbclient.Client) *TokenRepository { return &TokenRep
 
 func scanToken(row interface{ Scan(...interface{}) error }) (*repository.Token, error) {
 	var t repository.Token
-	err := row.Scan(&t.ID, &t.InstitutionID, &t.Application, &t.User, &t.Name, &t.Code, &t.CodeChallenge,
+	err := row.Scan(&t.ID, &t.InstitutionID, &t.ApplicationID, &t.UserID, &t.Name, &t.Code, &t.CodeChallenge,
 		&t.CodeChallengeMethod, &t.CodeIsUsed, &t.CodeExpireIn, &t.CodeScope, &t.CodeRedirectURI,
 		&t.AccessToken, &t.RefreshToken, &t.IDToken, &t.AccessTokenHash, &t.RefreshTokenHash,
 		&t.IDTokenHash, &t.ExpiresIn, &t.Scope, &t.TokenType, &t.GrantType, &t.Resource, &t.SessionID,
-		&t.Revoked, &t.ExpireTime, &t.CreatedAt)
+		&t.Revoked, &t.ExpireTime, &t.CreatedAt, &t.Application, &t.User)
 	if err != nil {
 		return nil, err
 	}
@@ -35,13 +42,13 @@ func scanToken(row interface{ Scan(...interface{}) error }) (*repository.Token, 
 // Create 创建令牌记录
 func (r *TokenRepository) Create(ctx context.Context, t *repository.Token) (int64, error) {
 	var id int64
-	err := r.db.QueryRow(ctx, `INSERT INTO tokens (institution_id, application, "user", name, code,
+	err := r.db.QueryRow(ctx, `INSERT INTO tokens (institution_id, application_id, user_id, name, code,
 		code_challenge, code_challenge_method, code_is_used, code_expire_in, code_scope, code_redirect_uri,
 		access_token, refresh_token, id_token, access_token_hash, refresh_token_hash, id_token_hash,
 		expires_in, scope, token_type, grant_type, resource, session_id, revoked, expire_time)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
 		RETURNING id`,
-		t.InstitutionID, t.Application, t.User, t.Name, t.Code, t.CodeChallenge, t.CodeChallengeMethod,
+		t.InstitutionID, t.ApplicationID, t.UserID, t.Name, t.Code, t.CodeChallenge, t.CodeChallengeMethod,
 		t.CodeIsUsed, t.CodeExpireIn, t.CodeScope, t.CodeRedirectURI, t.AccessToken, t.RefreshToken,
 		t.IDToken, t.AccessTokenHash, t.RefreshTokenHash, t.IDTokenHash, t.ExpiresIn, t.Scope,
 		defaultStr(t.TokenType, "Bearer"), t.GrantType, t.Resource, t.SessionID, t.Revoked, t.ExpireTime,
@@ -55,7 +62,7 @@ func (r *TokenRepository) Create(ctx context.Context, t *repository.Token) (int6
 
 // GetByID 按 ID 查询
 func (r *TokenRepository) GetByID(ctx context.Context, id int64) (*repository.Token, error) {
-	t, err := scanToken(r.db.QueryRow(ctx, `SELECT `+tokenColumns+` FROM tokens WHERE id=$1`, id))
+	t, err := scanToken(r.db.QueryRow(ctx, tokenSelect+` WHERE t.id=$1`, id))
 	if err != nil {
 		return nil, mapError(err, "token not found")
 	}
@@ -64,7 +71,7 @@ func (r *TokenRepository) GetByID(ctx context.Context, id int64) (*repository.To
 
 // GetByName 按组织+名称查询
 func (r *TokenRepository) GetByName(ctx context.Context, institutionID int64, name string) (*repository.Token, error) {
-	t, err := scanToken(r.db.QueryRow(ctx, `SELECT `+tokenColumns+` FROM tokens WHERE institution_id=$1 AND name=$2`, institutionID, name))
+	t, err := scanToken(r.db.QueryRow(ctx, tokenSelect+` WHERE t.institution_id=$1 AND t.name=$2`, institutionID, name))
 	if err != nil {
 		return nil, mapError(err, "token not found")
 	}
@@ -73,7 +80,7 @@ func (r *TokenRepository) GetByName(ctx context.Context, institutionID int64, na
 
 // GetByCode 按授权码查询
 func (r *TokenRepository) GetByCode(ctx context.Context, code string) (*repository.Token, error) {
-	t, err := scanToken(r.db.QueryRow(ctx, `SELECT `+tokenColumns+` FROM tokens WHERE code=$1`, code))
+	t, err := scanToken(r.db.QueryRow(ctx, tokenSelect+` WHERE t.code=$1`, code))
 	if err != nil {
 		return nil, mapError(err, "token not found")
 	}
@@ -82,7 +89,7 @@ func (r *TokenRepository) GetByCode(ctx context.Context, code string) (*reposito
 
 // GetByAccessToken 按 access_token 查询
 func (r *TokenRepository) GetByAccessToken(ctx context.Context, accessToken string) (*repository.Token, error) {
-	t, err := scanToken(r.db.QueryRow(ctx, `SELECT `+tokenColumns+` FROM tokens WHERE access_token=$1`, accessToken))
+	t, err := scanToken(r.db.QueryRow(ctx, tokenSelect+` WHERE t.access_token=$1`, accessToken))
 	if err != nil {
 		return nil, mapError(err, "token not found")
 	}
@@ -91,7 +98,7 @@ func (r *TokenRepository) GetByAccessToken(ctx context.Context, accessToken stri
 
 // GetByRefreshToken 按 refresh_token 查询
 func (r *TokenRepository) GetByRefreshToken(ctx context.Context, refreshToken string) (*repository.Token, error) {
-	t, err := scanToken(r.db.QueryRow(ctx, `SELECT `+tokenColumns+` FROM tokens WHERE refresh_token=$1`, refreshToken))
+	t, err := scanToken(r.db.QueryRow(ctx, tokenSelect+` WHERE t.refresh_token=$1`, refreshToken))
 	if err != nil {
 		return nil, mapError(err, "token not found")
 	}
@@ -135,15 +142,17 @@ func (r *TokenRepository) Delete(ctx context.Context, id int64) error {
 func (r *TokenRepository) List(ctx context.Context, q repository.ListQuery) ([]*repository.Token, error) {
 	b := &queryBuilder{}
 	if q.InstitutionID != 0 {
-		b.add(`institution_id=` + b.arg(q.InstitutionID))
+		b.add(`t.institution_id=` + b.arg(q.InstitutionID))
 	}
 	if q.Field != "" && q.Value != "" {
-		b.add(q.Field + `=` + b.arg(q.Value))
+		// 过滤字段允许 application_id / user_id（主键）；名称过滤走关键词
+		b.add(`t.` + q.Field + `=` + b.arg(idFilterValue(q.Field, q.Value)))
 	} else if q.Keyword != "" {
 		p := b.arg(like(q.Keyword))
-		b.add(`(name ILIKE ` + p + ` OR "user" ILIKE ` + p + ` OR application ILIKE ` + p + `)`)
+		b.add(`(t.name ILIKE ` + p + ` OR EXISTS (SELECT 1 FROM users u WHERE u.id = t.user_id AND u.name ILIKE ` + p + `)
+			OR EXISTS (SELECT 1 FROM applications a WHERE a.id = t.application_id AND a.code ILIKE ` + p + `))`)
 	}
-	sql := `SELECT ` + tokenColumns + ` FROM tokens` + b.where() + b.orderLimit("created_at DESC", q.Offset, q.Limit)
+	sql := tokenSelect + b.where() + b.orderLimit("t.created_at DESC", q.Offset, q.Limit)
 	rows, err := r.db.Query(ctx, sql, b.args...)
 	if err != nil {
 		return nil, mapError(err, "")
@@ -164,24 +173,25 @@ func (r *TokenRepository) List(ctx context.Context, q repository.ListQuery) ([]*
 func (r *TokenRepository) Count(ctx context.Context, q repository.ListQuery) (int64, error) {
 	b := &queryBuilder{}
 	if q.InstitutionID != 0 {
-		b.add(`institution_id=` + b.arg(q.InstitutionID))
+		b.add(`t.institution_id=` + b.arg(q.InstitutionID))
 	}
 	if q.Field != "" && q.Value != "" {
-		b.add(q.Field + `=` + b.arg(q.Value))
+		b.add(`t.` + q.Field + `=` + b.arg(idFilterValue(q.Field, q.Value)))
 	} else if q.Keyword != "" {
 		p := b.arg(like(q.Keyword))
-		b.add(`(name ILIKE ` + p + ` OR "user" ILIKE ` + p + ` OR application ILIKE ` + p + `)`)
+		b.add(`(t.name ILIKE ` + p + ` OR EXISTS (SELECT 1 FROM users u WHERE u.id = t.user_id AND u.name ILIKE ` + p + `)
+			OR EXISTS (SELECT 1 FROM applications a WHERE a.id = t.application_id AND a.code ILIKE ` + p + `))`)
 	}
 	var n int64
-	err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM tokens`+b.where(), b.args...).Scan(&n)
+	err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM tokens t`+b.where(), b.args...).Scan(&n)
 	return n, mapError(err, "")
 }
 
 // ListExpired 扫描过期令牌（清理任务）
 func (r *TokenRepository) ListExpired(ctx context.Context, before time.Time, limit int) ([]*repository.Token, error) {
-	rows, err := r.db.Query(ctx, `SELECT `+tokenColumns+` FROM tokens
-		WHERE (expire_time IS NOT NULL AND expire_time < $1) OR created_at < $1
-		ORDER BY created_at ASC LIMIT $2`, before, limit)
+	rows, err := r.db.Query(ctx, tokenSelect+`
+		WHERE (t.expire_time IS NOT NULL AND t.expire_time < $1) OR t.created_at < $1
+		ORDER BY t.created_at ASC LIMIT $2`, before, limit)
 	if err != nil {
 		return nil, mapError(err, "")
 	}

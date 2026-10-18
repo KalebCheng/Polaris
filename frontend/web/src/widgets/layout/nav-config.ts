@@ -1,18 +1,16 @@
 import {
-  FileClock,
   HardDrive,
   Layers3,
   LayoutDashboard,
   Network,
   PlugZap,
   ScrollText,
-  Shuffle,
   Timer,
-  UserCog,
   Users,
   UsersRound,
   Waypoints,
   type LucideIcon,
+  Ruler,
 } from 'lucide-react'
 
 /** 顶部一级导航项（平台级，跨组织） */
@@ -148,8 +146,9 @@ export const workspaceSections: NavSection[] = [
     labelKey: 'nav.directory',
     items: [
       { to: '/users', labelKey: 'nav.users', icon: Users, resource: 'user' },
-      { to: '/groups', labelKey: 'nav.groups', icon: UsersRound, resource: 'group' },
+      { to: '/job-titles', labelKey: 'nav.jobTitles', icon: UsersRound, resource: 'job_title' },
       { to: '/departments', labelKey: 'nav.departments', icon: Network, resource: 'department' },
+      { to: '/job-levels', labelKey: 'nav.jobLevels', icon: Ruler, resource: 'job_level' },
     ],
   },
   {
@@ -158,14 +157,6 @@ export const workspaceSections: NavSection[] = [
       { to: '/applications', labelKey: 'nav.applications', icon: Layers3, resource: 'application' },
       { to: '/providers', labelKey: 'nav.providers', icon: Waypoints, resource: 'provider' },
       { to: '/connections', labelKey: 'nav.connections', icon: PlugZap, resource: 'syncer' },
-    ],
-  },
-  {
-    labelKey: 'nav.lifecycle',
-    items: [
-      { to: '/account-strategies', labelKey: 'nav.accountStrategies', icon: Shuffle, resource: 'account_strategy' },
-      { to: '/app-accounts', labelKey: 'nav.appAccounts', icon: UserCog, resource: 'app_account' },
-      { to: '/provisioning', labelKey: 'nav.provisioning', icon: FileClock, resource: 'provision_history' },
     ],
   },
 ]

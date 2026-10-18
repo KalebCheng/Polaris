@@ -26,6 +26,8 @@ type UserHandler struct {
 	records    *service.RecordService
 	tokenSvc   *service.TokenService
 	storageSvc *service.StorageService
+	// links 外部身份映射（Spec FR-1：详情页展示源端 ID 与报文，排障用）
+	links repository.SyncerLinkRepository
 }
 
 // NewUserHandler 创建用户处理器
@@ -37,9 +39,10 @@ func NewUserHandler(
 	records *service.RecordService,
 	tokenSvc *service.TokenService,
 	storageSvc *service.StorageService,
+	links repository.SyncerLinkRepository,
 ) *UserHandler {
 	return &UserHandler{
-		svc: svc, lockouts: lockouts, sessions: sessions,
+		svc: svc, lockouts: lockouts, sessions: sessions, links: links,
 		provision: provision, records: records, tokenSvc: tokenSvc, storageSvc: storageSvc,
 	}
 }
@@ -119,6 +122,13 @@ func userListQuery(c *gin.Context, offset, limit int) (repository.ListQuery, err
 	default:
 		return q, bizerrors.ErrInvalidParams.WithDetail("status", status)
 	}
+	if raw := query(c, "job_level_id"); raw != "" {
+		levelID, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || levelID <= 0 {
+			return q, bizerrors.ErrInvalidParams.WithDetail("job_level_id", raw)
+		}
+		q.Filters = append(q.Filters, repository.ColumnFilter{Field: "job_level_id", Value: levelID})
+	}
 	if raw := query(c, "mfa"); raw != "" {
 		bound, err := strconv.ParseBool(raw)
 		if err != nil {
@@ -143,8 +153,15 @@ func (h *UserHandler) List(c *gin.Context) {
 		return
 	}
 	departments, _ := h.svc.DepartmentLabels(c.Request.Context(), instID(c))
+	levels, _ := h.svc.JobLevelLabels(c.Request.Context(), instID(c))
+	dtos := toUserDTOsWithDepartments(items, departments)
+	for _, dto := range dtos {
+		if dto.JobLevelID != nil {
+			dto.JobLevel = levels[*dto.JobLevelID]
+		}
+	}
 	bizerrors.RenderSuccess(c, gin.H{
-		"items": toUserDTOsWithDepartments(items, departments),
+		"items": dtos,
 		"total": total, "page": page, "size": size,
 	})
 }
@@ -157,7 +174,24 @@ func (h *UserHandler) Get(c *gin.Context) {
 		return
 	}
 	departments, _ := h.svc.DepartmentLabels(c.Request.Context(), instID(c))
-	bizerrors.RenderSuccess(c, toUserDTOWithDepartments(u, departments))
+	dto := toUserDTOWithDepartments(u, departments)
+	if u.JobLevelID != nil {
+		if levels, err := h.svc.JobLevelLabels(c.Request.Context(), instID(c)); err == nil {
+			dto.JobLevel = levels[*u.JobLevelID]
+		}
+	}
+	// 多值部门归属（Spec Q2 = A）：详情/编辑回显需要，故只在详情端点补一次查询
+	if ids, err := h.svc.DepartmentIDs(c.Request.Context(), instID(c), h.nameByID(c)); err == nil {
+		dto.DepartmentIDs = ids
+		paths := make([]string, 0, len(ids))
+		for _, id := range ids {
+			if label := departments[id]; label != "" {
+				paths = append(paths, label)
+			}
+		}
+		dto.DepartmentPaths = paths
+	}
+	bizerrors.RenderSuccess(c, dto)
 }
 
 // createUserRequest 创建用户请求体。
@@ -173,6 +207,8 @@ type createUserRequest struct {
 	InstitutionID int64  `json:"institution_id"`
 	Name          string `json:"name" binding:"required"`
 	DepartmentID  *int64 `json:"department_id"`
+	// JobLevelID 职级（Spec Q4.1 = A：仅属性）
+	JobLevelID *int64 `json:"job_level_id"`
 	// 管理员标记：创建时可授予（服务层会做防呆与 type 派生）
 	IsAdmin bool `json:"is_admin"`
 	// 初始密码：留空则用组织默认密码（若已配置）
@@ -233,6 +269,7 @@ func (h *UserHandler) Create(c *gin.Context) {
 			Birthday:      req.Birthday,
 			Education:     req.Education,
 			DepartmentID:  req.DepartmentID,
+			JobLevelID:    req.JobLevelID,
 			IsAdmin:       req.IsAdmin,
 		},
 		Password: req.Password,
@@ -260,15 +297,33 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 	bizerrors.RenderSuccess(c, toUserDTOWithDepartments(updated, departments))
 }
 
-// SetDepartment 变更用户部门归属
-func (h *UserHandler) SetDepartment(c *gin.Context) {
+// SetDepartments 变更用户部门归属（多值；Spec 第六阶段 Q2 = A）。
+// primary_department_id 省略时取 department_ids 的第一个。
+func (h *UserHandler) SetDepartments(c *gin.Context) {
 	var req struct {
-		DepartmentID *int64 `json:"department_id"`
+		DepartmentIDs       []int64 `json:"department_ids"`
+		PrimaryDepartmentID int64   `json:"primary_department_id"`
 	}
 	if !bindJSON(c, &req) {
 		return
 	}
-	if err := h.svc.SetDepartment(c.Request.Context(), currentUser(c), instID(c), h.nameByID(c), req.DepartmentID); err != nil {
+	if err := h.svc.SetDepartments(c.Request.Context(), currentUser(c), instID(c), h.nameByID(c),
+		req.DepartmentIDs, req.PrimaryDepartmentID); err != nil {
+		bizerrors.Fail(c, err)
+		return
+	}
+	bizerrors.RenderSuccess(c, gin.H{"status": "ok"})
+}
+
+// SetJobLevel 设置用户职级（Spec Q4.1 = A：仅属性，不参与授权）
+func (h *UserHandler) SetJobLevel(c *gin.Context) {
+	var req struct {
+		JobLevelID *int64 `json:"job_level_id"`
+	}
+	if !bindJSON(c, &req) {
+		return
+	}
+	if err := h.svc.SetJobLevel(c.Request.Context(), currentUser(c), instID(c), h.nameByID(c), req.JobLevelID); err != nil {
 		bizerrors.Fail(c, err)
 		return
 	}
@@ -388,29 +443,45 @@ func (h *UserHandler) SetRoles(c *gin.Context) {
 	bizerrors.RenderSuccess(c, gin.H{"status": "ok"})
 }
 
-// SetGroups 整体替换用户的用户组归属
-func (h *UserHandler) SetGroups(c *gin.Context) {
+// SetJobTitles 整体替换用户的职务任职关系
+func (h *UserHandler) SetJobTitles(c *gin.Context) {
 	var req struct {
-		Groups []string `json:"groups"`
+		JobTitles []string `json:"job_titles"`
 	}
 	if !bindJSON(c, &req) {
 		return
 	}
-	if err := h.svc.SetUserGroups(c.Request.Context(), currentUser(c), instID(c), h.nameByID(c), req.Groups); err != nil {
+	if err := h.svc.SetUserJobTitles(c.Request.Context(), currentUser(c), instID(c), h.nameByID(c), req.JobTitles); err != nil {
 		bizerrors.Fail(c, err)
 		return
 	}
 	bizerrors.RenderSuccess(c, gin.H{"status": "ok"})
 }
 
-// AppAccounts 该用户的下游应用账号（只读；创建/重试仍在「应用账号」页）
-func (h *UserHandler) AppAccounts(c *gin.Context) {
-	items, err := h.provision.ListAppAccountsForUser(c.Request.Context(), instID(c), h.nameByID(c))
+// ExternalIdentities 该用户在身份连接下的外部身份（源端 ID + 源端报文，供排障）。
+// 这是 `syncer_*_links.raw` 的**展示点**：存了源端报文就必须能看见，否则就是死数据（§1 同源约束）。
+func (h *UserHandler) ExternalIdentities(c *gin.Context) {
+	u, err := h.svc.Get(c.Request.Context(), instID(c), h.nameByID(c))
 	if err != nil {
 		bizerrors.Fail(c, err)
 		return
 	}
-	bizerrors.RenderSuccess(c, gin.H{"items": toAppAccountDTOs(items)})
+	items, err := h.links.ListForLocal(c.Request.Context(), "user", u.ID)
+	if err != nil {
+		bizerrors.Fail(c, err)
+		return
+	}
+	bizerrors.RenderSuccess(c, gin.H{"items": items})
+}
+
+// ApplicationAccounts 该用户的下游应用账号（只读；创建/重试仍在「应用账号」页）
+func (h *UserHandler) ApplicationAccounts(c *gin.Context) {
+	items, err := h.provision.ListApplicationAccountsForUser(c.Request.Context(), instID(c), h.nameByID(c))
+	if err != nil {
+		bizerrors.Fail(c, err)
+		return
+	}
+	bizerrors.RenderSuccess(c, gin.H{"items": toApplicationAccountDTOs(items)})
 }
 
 // ProvisionHistory 该用户的供给历史（分页）

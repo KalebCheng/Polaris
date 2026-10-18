@@ -29,7 +29,8 @@ func (s *InstitutionService) Stats(ctx context.Context, id int64) (*InstitutionS
 	q := repository.ListQuery{InstitutionID: id}
 	collectors := map[string]func(context.Context, repository.ListQuery) (int64, error){
 		"users":        s.users.Count,
-		"groups":       s.groups.Count,
+		"job_titles":   s.jobTitles.Count,
+		"job_levels":   s.jobLevels.Count,
 		"roles":        s.roles.Count,
 		"permissions":  s.permissions.Count,
 		"applications": s.apps.Count,

@@ -38,6 +38,8 @@ type UpdateUserProfileInput struct {
 	Gender        *string `json:"gender"`
 	Birthday      *string `json:"birthday"`
 	Education     *string `json:"education"`
+	// JobLevelID 职级（Spec Q4.1 = A：仅属性，不参与授权；nil = 本次不修改）
+	JobLevelID *int64 `json:"job_level_id"`
 }
 
 // EffectivePermission 单条有效权限（含来源标注）。
@@ -46,7 +48,7 @@ type EffectivePermission struct {
 	Resource string `json:"resource"`
 	Action   string `json:"action"`
 	Effect   string `json:"effect"`
-	// Sources 来源标识：user（直接绑定）/ role:<角色名> / group:<用户组名>
+	// Sources 来源标识：user（直接绑定）/ role:<角色名> / job_title:<职务名>
 	Sources []string `json:"sources"`
 }
 
@@ -54,7 +56,7 @@ type EffectivePermission struct {
 type UserAuthorizations struct {
 	DirectRoles    []string `json:"direct_roles"`
 	InheritedRoles []string `json:"inherited_roles"`
-	Groups         []string `json:"groups"`
+	JobTitles      []string `json:"job_titles"`
 	// DirectPermissions 直接绑定到该用户的权限名
 	DirectPermissions []string `json:"direct_permissions"`
 	// EffectivePermissions 判定后的"资源-动作-效果"明细（与登录会话中的有效权限同源）
@@ -117,6 +119,17 @@ func (s *UserService) UpdateProfile(ctx context.Context, actor string, instituti
 	}
 	if in.PhoneVerified != nil {
 		u.PhoneVerified = *in.PhoneVerified
+	}
+	if in.JobLevelID != nil {
+		if *in.JobLevelID == 0 {
+			u.JobLevelID = nil // 0 = 清空职级
+		} else {
+			level, err := s.levels.GetByID(ctx, *in.JobLevelID)
+			if err != nil || level.InstitutionID != institutionID {
+				return nil, bizerrors.ErrInvalidParams.WithDetail("job_level_id", *in.JobLevelID)
+			}
+			u.JobLevelID = in.JobLevelID
+		}
 	}
 	normalizeUserType(u)
 	if err := s.users.Update(ctx, u); err != nil {
@@ -191,23 +204,84 @@ func (s *UserService) SetAdmin(ctx context.Context, actor string, institutionID 
 	return nil
 }
 
-// SetDepartment 变更用户部门归属（nil = 移出部门）。
-func (s *UserService) SetDepartment(ctx context.Context, actor string, institutionID int64, name string, departmentID *int64) error {
-	if _, _, err := s.loadOrgAndUser(ctx, institutionID, name); err != nil {
+// SetDepartments 变更用户部门归属（多值；Spec 第六阶段 Q2 = A）。
+//
+// 多值关系的真相在 user_departments，users.department_id 作为「主部门」由仓库层同步维护；
+// primaryDepartmentID 为 0 时取 departmentIDs 的第一个。
+func (s *UserService) SetDepartments(
+	ctx context.Context, actor string, institutionID int64, name string, departmentIDs []int64, primaryDepartmentID int64,
+) error {
+	_, user, err := s.loadOrgAndUser(ctx, institutionID, name)
+	if err != nil {
 		return err
 	}
-	if departmentID != nil {
-		dept, err := s.depts.GetByID(ctx, *departmentID)
+	ids := make([]int64, 0, len(departmentIDs))
+	seen := map[int64]bool{}
+	for _, id := range departmentIDs {
+		if id == 0 || seen[id] {
+			continue
+		}
+		dept, err := s.depts.GetByID(ctx, id)
 		if err != nil || dept.InstitutionID != institutionID {
-			return bizerrors.ErrInvalidParams.WithDetail("department_id", *departmentID)
+			return bizerrors.ErrInvalidParams.WithDetail("department_id", id)
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if primaryDepartmentID == 0 && len(ids) > 0 {
+		primaryDepartmentID = ids[0]
+	}
+	if primaryDepartmentID != 0 && !seen[primaryDepartmentID] {
+		return bizerrors.ErrInvalidParams.WithDetail("primary_department_id", primaryDepartmentID)
+	}
+	if err := s.userDepts.ReplaceForUser(ctx, institutionID, user.ID, ids, primaryDepartmentID, nil); err != nil {
+		return err
+	}
+	s.audits.Record(ctx, actor, institutionID, "user.set_departments", name, map[string]interface{}{
+		"department_ids": ids, "primary_department_id": primaryDepartmentID,
+	})
+	return nil
+}
+
+// DepartmentIDs 返回用户的全部部门归属（主部门优先）
+// JobLevelLabels 返回组织内「职级主键 → 名称」（列表/详情展示用，一次查询）
+func (s *UserService) JobLevelLabels(ctx context.Context, institutionID int64) (map[int64]string, error) {
+	items, err := s.levels.List(ctx, repository.ListQuery{InstitutionID: institutionID, Limit: 1000})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int64]string, len(items))
+	for _, l := range items {
+		out[l.ID] = l.Name
+	}
+	return out, nil
+}
+
+func (s *UserService) DepartmentIDs(ctx context.Context, institutionID int64, name string) ([]int64, error) {
+	_, user, err := s.loadOrgAndUser(ctx, institutionID, name)
+	if err != nil {
+		return nil, err
+	}
+	return s.userDepts.DepartmentIDsForUser(ctx, user.ID)
+}
+
+// SetJobLevel 设置用户职级（nil = 清空；Spec Q4.1 = A：仅属性，不参与授权）
+func (s *UserService) SetJobLevel(ctx context.Context, actor string, institutionID int64, name string, levelID *int64) error {
+	_, user, err := s.loadOrgAndUser(ctx, institutionID, name)
+	if err != nil {
+		return err
+	}
+	if levelID != nil {
+		level, err := s.levels.GetByID(ctx, *levelID)
+		if err != nil || level.InstitutionID != institutionID {
+			return bizerrors.ErrInvalidParams.WithDetail("job_level_id", *levelID)
 		}
 	}
-	if err := s.users.SetDepartment(ctx, institutionID, name, departmentID); err != nil {
+	user.JobLevelID = levelID
+	if err := s.users.Update(ctx, user); err != nil {
 		return err
 	}
-	s.audits.Record(ctx, actor, institutionID, "user.set_department", name, map[string]interface{}{
-		"department_id": departmentID,
-	})
+	s.audits.Record(ctx, actor, institutionID, "user.set_job_level", name, map[string]interface{}{"job_level_id": levelID})
 	return nil
 }
 
@@ -249,24 +323,24 @@ func (s *UserService) SetDirectRoles(ctx context.Context, actor string, institut
 }
 
 // SetUserGroups 整体替换用户的用户组归属。
-func (s *UserService) SetUserGroups(ctx context.Context, actor string, institutionID int64, name string, groups []string) error {
+func (s *UserService) SetUserJobTitles(ctx context.Context, actor string, institutionID int64, name string, jobTitles []string) error {
 	if _, _, err := s.loadOrgAndUser(ctx, institutionID, name); err != nil {
 		return err
 	}
-	before, err := s.groups.GroupsForUser(ctx, institutionID, name)
+	before, err := s.jobTitles.JobTitlesForUser(ctx, institutionID, name)
 	if err != nil {
 		return err
 	}
-	if err := s.groups.SetGroupsForUser(ctx, institutionID, name, dedupeStrings(groups)); err != nil {
+	if err := s.jobTitles.SetJobTitlesForUser(ctx, institutionID, name, dedupeStrings(jobTitles)); err != nil {
 		return err
 	}
 	if s.sessions != nil {
 		_, _ = s.sessions.InvalidateUser(ctx, institutionID, name)
 	}
-	if added := newlyAdded(before, groups); len(added) > 0 && s.provision != nil {
+	if added := newlyAdded(before, jobTitles); len(added) > 0 && s.provision != nil {
 		s.provision.TriggerRoleGranted(ctx, institutionID, name)
 	}
-	s.audits.Record(ctx, actor, institutionID, "user.set_groups", name, map[string]interface{}{"groups": groups})
+	s.audits.Record(ctx, actor, institutionID, "user.set_job_titles", name, map[string]interface{}{"job_titles": jobTitles})
 	return nil
 }
 
@@ -283,7 +357,7 @@ func (s *UserService) Authorizations(ctx context.Context, institutionID int64, n
 	if err != nil {
 		return nil, err
 	}
-	groups, err := s.groups.GroupsForUser(ctx, institutionID, name)
+	jobTitleNames, err := s.jobTitles.JobTitlesForUser(ctx, institutionID, name)
 	if err != nil {
 		return nil, err
 	}
@@ -332,7 +406,7 @@ func (s *UserService) Authorizations(ctx context.Context, institutionID int64, n
 	return &UserAuthorizations{
 		DirectRoles:          orEmptyStrings(direct),
 		InheritedRoles:       inherited,
-		Groups:               orEmptyStrings(groups),
+		JobTitles:            orEmptyStrings(jobTitleNames),
 		DirectPermissions:    directPermissions,
 		EffectivePermissions: effective,
 	}, nil

@@ -58,6 +58,9 @@ vi.mock('../api', () => ({
       size: 200,
     })),
   },
+  jobLevelApi: {
+    list: vi.fn(async () => ({ items: [], total: 0, page: 1, size: 200 })),
+  },
 }))
 
 function renderPage(path: string) {

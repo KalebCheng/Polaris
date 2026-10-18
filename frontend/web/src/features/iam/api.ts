@@ -10,7 +10,8 @@ import type {
   Cert,
   Connector,
   Department,
-  Group,
+  JobTitle,
+  JobLevel,
   Institution,
   InstitutionInput,
   PageData,
@@ -29,10 +30,11 @@ import type {
   UserAuthorizations,
   UserProfileInput,
   UserSecurity,
-  GroupDetail,
+  JobTitleDetail,
   InstitutionStats,
   SyncerPreview,
   ProviderCatalog,
+  ExternalIdentityRef,
   UserIdentity,
   ConnectionCatalog,
 } from '@/shared/api/types'
@@ -65,6 +67,10 @@ export interface ListParams {
   category?: string
   /** scope=platform 时跨组织列出（平台级资源：角色 / 权限 / 证书 / 令牌 / 审计） */
   scope?: 'platform'
+  /** 应用主键过滤（账号策略 / 应用账号 / 供给历史；应用详情页使用） */
+  application_id?: number
+  /** 连接器名称过滤（出方向连接的「查看同步记录」使用） */
+  connector?: string
 }
 
 function toQuery(params: ListParams = {}) {
@@ -76,6 +82,8 @@ function toQuery(params: ListParams = {}) {
     page: params.page ?? 1,
     size: params.size ?? 20,
     scope: params.scope,
+    application_id: params.application_id,
+    connector: params.connector,
   }
 }
 
@@ -139,8 +147,16 @@ export const userApi = {
     api.post<User>('/users', body, orgQ()),
   // 资料部分更新：只提交需要变更的字段（未提交的字段一律保持原值）
   updateProfile: (id: number, body: UserProfileInput) => api.put<User>(`/users/${id}`, body, orgQ()),
-  setDepartment: (id: number, departmentId: number | null) =>
-    api.put<void>(`/users/${id}/department`, { department_id: departmentId }, orgQ()),
+  /** 部门归属（多值，Spec Q2 = A）：primary 省略时取第一个 */
+  setDepartments: (id: number, departmentIds: number[], primaryDepartmentId?: number) =>
+    api.put<void>(
+      `/users/${id}/departments`,
+      { department_ids: departmentIds, primary_department_id: primaryDepartmentId ?? departmentIds[0] ?? 0 },
+      orgQ(),
+    ),
+  /** 职级（Spec Q4.1 = A：仅属性，不参与授权；0 = 清空） */
+  setJobLevel: (id: number, jobLevelId: number | null) =>
+    api.put<void>(`/users/${id}/job-level`, { job_level_id: jobLevelId ?? 0 }, orgQ()),
   setAdmin: (id: number, isAdmin: boolean) => api.put<void>(`/users/${id}/admin`, { is_admin: isAdmin }, orgQ()),
   setDisabled: (id: number, disabled: boolean) =>
     api.post<void>(`/users/${id}/${disabled ? 'disable' : 'enable'}`, {}, orgQ()),
@@ -154,13 +170,16 @@ export const userApi = {
   security: (id: number) => api.get<UserSecurity>(`/users/${id}/security`, orgQ()),
   authorizations: (id: number) => api.get<UserAuthorizations>(`/users/${id}/authorizations`, orgQ()),
   setRoles: (id: number, roles: string[]) => api.put<void>(`/users/${id}/roles`, { roles }, orgQ()),
-  setGroups: (id: number, groups: string[]) => api.put<void>(`/users/${id}/groups`, { groups }, orgQ()),
-  appAccounts: (id: number) => api.get<{ items: AppAccount[] }>(`/users/${id}/app-accounts`, orgQ()),
+  setJobTitles: (id: number, jobTitles: string[]) => api.put<void>(`/users/${id}/job-titles`, { job_titles: jobTitles }, orgQ()),
+  appAccounts: (id: number) => api.get<{ items: AppAccount[] }>(`/users/${id}/application-accounts`, orgQ()),
   provisionHistory: (id: number, params?: ListParams) =>
     api.get<PageData<ProvisionHistory>>(`/users/${id}/provision-history`, orgQ(toQuery(params))),
   records: (id: number, params?: ListParams) =>
     api.get<PageData<AuditRecord>>(`/users/${id}/records`, orgQ(toQuery(params))),
   identities: (id: number) => api.get<{ items: UserIdentity[] }>(`/users/${id}/identities`, orgQ()),
+  /** 外部身份映射（身份连接侧）：源端 ID + 源端报文，排障用 */
+  externalIdentities: (id: number) =>
+    api.get<{ items: ExternalIdentityRef[] }>(`/users/${id}/external-identities`, orgQ()),
   unbindIdentity: (id: number, identityId: number) =>
     api.del<void>(`/users/${id}/identities/${identityId}`, orgQ()),
   issueApiKey: (id: number, body: { name?: string; expire_in_hours?: number }) =>
@@ -181,7 +200,7 @@ export const applicationApi = {
     api.put<ApplicationAccess>(`/applications/${id}/access`, body, orgQ()),
   /**
    * 可授权主体候选（按组织；新建应用时还没有主键也能取）。
-   * 独立端点而非复用 /users、/groups、/departments：应用管理员通常没有那些读权限，
+   * 独立端点而非复用 /users、/job-titles、/departments：应用管理员通常没有那些读权限，
    * 复用会让选择器空转——"配了但选不出人"是最难排查的死配置。
    *
    * 分页：offset/limit + total（扁平列表分页器）。
@@ -253,7 +272,7 @@ export const providerApi = {
 
 export interface RoleRelations {
   users?: string[]
-  groups?: string[]
+  job_titles?: string[]
   roles?: string[]
   permissions?: string[]
 }
@@ -273,7 +292,7 @@ export const roleApi = {
 
 export interface PermissionSubjects {
   users?: string[]
-  groups?: string[]
+  job_titles?: string[]
   roles?: string[]
 }
 
@@ -290,15 +309,25 @@ export const permissionApi = {
     api.post<{ allowed: boolean; roles: string[] | null }>('/permissions/enforce', body),
 }
 
-export const groupApi = {
-  list: (params?: ListParams) => api.get<PageData<Group>>('/groups', orgQ(toQuery(params))),
-  get: (id: number, institution?: string) => api.get<Group>(`/groups/${id}`, orgQ({ institution })),
-  create: (body: Partial<Group>) => api.post<Group>('/groups', body, orgQ()),
-  update: (id: number, body: Partial<Group>) => api.put<void>(`/groups/${id}`, body, orgQ()),
-  setMembers: (id: number, users: string[]) => api.put<void>(`/groups/${id}/members`, { users }, orgQ()),
+export const jobTitleApi = {
+  list: (params?: ListParams) => api.get<PageData<JobTitle>>('/job-titles', orgQ(toQuery(params))),
+  get: (id: number, institution?: string) => api.get<JobTitle>(`/job-titles/${id}`, orgQ({ institution })),
+  create: (body: Partial<JobTitle>) => api.post<JobTitle>('/job-titles', body, orgQ()),
+  update: (id: number, body: Partial<JobTitle>) => api.put<void>(`/job-titles/${id}`, body, orgQ()),
+  setMembers: (id: number, users: string[]) => api.put<void>(`/job-titles/${id}/members`, { users }, orgQ()),
   /** 组详情：成员明细 + 关联角色 + 汇总权限 */
-  detail: (id: number, institution?: string) => api.get<GroupDetail>(`/groups/${id}/detail`, orgQ({ institution })),
-  remove: (id: number) => api.del<void>(`/groups/${id}`, orgQ()),
+  detail: (id: number, institution?: string) => api.get<JobTitleDetail>(`/job-titles/${id}/detail`, orgQ({ institution })),
+  remove: (id: number) => api.del<void>(`/job-titles/${id}`, orgQ()),
+}
+
+export const jobLevelApi = {
+  list: (params?: ListParams) => api.get<PageData<JobLevel>>('/job-levels', orgQ(toQuery(params))),
+  create: (body: Partial<JobLevel>) => api.post<JobLevel>('/job-levels', body, orgQ()),
+  update: (id: number, body: Partial<JobLevel>) => api.put<void>(`/job-levels/${id}`, body, orgQ()),
+  remove: (id: number) => api.del<void>(`/job-levels/${id}`, orgQ()),
+  /** 组织概览的职级分布（各级别人数） */
+  distribution: (institution?: string) =>
+    api.get<{ items: { name: string; count: number }[] }>('/job-levels/distribution', orgQ({ institution })),
 }
 
 export const certApi = {
@@ -408,7 +437,6 @@ export interface ConnectorPayload {
   application?: string
   /** 连接器类型（缺省 http） */
   type?: string
-  just_in_time?: boolean
   state?: string
   /** 类型专属的非敏感配置（键必须由类型目录声明） */
   config?: Record<string, string>
@@ -442,15 +470,15 @@ export const accountStrategyApi = {
 }
 
 export const appAccountApi = {
-  list: (params?: ListParams) => api.get<PageData<AppAccount>>('/app-accounts', orgQ(toQuery(params))),
+  list: (params?: ListParams) => api.get<PageData<AppAccount>>('/application-accounts', orgQ(toQuery(params))),
   create: (body: { institution?: string; application: string; user: string }) =>
-    api.post<void>('/app-accounts', body, orgQ()),
+    api.post<void>('/application-accounts', body, orgQ()),
   retry: (body: { institution?: string; application: string; user: string }) =>
-    api.post<void>('/app-accounts/retry', body, orgQ()),
+    api.post<void>('/application-accounts/retry', body, orgQ()),
   remove: (user: string, application: string, institution?: string) =>
-    api.del<void>('/app-accounts', orgQ({ user, application, institution })),
+    api.del<void>('/application-accounts', orgQ({ user, application, institution })),
   /** 门户：当前用户自己的应用账号（只读） */
-  mine: (institution?: string) => api.get<{ items: AppAccount[] }>('/me/app-accounts', { institution }),
+  mine: (institution?: string) => api.get<{ items: AppAccount[] }>('/me/application-accounts', { institution }),
 }
 
 export const provisionHistoryApi = {

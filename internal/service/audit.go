@@ -13,11 +13,20 @@ import (
 // AuditRecorder 审计记录器：把关键操作写入 records 表。
 type AuditRecorder struct {
 	records repository.RecordRepository
+	// users 可选：用于把操作者名称**尽力**解析为主键（审计不因此失败，解析不到就只留名称快照）
+	users repository.UserRepository
 }
 
 // NewAuditRecorder 创建审计记录器
 func NewAuditRecorder(records repository.RecordRepository) *AuditRecorder {
 	return &AuditRecorder{records: records}
+}
+
+// SetUserResolver 注入用户仓库（装配期调用）：审计写入时尽力补 user_id，供"按人精确检索"。
+func (a *AuditRecorder) SetUserResolver(users repository.UserRepository) {
+	if a != nil {
+		a.users = users
+	}
 }
 
 // Record 写入审计记录（失败仅记日志，不影响主流程）。
@@ -29,6 +38,7 @@ func (a *AuditRecorder) Record(ctx context.Context, actor string, institutionID 
 		InstitutionID: institutionID,
 		StatusCode:    auditStatusCode(action),
 		User:          actor,
+		UserID:        a.resolveUserID(ctx, institutionID, actor),
 		Action:        action,
 		Object:        object,
 		TraceID:       tracing.TraceID(ctx),
@@ -61,4 +71,16 @@ func auditStatusCode(action string) int {
 		return http.StatusUnauthorized
 	}
 	return http.StatusOK
+}
+
+// resolveUserID 把操作者名称尽力解析为主键（审计是旁路：解析失败只留名称快照，绝不阻断主流程）。
+func (a *AuditRecorder) resolveUserID(ctx context.Context, institutionID int64, name string) *int64 {
+	if a.users == nil || name == "" || institutionID == 0 {
+		return nil
+	}
+	u, err := a.users.GetByName(ctx, institutionID, name)
+	if err != nil || u == nil {
+		return nil
+	}
+	return &u.ID
 }

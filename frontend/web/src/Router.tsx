@@ -24,8 +24,9 @@ const InstitutionOverviewPage = lazy(() => import('@/pages/institution-detail-pa
 const UsersPage = lazy(() => import('@/features/iam/pages/users-page'))
 const UserDetailPage = lazy(() => import('@/features/iam/pages/user-detail-page'))
 const UserEditPage = lazy(() => import('@/features/iam/pages/user-edit-page'))
-const GroupsPage = lazy(() => import('@/features/iam/pages/groups-page'))
-const GroupDetailPage = lazy(() => import('@/features/iam/pages/group-detail-page'))
+const JobTitlesPage = lazy(() => import('@/features/iam/pages/job-titles-page'))
+const JobLevelsPage = lazy(() => import('@/features/iam/pages/job-levels-page'))
+const JobTitleDetailPage = lazy(() => import('@/features/iam/pages/job-title-detail-page'))
 const DepartmentsPage = lazy(() => import('@/features/iam/pages/departments-page'))
 const ApplicationsPage = lazy(() => import('@/features/iam/pages/applications-page'))
 const ApplicationEditPage = lazy(() => import('@/features/iam/pages/application-edit-page'))
@@ -34,9 +35,6 @@ const ProviderEditPage = lazy(() => import('@/features/iam/pages/provider-edit-p
 const ConnectionsPage = lazy(() => import('@/features/iam/pages/connections-page'))
 const AsyncdPage = lazy(() => import('@/features/iam/pages/asyncd-page'))
 const ConnectionEditPage = lazy(() => import('@/features/iam/pages/connection-edit-page'))
-const AccountStrategiesPage = lazy(() => import('@/features/iam/pages/account-strategies-page'))
-const AppAccountsPage = lazy(() => import('@/features/iam/pages/app-accounts-page'))
-const ProvisioningPage = lazy(() => import('@/features/iam/pages/provisioning-page'))
 // 平台级（跨组织）
 const RolesPage = lazy(() => import('@/features/iam/pages/roles-page'))
 const PermissionsPage = lazy(() => import('@/features/iam/pages/permissions-page'))
@@ -49,7 +47,7 @@ const PortalAppsPage = lazy(() => import('@/features/portal/pages/apps-page'))
 const PortalProfilePage = lazy(() => import('@/features/portal/pages/profile-page'))
 const PortalSecurityPage = lazy(() => import('@/features/portal/pages/security-page'))
 const PortalIdentitiesPage = lazy(() => import('@/features/portal/pages/identities-page'))
-const PortalAppAccountsPage = lazy(() => import('@/features/portal/pages/app-accounts-page'))
+const PortalAppAccountsPage = lazy(() => import('@/features/portal/pages/application-accounts-page'))
 const PortalSessionsPage = lazy(() => import('@/features/portal/pages/sessions-page'))
 const PortalActivityPage = lazy(() => import('@/features/portal/pages/activity-page'))
 
@@ -86,9 +84,10 @@ export function Router() {
     <Suspense fallback={<RouteFallback />}>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
-        {/* OAuth 回调中间页：支持根路径与 provider 子路径两种注册方式 */}
-        <Route path="/oauth/callback" element={<OAuthCallbackPage />} />
-        <Route path="/oauth/callback/:provider" element={<OAuthCallbackPage />} />
+        {/* SSO 回调中间页：挂在前端自己的命名空间 /sso/**，与后端的 OIDC 协议路径 /oauth/* 彻底分开
+            （反代层因此不需要为某个前端页面开"前缀例外"） */}
+        <Route path="/sso/callback" element={<OAuthCallbackPage />} />
+        <Route path="/sso/callback/:provider" element={<OAuthCallbackPage />} />
         {/* 终端用户自助注册 / 邮件魔法链接落地 */}
         <Route path="/signup" element={<SignupPage />} />
         <Route path="/magic" element={<MagicLinkPage />} />
@@ -99,7 +98,7 @@ export function Router() {
             <Route path="profile" element={<PortalProfilePage />} />
             <Route path="security" element={<PortalSecurityPage />} />
             <Route path="identities" element={<PortalIdentitiesPage />} />
-            <Route path="app-accounts" element={<PortalAppAccountsPage />} />
+            <Route path="application-accounts" element={<PortalAppAccountsPage />} />
             <Route path="sessions" element={<PortalSessionsPage />} />
             <Route path="activity" element={<PortalActivityPage />} />
           </Route>
@@ -144,8 +143,9 @@ export function Router() {
                 <Route path="users/new" element={<UserEditPage />} />
                 <Route path="users/:id" element={<UserDetailPage />} />
                 <Route path="users/:id/edit" element={<UserEditPage />} />
-                <Route path="groups" element={<GroupsPage />} />
-                <Route path="groups/:id" element={<GroupDetailPage />} />
+                <Route path="job-titles" element={<JobTitlesPage />} />
+                <Route path="job-levels" element={<JobLevelsPage />} />
+                <Route path="job-titles/:id" element={<JobTitleDetailPage />} />
                 <Route path="applications" element={<ApplicationsPage />} />
                 <Route path="applications/new" element={<ApplicationEditPage />} />
                 <Route path="applications/:id" element={<ApplicationEditPage />} />
@@ -155,9 +155,9 @@ export function Router() {
                 <Route path="connections" element={<ConnectionsPage />} />
                 <Route path="connections/new" element={<ConnectionEditPage />} />
                 <Route path="connections/:id" element={<ConnectionEditPage />} />
-                <Route path="account-strategies" element={<AccountStrategiesPage />} />
-                <Route path="app-accounts" element={<AppAccountsPage />} />
-                <Route path="provisioning" element={<ProvisioningPage />} />
+                <Route path="account-strategies" element={<Navigate to="../applications" replace />} />
+                <Route path="application-accounts" element={<Navigate to="../applications" replace />} />
+                <Route path="provisioning" element={<Navigate to="../applications" replace />} />
               </Route>
 
               {/* 旧前缀 /organizations/* → /institutions/*（永久兼容，ADR D1） */}
@@ -166,16 +166,16 @@ export function Router() {
 
               {/* 旧地址兼容：无组织前缀的"组织内资源"路径 */}
               <Route path="/users" element={<LegacyRedirect suffix="/users" />} />
-              <Route path="/groups" element={<LegacyRedirect suffix="/groups" />} />
+              <Route path="/job-titles" element={<LegacyRedirect suffix="/job-titles" />} />
               <Route path="/departments" element={<LegacyRedirect suffix="/departments" />} />
               <Route path="/applications" element={<LegacyRedirect suffix="/applications" />} />
               <Route path="/applications/new" element={<LegacyRedirect suffix="/applications/new" />} />
               <Route path="/providers" element={<LegacyRedirect suffix="/providers" />} />
               <Route path="/syncers" element={<LegacyRedirect suffix="/connections?direction=in" />} />
               <Route path="/connectors" element={<LegacyRedirect suffix="/connections?direction=out" />} />
-              <Route path="/account-strategies" element={<LegacyRedirect suffix="/account-strategies" />} />
-              <Route path="/app-accounts" element={<LegacyRedirect suffix="/app-accounts" />} />
-              <Route path="/provisioning" element={<LegacyRedirect suffix="/provisioning" />} />
+              <Route path="/account-strategies" element={<LegacyRedirect suffix="/applications" />} />
+              <Route path="/application-accounts" element={<LegacyRedirect suffix="/applications" />} />
+              <Route path="/provisioning" element={<LegacyRedirect suffix="/applications" />} />
 
               {/* 旧地址兼容：安全资源已提升为平台级「安全管理」 */}
               <Route path="/certs" element={<Navigate to="/security/certs" replace />} />

@@ -15,40 +15,48 @@ type userDTO struct {
 	Name          string `json:"name"`
 	Type          string `json:"type"`
 	DepartmentID  *int64 `json:"department_id,omitempty"`
-	// DepartmentPath 部门展示路径（服务端批量补全；部门为空时不下发）
-	DepartmentPath string     `json:"department_path,omitempty"`
-	DisplayName    string     `json:"display_name,omitempty"`
-	FirstName      string     `json:"first_name,omitempty"`
-	LastName       string     `json:"last_name,omitempty"`
-	Avatar         string     `json:"avatar,omitempty"`
-	Email          string     `json:"email,omitempty"`
-	EmailVerified  bool       `json:"email_verified"`
-	Phone          string     `json:"phone,omitempty"`
-	PhoneVerified  bool       `json:"phone_verified"`
-	CountryCode    string     `json:"country_code,omitempty"`
-	Location       string     `json:"location,omitempty"`
-	Address        string     `json:"address,omitempty"`
-	Affiliation    string     `json:"affiliation,omitempty"`
-	Title          string     `json:"title,omitempty"`
-	Homepage       string     `json:"homepage,omitempty"`
-	Bio            string     `json:"bio,omitempty"`
-	Language       string     `json:"language,omitempty"`
-	Gender         string     `json:"gender,omitempty"`
-	Birthday       string     `json:"birthday,omitempty"`
-	Education      string     `json:"education,omitempty"`
-	Score          int        `json:"score"`
-	IsAdmin        bool       `json:"is_admin"`
-	IsForbidden    bool       `json:"is_forbidden"`
-	IsDeleted      bool       `json:"is_deleted"`
-	IsOnline       bool       `json:"is_online"`
-	MfaEnabled     bool       `json:"mfa_enabled"`
-	HasPassword    bool       `json:"has_password"`
-	RegisterType   string     `json:"register_type,omitempty"`
-	RegisterSource string     `json:"register_source,omitempty"`
-	LastSigninTime *time.Time `json:"last_signin_time,omitempty"`
-	LastSigninIP   string     `json:"last_signin_ip,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	// DepartmentIDs 多值部门归属（Spec Q2 = A；仅详情/编辑回显需要，列表不填充以省一次批查）
+	DepartmentIDs []int64 `json:"department_ids,omitempty"`
+	// JobLevelID 职级（Spec Q4.1 = A：仅属性，不参与授权）
+	JobLevelID *int64 `json:"job_level_id,omitempty"`
+	// JobLevel 职级名称（服务端补全，供列表/详情直接展示）
+	JobLevel string `json:"job_level,omitempty"`
+	// DepartmentPath 主部门展示路径（服务端批量补全；部门为空时不下发）
+	DepartmentPath string `json:"department_path,omitempty"`
+	// DepartmentPaths 全部部门归属的展示路径（Spec Q2 = A：一个人可能在多个部门挂职）
+	DepartmentPaths []string   `json:"department_paths,omitempty"`
+	DisplayName     string     `json:"display_name,omitempty"`
+	FirstName       string     `json:"first_name,omitempty"`
+	LastName        string     `json:"last_name,omitempty"`
+	Avatar          string     `json:"avatar,omitempty"`
+	Email           string     `json:"email,omitempty"`
+	EmailVerified   bool       `json:"email_verified"`
+	Phone           string     `json:"phone,omitempty"`
+	PhoneVerified   bool       `json:"phone_verified"`
+	CountryCode     string     `json:"country_code,omitempty"`
+	Location        string     `json:"location,omitempty"`
+	Address         string     `json:"address,omitempty"`
+	Affiliation     string     `json:"affiliation,omitempty"`
+	Title           string     `json:"title,omitempty"`
+	Homepage        string     `json:"homepage,omitempty"`
+	Bio             string     `json:"bio,omitempty"`
+	Language        string     `json:"language,omitempty"`
+	Gender          string     `json:"gender,omitempty"`
+	Birthday        string     `json:"birthday,omitempty"`
+	Education       string     `json:"education,omitempty"`
+	Score           int        `json:"score"`
+	IsAdmin         bool       `json:"is_admin"`
+	IsForbidden     bool       `json:"is_forbidden"`
+	IsDeleted       bool       `json:"is_deleted"`
+	IsOnline        bool       `json:"is_online"`
+	MfaEnabled      bool       `json:"mfa_enabled"`
+	HasPassword     bool       `json:"has_password"`
+	RegisterType    string     `json:"register_type,omitempty"`
+	RegisterSource  string     `json:"register_source,omitempty"`
+	LastSigninTime  *time.Time `json:"last_signin_time,omitempty"`
+	LastSigninIP    string     `json:"last_signin_ip,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // toUserDTO 将用户实体转换为响应 DTO（剥离敏感字段）。
@@ -71,8 +79,8 @@ func toUserDTOWithDepartments(u *repository.User, departments map[int64]string) 
 func toUserDTOFields(u *repository.User) *userDTO {
 	return &userDTO{
 		ID: u.ID, UID: u.UID, InstitutionID: u.InstitutionID, Name: u.Name, Type: u.Type,
-		DepartmentID: u.DepartmentID,
-		DisplayName:  u.DisplayName, FirstName: u.FirstName, LastName: u.LastName, Avatar: u.Avatar,
+		DepartmentID: u.DepartmentID, JobLevelID: u.JobLevelID,
+		DisplayName: u.DisplayName, FirstName: u.FirstName, LastName: u.LastName, Avatar: u.Avatar,
 		Email: u.Email, EmailVerified: u.EmailVerified, Phone: u.Phone, PhoneVerified: u.PhoneVerified,
 		CountryCode: u.CountryCode,
 		Location:    u.Location, Address: u.Address, Affiliation: u.Affiliation, Title: u.Title,
@@ -158,19 +166,21 @@ func toInstitutionDTOs(orgs []*repository.Institution) []*institutionDTO {
 
 // departmentDTO 部门响应 DTO。
 type departmentDTO struct {
-	ID            int64     `json:"id"`
-	InstitutionID int64     `json:"institution_id"`
-	Name          string    `json:"name"`
-	DisplayName   string    `json:"display_name"`
-	Description   string    `json:"description,omitempty"`
-	ParentID      *int64    `json:"parent_id,omitempty"`
-	CodePath      string    `json:"code_path"`
-	NamePath      string    `json:"name_path"`
-	Level         int       `json:"level"`
-	HasChild      bool      `json:"has_child"`
-	SortIndex     int       `json:"sort_index"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID            int64  `json:"id"`
+	InstitutionID int64  `json:"institution_id"`
+	Name          string `json:"name"`
+	DisplayName   string `json:"display_name"`
+	Description   string `json:"description,omitempty"`
+	ParentID      *int64 `json:"parent_id,omitempty"`
+	CodePath      string `json:"code_path"`
+	NamePath      string `json:"name_path"`
+	Level         int    `json:"level"`
+	HasChild      bool   `json:"has_child"`
+	SortIndex     int    `json:"sort_index"`
+	// IsRoot 组织根节点（Spec Q4.5：每个组织恰好一行；界面渲染为"组织"本身，禁止改名/移动/删除）
+	IsRoot    bool      `json:"is_root"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // toDepartmentDTO 将部门实体转换为响应 DTO。
@@ -181,7 +191,7 @@ func toDepartmentDTO(d *repository.Department) *departmentDTO {
 	return &departmentDTO{
 		ID: d.ID, InstitutionID: d.InstitutionID, Name: d.Name, DisplayName: d.DisplayName,
 		Description: d.Description, ParentID: d.ParentID, CodePath: d.CodePath, NamePath: d.NamePath,
-		Level: d.Level, HasChild: d.HasChild, SortIndex: d.SortIndex,
+		Level: d.Level, HasChild: d.HasChild, SortIndex: d.SortIndex, IsRoot: d.IsRoot,
 		CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt,
 	}
 }
@@ -226,7 +236,6 @@ type connectorDTO struct {
 	Config map[string]string `json:"config"`
 	// HasSecrets 敏感键是否已配置（密钥/口令一律不下发明文）
 	HasSecrets  map[string]bool `json:"has_secrets"`
-	JustInTime  bool            `json:"just_in_time"`
 	State       string          `json:"state"`
 	LastRunTime *time.Time      `json:"last_run_time,omitempty"`
 	LastStatus  string          `json:"last_status"`
@@ -257,7 +266,7 @@ func toConnectorDTO(c *repository.Connector) *connectorDTO {
 		ID: c.ID, InstitutionID: c.InstitutionID, Application: c.Application, Name: c.Name,
 		DisplayName: c.DisplayName, Type: connectorType,
 		Config: config, HasSecrets: hasSecrets,
-		JustInTime: c.JustInTime, State: c.State,
+		State:       c.State,
 		LastRunTime: c.LastRunTime, LastStatus: c.LastStatus, LastMessage: c.LastMessage,
 		CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt,
 	}
@@ -276,6 +285,7 @@ func toConnectorDTOs(items []*repository.Connector) []*connectorDTO {
 type accountStrategyDTO struct {
 	ID            int64             `json:"id"`
 	InstitutionID int64             `json:"institution_id"`
+	ApplicationID *int64            `json:"application_id,omitempty"`
 	Application   string            `json:"application,omitempty"`
 	Name          string            `json:"name"`
 	DisplayName   string            `json:"display_name"`
@@ -292,7 +302,7 @@ func toAccountStrategyDTO(a *repository.AccountStrategy) *accountStrategyDTO {
 		return nil
 	}
 	return &accountStrategyDTO{
-		ID: a.ID, InstitutionID: a.InstitutionID, Application: a.Application, Name: a.Name,
+		ID: a.ID, InstitutionID: a.InstitutionID, ApplicationID: a.ApplicationID, Application: a.Application, Name: a.Name,
 		DisplayName: a.DisplayName, IsEnabled: a.IsEnabled,
 		Mapping: orEmptyMapCopy(a.Mapping), Policy: orEmptyMapCopy(a.Policy),
 		CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
@@ -308,10 +318,11 @@ func toAccountStrategyDTOs(items []*repository.AccountStrategy) []*accountStrate
 	return out
 }
 
-// appAccountDTO 应用账号响应 DTO（下游口令以 has_password 表达，不下发明文）。
-type appAccountDTO struct {
+// applicationAccountDTO 应用账号响应 DTO（下游口令以 has_password 表达，不下发明文）。
+type applicationAccountDTO struct {
 	ID              int64     `json:"id"`
 	InstitutionID   int64     `json:"institution_id"`
+	ApplicationID   *int64    `json:"application_id,omitempty"`
 	Application     string    `json:"application"`
 	User            string    `json:"user"`
 	Username        string    `json:"username"`
@@ -323,23 +334,23 @@ type appAccountDTO struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
-// toAppAccountDTO 将应用账号实体转换为响应 DTO。
-func toAppAccountDTO(a *repository.AppAccount) *appAccountDTO {
+// toApplicationAccountDTO 将应用账号实体转换为响应 DTO。
+func toApplicationAccountDTO(a *repository.ApplicationAccount) *applicationAccountDTO {
 	if a == nil {
 		return nil
 	}
-	return &appAccountDTO{
-		ID: a.ID, InstitutionID: a.InstitutionID, Application: a.Application, User: a.User,
+	return &applicationAccountDTO{
+		ID: a.ID, InstitutionID: a.InstitutionID, ApplicationID: a.ApplicationID, Application: a.Application, User: a.User,
 		Username: a.Username, RelatedUsername: a.RelatedUsername, HasPassword: a.HasPassword,
 		CreateType: a.CreateType, Status: a.Status, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
 	}
 }
 
-// toAppAccountDTOs 批量转换。
-func toAppAccountDTOs(items []*repository.AppAccount) []*appAccountDTO {
-	out := make([]*appAccountDTO, 0, len(items))
+// toApplicationAccountDTOs 批量转换。
+func toApplicationAccountDTOs(items []*repository.ApplicationAccount) []*applicationAccountDTO {
+	out := make([]*applicationAccountDTO, 0, len(items))
 	for _, a := range items {
-		out = append(out, toAppAccountDTO(a))
+		out = append(out, toApplicationAccountDTO(a))
 	}
 	return out
 }
@@ -349,6 +360,7 @@ type provisionHistoryDTO struct {
 	ID            int64     `json:"id"`
 	InstitutionID int64     `json:"institution_id"`
 	Connector     string    `json:"connector,omitempty"`
+	ApplicationID *int64    `json:"application_id,omitempty"`
 	Application   string    `json:"application,omitempty"`
 	User          string    `json:"user,omitempty"`
 	Action        string    `json:"action"`
@@ -363,7 +375,8 @@ func toProvisionHistoryDTO(h *repository.ProvisionHistory) *provisionHistoryDTO 
 		return nil
 	}
 	return &provisionHistoryDTO{
-		ID: h.ID, InstitutionID: h.InstitutionID, Connector: h.Connector, Application: h.Application,
+		ID: h.ID, InstitutionID: h.InstitutionID, Connector: h.Connector,
+		ApplicationID: h.ApplicationID, Application: h.Application,
 		User: h.User, Action: h.Action, Status: h.Status, Message: h.Message, CreatedAt: h.CreatedAt,
 	}
 }

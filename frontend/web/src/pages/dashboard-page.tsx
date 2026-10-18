@@ -37,7 +37,7 @@ import { formatLongDate, greetingPeriodKey } from '@/shared/lib/long-date'
 import type { AuditRecord, InstitutionStats } from '@/shared/api/types'
 import {
   applicationApi,
-  groupApi,
+  jobTitleApi,
   institutionApi,
   permissionApi,
   providerApi,
@@ -94,10 +94,10 @@ export default function DashboardPage() {
       value: null,
     },
     {
-      key: 'groups',
-      labelKey: 'dashboard.groups',
+      key: 'jobTitles',
+      labelKey: 'dashboard.jobTitles',
       icon: UsersRound,
-      to: (i: number) => `/institutions/${i}/groups`,
+      to: (i: number) => `/institutions/${i}/job-titles`,
       value: null,
     },
     { key: 'roles', labelKey: 'dashboard.roles', icon: ShieldCheck, to: () => '/roles', value: null },
@@ -117,7 +117,7 @@ export default function DashboardPage() {
         { key: 'providers', run: () => providerApi.list({ institution, size: 1 }) },
         { key: 'roles', run: () => roleApi.list({ scope: 'platform', size: 1 }) },
         { key: 'permissions', run: () => permissionApi.list({ scope: 'platform', size: 1 }) },
-        { key: 'groups', run: () => groupApi.list({ institution, size: 1 }) },
+        { key: 'jobTitles', run: () => jobTitleApi.list({ institution, size: 1 }) },
         { key: 'syncers', run: () => syncerApi.list({ institution, size: 1 }) },
         { key: 'orgs', run: () => institutionApi.list({ size: 1 }) },
       ]

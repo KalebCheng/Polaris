@@ -63,7 +63,7 @@ Polaris 在本地用户/角色/登录/离职等事件发生时，按**账号策�
 - `policy.createWhen`：`manual`（仅手动）/ `onCreate`（用户创建即建号，默认）/ `onGrant`（角色授予即建号）/ `jit`（首次登录即时建号）。
 - `policy.revokeWhen`：`disable`（用户禁用即禁用下游账号，默认）/ `delete`（删除即删除）/ `offboard`（离职即删除）。
 
-控制台「账号策略」页可视化配置；REST：`/api/v1/account-strategies`。
+控制台在「应用详情 › 账号供给 › 策略」按应用可视化配置；REST：`/api/v1/account-strategies?application_id=<id>`。
 
 ---
 
@@ -73,10 +73,10 @@ Polaris 在以下事件接线触发供给（配置即生效）：
 
 1. **用户创建** → 命中 `onCreate` 策略的应用建号；
 2. **角色授予** → 命中 `onGrant` 策略的应用建号；
-3. **首次登录** → 命中 `jit` 策略（或连接器 `just_in_time=true`）的应用建号；
+3. **首次登录** → 命中账号策略 `createWhen=jit` 的应用建号；
 4. **用户禁用 / 离职（软删除）/ 删除** → 按 `revokeWhen` 禁用或删除下游账号。
 
-执行模型：进程内工作池（4 worker）+ scheduler 兜底重试；下游失败不影响本地主流程。全过程写入 `provision_history`（动作 / 状态 / 消息 / 时间），控制台「供给历史」页可查，应用账号页可手动重试。
+执行模型：asyncd 异步任务 + scheduler 兜底重试；下游失败不影响本地主流程。全过程写入 `provision_history`（动作 / 状态 / 消息 / 时间），在「应用详情 › 账号供给 › 同步记录」查看；应用账号可在同一应用的「应用账号」子页手动建号 / 重试；删除会先派发下游 `delete` 任务，成功后才删除本地台账。出方向连接卡片也可按连接器查看该连接器的同步记录。
 
 > 多实例部署下进程内 scheduler 会重复触发（已知限制，后续引入 PG advisory lock）。
 
@@ -92,7 +92,6 @@ Polaris 在以下事件接线触发供给（配置即生效）：
 | `type` | 连接器类型：`http`（通用 RESTful 契约）/ `dingtalk` / `lark`（飞书与 Lark）/ `wecom` / `ldap`（AD 与 OpenLDAP） |
 | `config` | **类型专属的非敏感配置**（键由类型目录声明）：通用 HTTP 为 `provider_url` / `principal`；钉钉为 `app_id` / `dept_id`；飞书为 `app_id` / `dept_id` / `base_url`；企业微信为 `app_id` / `dept_id`；目录服务为 `host` / `port` / `ssl_mode` / `user` / `base_dn` / `rdn_attr` / `directory_type` |
 | `secrets` | **类型专属的敏感值（明文提交，加密落库）**：`credentials`（通用 HTTP）/ `app_secret`（钉钉·飞书·企业微信）/ `password`（目录服务的绑定口令）。留空表示不修改 |
-| `just_in_time` | 是否在首次登录即时建号 |
 | `state` | `active` / `disabled` |
 
 > 未声明的键会被拒绝（避免"前端多传一个键、后端悄悄存下却没人读"）；**敏感键必须经 `secrets` 提交**，

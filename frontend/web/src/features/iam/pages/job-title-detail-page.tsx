@@ -13,26 +13,26 @@ import {
   Skeleton,
 } from '@/shared/ui'
 import { PageShell } from '@/widgets/layout/page-shell'
-import type { GroupDetail } from '@/shared/api/types'
-import { groupApi } from '../api'
+import type { JobTitleDetail } from '@/shared/api/types'
+import { jobTitleApi } from '../api'
 import { useWorkspaceInstitution, useWorkspaceInstitutionId } from '../institution-context'
 import { useMutation } from '../hooks/use-mutation'
 import { UserPicker } from '../components/user-picker'
 
 /**
- * 用户组详情页（/institutions/:inst/groups/:id）。
+ * 职务详情页（/institutions/:inst/job-titles/:id）。
  *
  * 补齐第三/四阶段的遗留：组是"批量授权的基本单元"，但界面上只有一个逗号分隔的成员串，
  * 既看不到成员明细，也不知道这个组到底把哪些权限授予了组内的人。
  */
-export default function GroupDetailPage() {
+export default function JobTitleDetailPage() {
   const { t } = useTranslation()
   const { id } = useParams<{ id: string }>()
   const institution = useWorkspaceInstitution()
   const institutionId = useWorkspaceInstitutionId()
   const { pending, run } = useMutation()
 
-  const [detail, setDetail] = useState<GroupDetail | null>(null)
+  const [detail, setDetail] = useState<JobTitleDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
   const [members, setMembers] = useState<string[]>([])
@@ -45,9 +45,9 @@ export default function GroupDetailPage() {
       bootstrapped.current = id
       setLoading(true)
       try {
-        const result = await groupApi.detail(Number(id), institution || undefined)
+        const result = await jobTitleApi.detail(Number(id), institution || undefined)
         setDetail(result)
-        setMembers(result.group.users ?? [])
+        setMembers(result.jobTitle.users ?? [])
         setNotFound(false)
       } catch {
         setDetail(null)
@@ -67,7 +67,7 @@ export default function GroupDetailPage() {
 
   if (loading && !detail) {
     return (
-      <PageShell title={t('groups.detailTitle')}>
+      <PageShell title={t('jobTitles.detailTitle')}>
         <Skeleton className="h-64 w-full" />
       </PageShell>
     )
@@ -75,12 +75,12 @@ export default function GroupDetailPage() {
 
   if (notFound || !detail) {
     return (
-      <PageShell title={t('groups.detailTitle')}>
+      <PageShell title={t('jobTitles.detailTitle')}>
         <div className="space-y-3">
-          <p className="text-muted-foreground text-sm">{t('groups.notFound')}</p>
+          <p className="text-muted-foreground text-sm">{t('jobTitles.notFound')}</p>
           <Button variant="outline" asChild>
-            <Link to={`/institutions/${institutionId}/groups`}>
-              <ArrowLeft className="size-4" /> {t('groups.backToList')}
+            <Link to={`/institutions/${institutionId}/job-titles`}>
+              <ArrowLeft className="size-4" /> {t('jobTitles.backToList')}
             </Link>
           </Button>
         </div>
@@ -88,24 +88,24 @@ export default function GroupDetailPage() {
     )
   }
 
-  const { group, roles, permissions } = detail
-  const membersDirty = JSON.stringify([...members].sort()) !== JSON.stringify([...(group.users ?? [])].sort())
+  const { jobTitle, roles, permissions } = detail
+  const membersDirty = JSON.stringify([...members].sort()) !== JSON.stringify([...(jobTitle.users ?? [])].sort())
 
   return (
     <PageShell
-      title={group.display_name || group.name}
-      description={group.manager ? `${group.name} · ${group.manager}` : group.name}
+      title={jobTitle.display_name || jobTitle.name}
+      description={jobTitle.manager ? `${jobTitle.name} · ${jobTitle.manager}` : jobTitle.name}
       actions={
-        <Link to={`/institutions/${institutionId}/groups`} className="text-muted-foreground text-sm hover:underline">
-          {t('groups.backToList')}
+        <Link to={`/institutions/${institutionId}/job-titles`} className="text-muted-foreground text-sm hover:underline">
+          {t('jobTitles.backToList')}
         </Link>
       }
     >
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardHeader>
-            <CardTitle className="text-base">{t('groups.membersTitle')}</CardTitle>
-            <CardDescription>{t('groups.membersHint')}</CardDescription>
+            <CardTitle className="text-base">{t('jobTitles.membersTitle')}</CardTitle>
+            <CardDescription>{t('jobTitles.membersHint')}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <UserPicker value={members} onChange={setMembers} institution={institution || undefined} />
@@ -114,28 +114,28 @@ export default function GroupDetailPage() {
               disabled={pending || !membersDirty}
               onClick={async () => {
                 const ok = await run(async () => {
-                  await groupApi.setMembers(group.id, members)
+                  await jobTitleApi.setMembers(jobTitle.id, members)
                   await reload()
                 })
-                if (!ok) setMembers(group.users ?? [])
+                if (!ok) setMembers(jobTitle.users ?? [])
               }}
             >
               <Save className="size-4" /> {t('common.save')}
             </Button>
-            <p className="text-muted-foreground text-xs">{t('groups.membersEffectHint')}</p>
+            <p className="text-muted-foreground text-xs">{t('jobTitles.membersEffectHint')}</p>
           </CardContent>
         </Card>
 
         <div className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">{t('groups.rolesTitle')}</CardTitle>
-              <CardDescription>{t('groups.rolesHint')}</CardDescription>
+              <CardTitle className="text-base">{t('jobTitles.rolesTitle')}</CardTitle>
+              <CardDescription>{t('jobTitles.rolesHint')}</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="flex flex-wrap gap-1.5">
                 {roles.length === 0 ? (
-                  <span className="text-muted-foreground text-sm">{t('groups.rolesEmpty')}</span>
+                  <span className="text-muted-foreground text-sm">{t('jobTitles.rolesEmpty')}</span>
                 ) : (
                   roles.map((role) => (
                     <Badge key={role} variant="secondary">
@@ -149,13 +149,13 @@ export default function GroupDetailPage() {
 
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">{t('groups.permissionsTitle')}</CardTitle>
-              <CardDescription>{t('groups.permissionsHint')}</CardDescription>
+              <CardTitle className="text-base">{t('jobTitles.permissionsTitle')}</CardTitle>
+              <CardDescription>{t('jobTitles.permissionsHint')}</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="flex flex-wrap gap-1.5">
                 {permissions.length === 0 ? (
-                  <span className="text-muted-foreground text-sm">{t('groups.permissionsEmpty')}</span>
+                  <span className="text-muted-foreground text-sm">{t('jobTitles.permissionsEmpty')}</span>
                 ) : (
                   permissions.map((permission) => (
                     <Badge key={permission.name} variant="outline">

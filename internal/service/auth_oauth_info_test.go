@@ -16,9 +16,9 @@ func TestOAuthPlatformInfo(t *testing.T) {
 		wantHomepage string
 	}{
 		{
-			name:         "默认：门户地址 + /oauth/callback",
+			name:         "默认：门户地址 + /sso/callback（前端自己的命名空间）",
 			cfg:          config.OAuthConfig{BaseURL: "https://id.example.com/"},
-			wantCallback: "https://id.example.com/oauth/callback",
+			wantCallback: "https://id.example.com/sso/callback",
 			wantHomepage: "https://id.example.com",
 		},
 		{

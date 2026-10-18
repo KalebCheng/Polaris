@@ -216,7 +216,7 @@ func TestReconcileScheduleJobs(t *testing.T) {
 		ScheduleKind: repository.ScheduleKindInterval, IntervalSeconds: 1800,
 	}
 
-	svc := NewSyncerService(syncers, nil, nil, nil, nil, nil)
+	svc := NewSyncerService(syncers, nil, nil, nil, nil, nil, nil, nil, nil)
 	svc.SetAsyncd(scheduler)
 	if err := svc.ReconcileScheduleJobs(ctx); err != nil {
 		t.Fatalf("对账失败: %v", err)

@@ -11,7 +11,7 @@ import (
 // RoleService 角色服务
 type RoleService struct {
 	roles    repository.RoleRepository
-	groups   repository.GroupRepository
+	groups   repository.JobTitleRepository
 	orgs     repository.InstitutionRepository
 	sessions *auth.SessionManager
 	audits   *AuditRecorder
@@ -22,7 +22,7 @@ type RoleService struct {
 // NewRoleService 创建角色服务
 func NewRoleService(
 	roles repository.RoleRepository,
-	groups repository.GroupRepository,
+	groups repository.JobTitleRepository,
 	orgs repository.InstitutionRepository,
 	sessions *auth.SessionManager,
 	audits *AuditRecorder,
@@ -85,7 +85,7 @@ func (s *RoleService) SetRelations(ctx context.Context, actor string, institutio
 	}
 	affected := append([]string{}, r.Users...)
 	affected = append(affected, rel.Users...)
-	for _, g := range append(r.Groups, rel.Groups...) {
+	for _, g := range append(r.JobTitles, rel.JobTitles...) {
 		if grp, err := s.groups.GetByName(ctx, institutionID, g); err == nil {
 			affected = append(affected, grp.Users...)
 		}

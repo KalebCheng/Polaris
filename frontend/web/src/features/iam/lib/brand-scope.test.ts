@@ -23,14 +23,14 @@ describe('品牌作用域解析', () => {
       '/login',
       '/signup',
       '/magic',
-      '/oauth/callback',
+      '/sso/callback',
     ]) {
       expect(resolveBrandScope(path)).toBe('platform')
     }
   })
 
   it('用户门户使用所属组织品牌', () => {
-    for (const path of ['/portal', '/portal/', '/portal/profile', '/portal/app-accounts?page=2']) {
+    for (const path of ['/portal', '/portal/', '/portal/profile', '/portal/application-accounts?page=2']) {
       expect(resolveBrandScope(path)).toBe('tenant')
     }
   })

@@ -18,7 +18,7 @@ const portalLinks: PortalLink[] = [
   { to: '/portal/profile', label: 'portal.nav.profile', icon: UserRound },
   { to: '/portal/security', label: 'portal.nav.security', icon: KeyRound },
   { to: '/portal/identities', label: 'portal.nav.identities', icon: Fingerprint },
-  { to: '/portal/app-accounts', label: 'portal.nav.appAccounts', icon: AppWindow },
+  { to: '/portal/application-accounts', label: 'portal.nav.appAccounts', icon: AppWindow },
   { to: '/portal/sessions', label: 'portal.nav.sessions', icon: Monitor },
   { to: '/portal/activity', label: 'portal.nav.activity', icon: Clock3 },
 ]

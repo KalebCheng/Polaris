@@ -15,8 +15,8 @@ import {
 import { PageShell } from '@/widgets/layout/page-shell'
 import { ListToolbar } from '@/widgets/layout/list-toolbar'
 import { ConfirmDialog } from '@/shared/components/confirm-dialog'
-import type { Group } from '@/shared/api/types'
-import { groupApi } from '../api'
+import type { JobTitle } from '@/shared/api/types'
+import { jobTitleApi } from '../api'
 import { useWorkspaceInstitution, useWorkspaceInstitutionId } from '../institution-context'
 import { useListQuery } from '../hooks/use-list-query'
 import { useMutation } from '../hooks/use-mutation'
@@ -27,21 +27,21 @@ import { RowActionsMenu } from '@/shared/components/row-actions-menu'
 
 const emptyForm = { name: '', display_name: '', manager: '', contact_email: '' }
 
-/** 用户组管理：批量授权的基本单元 */
-export default function GroupsPage() {
+/** 职务管理：批量授权的基本单元 */
+export default function JobTitlesPage() {
   const { t } = useTranslation()
   const institution = useWorkspaceInstitution()
 
   const navigate = useNavigate()
   const institutionId = useWorkspaceInstitutionId()
-  const list = useListQuery<Group>((params) => groupApi.list(params), { institution: institution || undefined })
+  const list = useListQuery<JobTitle>((params) => jobTitleApi.list(params), { institution: institution || undefined })
   const { pending, run } = useMutation()
 
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [editing, setEditing] = useState<Group | null>(null)
+  const [editing, setEditing] = useState<JobTitle | null>(null)
   const [form, setForm] = useState(emptyForm)
   const [members, setMembers] = useState<string[]>([])
-  const [removing, setRemoving] = useState<Group | null>(null)
+  const [removing, setRemoving] = useState<JobTitle | null>(null)
 
   const openCreate = () => {
     setEditing(null)
@@ -50,7 +50,7 @@ export default function GroupsPage() {
     setDialogOpen(true)
   }
 
-  const openEdit = (group: Group) => {
+  const openEdit = (group: JobTitle) => {
     setEditing(group)
     setForm({
       name: group.name,
@@ -75,12 +75,12 @@ export default function GroupsPage() {
     }
     const ok = editing
       ? await run(async () => {
-          await groupApi.update(editing.id, base)
-          await groupApi.setMembers(editing.id, members)
+          await jobTitleApi.update(editing.id, base)
+          await jobTitleApi.setMembers(editing.id, members)
         })
       : await run(async () => {
-          const created = await groupApi.create(base)
-          if (members.length > 0) await groupApi.setMembers(created.id, members)
+          const created = await jobTitleApi.create(base)
+          if (members.length > 0) await jobTitleApi.setMembers(created.id, members)
         })
     if (ok) {
       setDialogOpen(false)
@@ -88,14 +88,14 @@ export default function GroupsPage() {
     }
   }
 
-  const columns: Column<Group>[] = [
-    { key: 'name', headerKey: 'groups.name', render: (group) => <span className="font-medium">{group.name}</span> },
-    { key: 'display', headerKey: 'groups.displayName', render: (group) => group.display_name || '-' },
-    { key: 'manager', headerKey: 'groups.manager', render: (group) => group.manager || '-' },
-    { key: 'contact', headerKey: 'groups.contactEmail', render: (group) => group.contact_email || '-' },
+  const columns: Column<JobTitle>[] = [
+    { key: 'name', headerKey: 'jobTitles.name', render: (group) => <span className="font-medium">{group.name}</span> },
+    { key: 'display', headerKey: 'jobTitles.displayName', render: (group) => group.display_name || '-' },
+    { key: 'manager', headerKey: 'jobTitles.manager', render: (group) => group.manager || '-' },
+    { key: 'contact', headerKey: 'jobTitles.contactEmail', render: (group) => group.contact_email || '-' },
     {
       key: 'members',
-      headerKey: 'groups.memberCount',
+      headerKey: 'jobTitles.memberCount',
       className: 'text-muted-foreground text-xs',
       render: (group) => group.member_count ?? (group.users ?? []).length,
     },
@@ -106,8 +106,8 @@ export default function GroupsPage() {
       render: (group) => (
         <RowActionsMenu
           primary={{
-            labelKey: 'groups.viewDetail',
-            onSelect: () => navigate(`/institutions/${institutionId}/groups/${group.id}`),
+            labelKey: 'jobTitles.viewDetail',
+            onSelect: () => navigate(`/institutions/${institutionId}/job-titles/${group.id}`),
           }}
           actions={[
             { labelKey: 'common.edit', onSelect: () => openEdit(group) },
@@ -120,8 +120,8 @@ export default function GroupsPage() {
 
   return (
     <PageShell
-      titleKey="groups.title"
-      subtitleKey="groups.subtitle"
+      titleKey="jobTitles.title"
+      subtitleKey="jobTitles.subtitle"
       actions={
         <Button onClick={openCreate}>
           <Plus className="size-4" /> {t('common.create')}
@@ -149,11 +149,11 @@ export default function GroupsPage() {
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{editing ? t('groups.editTitle') : t('groups.createTitle')}</DialogTitle>
-            <DialogDescription>{t('groups.subtitle')}</DialogDescription>
+            <DialogTitle>{editing ? t('jobTitles.editTitle') : t('jobTitles.createTitle')}</DialogTitle>
+            <DialogDescription>{t('jobTitles.subtitle')}</DialogDescription>
           </DialogHeader>
           <form className="space-y-4" onSubmit={submit}>
-            <Field id="group-name" labelKey="groups.name">
+            <Field id="group-name" labelKey="jobTitles.name">
               <Input
                 id="group-name"
                 value={form.name}
@@ -162,7 +162,7 @@ export default function GroupsPage() {
                 required
               />
             </Field>
-            <Field id="group-display" labelKey="groups.displayName">
+            <Field id="group-display" labelKey="jobTitles.displayName">
               <Input
                 id="group-display"
                 value={form.display_name}
@@ -170,14 +170,14 @@ export default function GroupsPage() {
               />
             </Field>
             <div className="grid gap-4 sm:grid-cols-2">
-              <Field id="group-manager" labelKey="groups.manager">
+              <Field id="group-manager" labelKey="jobTitles.manager">
                 <Input
                   id="group-manager"
                   value={form.manager}
                   onChange={(event) => setForm({ ...form, manager: event.target.value })}
                 />
               </Field>
-              <Field id="group-contact" labelKey="groups.contactEmail">
+              <Field id="group-contact" labelKey="jobTitles.contactEmail">
                 <Input
                   id="group-contact"
                   type="email"
@@ -186,16 +186,16 @@ export default function GroupsPage() {
                 />
               </Field>
             </div>
-            <Field id="group-members" labelKey="groups.members" hint={t('groups.membersHint')}>
+            <Field id="group-members" labelKey="jobTitles.members" hint={t('jobTitles.membersHint')}>
               <UserPicker value={members} onChange={setMembers} institution={institution || undefined} />
             </Field>
             {editing ? (
               <p className="text-muted-foreground text-xs">
                 <Link
-                  to={`/institutions/${institutionId}/groups/${editing.id}`}
+                  to={`/institutions/${institutionId}/job-titles/${editing.id}`}
                   className="text-primary hover:underline"
                 >
-                  {t('groups.openDetail')}
+                  {t('jobTitles.openDetail')}
                 </Link>
               </p>
             ) : null}
@@ -220,7 +220,7 @@ export default function GroupsPage() {
         loading={pending}
         onConfirm={async () => {
           if (!removing) return
-          const ok = await run(() => groupApi.remove(removing.id), 'common.deleted')
+          const ok = await run(() => jobTitleApi.remove(removing.id), 'common.deleted')
           if (ok) {
             setRemoving(null)
             await list.reload()

@@ -11,10 +11,12 @@ import { connectorApi, syncerApi } from '../api'
 import { useWorkspaceInstitution } from '../institution-context'
 import { useListQuery } from '../hooks/use-list-query'
 import { useMutation } from '../hooks/use-mutation'
+import { useAuth } from '@/features/auth/auth-context'
 import { toast } from 'sonner'
 import { describeError } from '@/shared/lib/errors'
 import { ConnectionCard, type ConnectionCardView } from '../components/connection-card'
 import { ConnectionRuns } from '../components/connection-runs'
+import { ConnectorRuns } from '../components/connector-runs'
 import { ConnectorReconcile } from '../components/connector-reconcile'
 
 /** 入方向类型支持的图标规格（与后端 catalog 的 icon 声明一致） */
@@ -35,6 +37,7 @@ const IN_ICONS: Record<string, { key: string; by_sub_type?: Record<string, strin
  */
 export default function ConnectionsPage() {
   const { t } = useTranslation()
+  const { can } = useAuth()
   const institution = useWorkspaceInstitution()
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
@@ -42,6 +45,7 @@ export default function ConnectionsPage() {
 
   const [removing, setRemoving] = useState<{ id: number; name: string } | null>(null)
   const [logs, setLogs] = useState<{ id: number; name: string } | null>(null)
+  const [provisionRuns, setProvisionRuns] = useState<{ connector: string; name: string } | null>(null)
   const [reconcile, setReconcile] = useState<{ id: number; name: string } | null>(null)
   const { pending, run } = useMutation()
 
@@ -144,6 +148,16 @@ export default function ConnectionsPage() {
                   onClick: () =>
                     setReconcile({ id: connector.id, name: connector.display_name || connector.name }),
                 },
+                ...(can('provision_history', 'read')
+                  ? [{
+                      label: t('connections.viewProvisionRecords'),
+                      onClick: () =>
+                        setProvisionRuns({
+                          connector: connector.name,
+                          name: connector.display_name || connector.name,
+                        }),
+                    }]
+                  : []),
               ],
             },
           ],
@@ -261,6 +275,14 @@ export default function ConnectionsPage() {
         onOpenChange={(open) => !open && setLogs(null)}
         syncerID={logs?.id ?? 0}
         name={logs?.name ?? ''}
+      />
+
+      <ConnectorRuns
+        open={Boolean(provisionRuns)}
+        onOpenChange={(open) => !open && setProvisionRuns(null)}
+        institution={institution}
+        connector={provisionRuns?.connector ?? ''}
+        name={provisionRuns?.name ?? ''}
       />
 
       <ConfirmDialog

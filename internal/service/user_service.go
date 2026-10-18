@@ -18,8 +18,10 @@ type UserService struct {
 	users    repository.UserRepository
 	orgs     repository.InstitutionRepository
 	roles    repository.RoleRepository
-	groups   repository.GroupRepository
+	jobTitles repository.JobTitleRepository
 	depts    repository.DepartmentRepository
+	userDepts repository.UserDepartmentRepository
+	levels   repository.JobLevelRepository
 	sessions *auth.SessionManager
 	audits   *AuditRecorder
 	cipher   *auth.SecretCipher
@@ -33,14 +35,17 @@ func NewUserService(
 	users repository.UserRepository,
 	orgs repository.InstitutionRepository,
 	roles repository.RoleRepository,
-	groups repository.GroupRepository,
+	jobTitles repository.JobTitleRepository,
 	depts repository.DepartmentRepository,
+	userDepts repository.UserDepartmentRepository,
+	levels repository.JobLevelRepository,
 	sessions *auth.SessionManager,
 	audits *AuditRecorder,
 	cipher *auth.SecretCipher,
 ) *UserService {
 	return &UserService{
-		users: users, orgs: orgs, roles: roles, groups: groups, depts: depts,
+		users: users, orgs: orgs, roles: roles, jobTitles: jobTitles, depts: depts,
+		userDepts: userDepts, levels: levels,
 		sessions: sessions, audits: audits, cipher: cipher,
 	}
 }

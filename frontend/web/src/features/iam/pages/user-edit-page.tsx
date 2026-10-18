@@ -2,13 +2,13 @@ import { useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
-import { Button, Combobox, Input, Skeleton, Textarea } from '@/shared/ui'
+import { Button, Combobox, Input, MultiSelect, Skeleton, Textarea } from '@/shared/ui'
 import { PageShell } from '@/widgets/layout/page-shell'
 import { FormSection } from '@/shared/components/form-section'
 import { SwitchField } from '@/shared/components/switch-field'
 import { ConfirmDialog } from '@/shared/components/confirm-dialog'
-import type { Department, User, UserProfileInput } from '@/shared/api/types'
-import { departmentApi, userApi } from '../api'
+import type { Department, JobLevel, User, UserProfileInput } from '@/shared/api/types'
+import { departmentApi, userApi, jobLevelApi } from '../api'
 import { useWorkspaceInstitution, useWorkspaceInstitutionId } from '../institution-context'
 import { useMutation } from '../hooks/use-mutation'
 import { useOnceKey } from '../hooks/use-once-key'
@@ -36,7 +36,9 @@ interface UserForm {
   gender: string
   birthday: string
   education: string
-  department_id: string
+  department_ids: string[]
+  primary_department_id: string
+  job_level_id: string
   is_admin: boolean
   password: string
 }
@@ -62,7 +64,9 @@ const emptyForm: UserForm = {
   gender: '',
   birthday: '',
   education: '',
-  department_id: '',
+  department_ids: [],
+  primary_department_id: '',
+  job_level_id: '',
   is_admin: false,
   password: '',
 }
@@ -89,7 +93,10 @@ function toForm(user: User): UserForm {
     gender: user.gender ?? '',
     birthday: user.birthday ?? '',
     education: user.education ?? '',
-    department_id: user.department_id ? String(user.department_id) : '',
+    // 多值归属（Spec Q2 = A）：优先用详情里的完整列表，老数据回退到主部门
+    department_ids: (user.department_ids ?? (user.department_id ? [user.department_id] : [])).map(String),
+    primary_department_id: user.department_id ? String(user.department_id) : '',
+    job_level_id: user.job_level_id ? String(user.job_level_id) : '',
     is_admin: user.is_admin,
     password: '',
   }
@@ -145,17 +152,20 @@ export default function UserEditPage() {
   const [form, setForm] = useState<UserForm>(emptyForm)
   const [baseline, setBaseline] = useState<UserForm>(emptyForm)
   const [departments, setDepartments] = useState<Department[]>([])
+  const [jobLevels, setJobLevels] = useState<JobLevel[]>([])
   const [loading, setLoading] = useState(true)
   const [discardOpen, setDiscardOpen] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [deptPage, user] = await Promise.all([
+      const [deptPage, levelPage, user] = await Promise.all([
         departmentApi.list({ institution, page: 1, size: 200 }).catch(() => ({ items: [] as Department[] })),
+        jobLevelApi.list({ institution, page: 1, size: 200 }).catch(() => ({ items: [] as JobLevel[] })),
         id ? userApi.get(Number(id), institution || undefined) : Promise.resolve(null),
       ])
       setDepartments(deptPage.items ?? [])
+      setJobLevels(levelPage.items ?? [])
       if (user) {
         const nextForm = toForm(user)
         setForm(nextForm)
@@ -175,7 +185,8 @@ export default function UserEditPage() {
   const patch = buildProfilePatch(baseline, form)
   const dirty = isEdit
     ? Object.keys(patch).length > 0 ||
-      form.department_id !== baseline.department_id ||
+      form.department_ids.join(',') !== baseline.department_ids.join(',') ||
+      form.primary_department_id !== baseline.primary_department_id ||
       form.is_admin !== baseline.is_admin
     : Object.values(form).some((value) => value !== '' && value !== false)
 
@@ -184,11 +195,20 @@ export default function UserEditPage() {
 
   const submit = async () => {
     if (!institution) return
-    const departmentId = form.department_id ? Number(form.department_id) : null
+    const departmentIds = form.department_ids.map(Number).filter((n) => n > 0)
+    const primaryDepartmentId = form.primary_department_id ? Number(form.primary_department_id) : undefined
     await run(async () => {
       if (isEdit && id) {
         if (Object.keys(patch).length > 0) await userApi.updateProfile(Number(id), patch)
-        if (form.department_id !== baseline.department_id) await userApi.setDepartment(Number(id), departmentId)
+        if (
+          form.department_ids.join(',') !== baseline.department_ids.join(',') ||
+          form.primary_department_id !== baseline.primary_department_id
+        ) {
+          await userApi.setDepartments(Number(id), departmentIds, primaryDepartmentId)
+        }
+        if (form.job_level_id !== baseline.job_level_id) {
+          await userApi.setJobLevel(Number(id), form.job_level_id ? Number(form.job_level_id) : null)
+        }
         if (form.is_admin !== baseline.is_admin) await userApi.setAdmin(Number(id), form.is_admin)
         navigate(`/institutions/${institutionId}/users/${id}`)
         return
@@ -214,10 +234,13 @@ export default function UserEditPage() {
         gender: form.gender,
         birthday: form.birthday,
         education: form.education,
-        department_id: departmentId,
+        department_id: primaryDepartmentId ?? departmentIds[0],
         is_admin: form.is_admin,
         password: form.password || undefined,
       })
+      if (departmentIds.length > 1) {
+        await userApi.setDepartments(created.id, departmentIds, primaryDepartmentId)
+      }
       navigate(`/institutions/${institutionId}/users/${created.id}`)
     }, isEdit ? 'users.savedDone' : 'users.createdDone')
   }
@@ -226,6 +249,8 @@ export default function UserEditPage() {
     value: String(dept.id),
     label: dept.name_path || dept.name,
   }))
+
+  const jobLevelOptions = jobLevels.map((level) => ({ value: String(level.id), label: level.name }))
 
   return (
     <PageShell
@@ -347,12 +372,34 @@ export default function UserEditPage() {
 
           <FormSection titleKey="users.sectionMembership" descriptionKey="users.sectionMembershipHint">
             <div className="grid gap-x-6 gap-y-5 sm:grid-cols-2 xl:grid-cols-4">
-              <Field id="user-department" labelKey="users.department" hint={t('users.departmentHint')}>
-                <Combobox
+              <Field id="user-department" labelKey="users.departments" hint={t('users.departmentsHint')}>
+                <MultiSelect
                   options={departmentOptions}
-                  value={form.department_id}
-                  onChange={(value) => update('department_id', value)}
-                  placeholder={t('users.departmentPlaceholder')}
+                  value={form.department_ids}
+                  onChange={(next) => {
+                    update('department_ids', next)
+                    if (next.length === 1) update('primary_department_id', next[0])
+                    else if (form.primary_department_id && !next.includes(form.primary_department_id)) {
+                      update('primary_department_id', '')
+                    }
+                  }}
+                  placeholder={t('users.departmentsPlaceholder')}
+                />
+              </Field>
+              <Field id="user-primary-department" labelKey="users.primaryDepartment" hint={t('users.primaryDepartmentHint')}>
+                <Combobox
+                  options={departmentOptions.filter((item) => form.department_ids.includes(item.value))}
+                  value={form.primary_department_id}
+                  onChange={(value) => update('primary_department_id', value)}
+                  placeholder={t('users.primaryDepartmentPlaceholder')}
+                />
+              </Field>
+              <Field id="user-job-level" labelKey="users.jobLevel" hint={t('users.jobLevelHint')}>
+                <Combobox
+                  options={jobLevelOptions}
+                  value={form.job_level_id}
+                  onChange={(value) => update('job_level_id', value)}
+                  placeholder={t('users.jobLevelPlaceholder')}
                 />
               </Field>
               {!isEdit ? (

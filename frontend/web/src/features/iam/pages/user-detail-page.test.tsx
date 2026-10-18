@@ -45,7 +45,7 @@ const mocks = {
   authorizations: vi.fn(async () => ({
     direct_roles: [],
     inherited_roles: [],
-    groups: [],
+    job_titles: [],
     direct_permissions: [],
     effective_permissions: [],
   })),
@@ -73,13 +73,13 @@ vi.mock('../api', () => ({
     resetMfa: vi.fn(),
     unlock: vi.fn(),
     setRoles: vi.fn(),
-    setGroups: vi.fn(),
+    setJobTitles: vi.fn(),
   },
   departmentApi: {
     list: (...args: unknown[]) => mocks.listDepartments(...(args as [])),
   },
-  groupApi: { list: vi.fn(async () => ({ items: [], total: 0 })) },
   roleApi: { list: vi.fn(async () => ({ items: [], total: 0 })) },
+  jobTitleApi: { list: vi.fn(async () => ({ items: [], total: 0 })) },
   sessionApi: {
     listByUser: vi.fn(async () => ({ items: [] })),
     revoke: vi.fn(),

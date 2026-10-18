@@ -9,7 +9,7 @@ import (
 func TestAppAllowsRedirect(t *testing.T) {
 	app := &repository.Application{
 		RedirectURIs: []string{
-			"http://localhost:5173/oauth/callback",
+			"http://localhost:5173/sso/callback",
 			"https://app.example.com/*",
 		},
 	}
@@ -17,7 +17,7 @@ func TestAppAllowsRedirect(t *testing.T) {
 		uri  string
 		want bool
 	}{
-		{"http://localhost:5173/oauth/callback", true},
+		{"http://localhost:5173/sso/callback", true},
 		{"https://app.example.com/oauth/callback", true},
 		{"https://app.example.com/anything/deep", true},
 		{"http://localhost:5173/evil", false},

@@ -137,6 +137,7 @@ git tag v0.1.0 && git push origin v0.1.0   # 触发多架构（amd64/arm64）构
 |------|------|
 | [OIDC 接入指南](docs/oidc-integration.md) | 把业务系统接成 OIDC 客户端（授权码 + PKCE、claims、登出、JWKS） |
 | [API 参考](docs/api-reference.md) | 管理 API 清单与错误码 |
+| [数据库表结构与 ER 图](docs/database-schema.md) | 业务数据表、字段、约束、索引与分域 ER 图 |
 | [部署手册](docs/deployment.md) | 镜像部署、环境变量、迁移、密钥轮换 |
 | [账号供给接入指南](docs/provisioning-connector.md) | 下游连接器（Connector）契约 |
 

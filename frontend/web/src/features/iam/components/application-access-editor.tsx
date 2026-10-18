@@ -40,12 +40,12 @@ import { applicationApi } from '../api'
 import type { ApplicationAccessFormValue } from './application-form'
 
 /** 主体类型（与后端 subject_type 逐字一致） */
-type SubjectType = 'user' | 'group' | 'department'
+type SubjectType = 'user' | 'job_title' | 'department'
 
 interface SubjectTypeMeta {
   key: SubjectType
   labelKey: string
-  /** 覆盖语义（部门含子部门 / 用户组含子组）——放在右侧面板头部，讲清"授一个等于授一片" */
+  /** 覆盖语义（部门含子部门 / 职务按成员覆盖）——放在右侧面板头部，讲清"授一个等于授一片" */
   hintKey: string
   searchKey: string
   icon: LucideIcon
@@ -63,8 +63,8 @@ const SUBJECT_TYPES: SubjectTypeMeta[] = [
     detailKey: 'users',
   },
   {
-    key: 'group',
-    labelKey: 'applications.accessGroups',
+    key: 'job_title',
+    labelKey: 'applications.accessJobTitles',
     hintKey: 'applications.accessGroupsHint',
     searchKey: 'applications.accessSearchGroup',
     icon: Users,
@@ -91,7 +91,7 @@ interface PickedSubject {
 type AuthorizedMap = Record<SubjectType, string[]>
 
 function emptyAuthorized(): AuthorizedMap {
-  return { user: [], group: [], department: [] }
+  return { user: [], job_title: [], department: [] }
 }
 
 interface ApplicationAccessEditorProps {
@@ -127,7 +127,7 @@ export function ApplicationAccessEditor({ access, onChange, detail }: Applicatio
   const counts = useMemo(
     () => ({
       user: access.users.length,
-      group: access.groups.length,
+      job_title: access.groups.length,
       department: access.departments.length,
     }),
     [access.users.length, access.groups.length, access.departments.length],
@@ -176,7 +176,7 @@ export function ApplicationAccessEditor({ access, onChange, detail }: Applicatio
       onChange({
         mode: access.mode,
         users: add(access.users, 'user'),
-        groups: add(access.groups, 'group'),
+        groups: add(access.groups, 'job_title'),
         departments: add(access.departments, 'department'),
       })
     },
@@ -188,7 +188,8 @@ export function ApplicationAccessEditor({ access, onChange, detail }: Applicatio
       onChange({
         mode: access.mode,
         users: type.key === 'user' ? access.users.filter((item) => item !== name) : access.users,
-        groups: type.key === 'group' ? access.groups.filter((item) => item !== name) : access.groups,
+        groups:
+          type.key === 'job_title' ? access.groups.filter((item) => item !== name) : access.groups,
         departments:
           type.key === 'department' ? access.departments.filter((item) => item !== name) : access.departments,
       })
@@ -305,7 +306,7 @@ export function ApplicationAccessEditor({ access, onChange, detail }: Applicatio
         initialType={activeType}
         authorized={{
           user: access.users,
-          group: access.groups,
+          job_title: access.groups,
           department: access.departments,
         }}
         onConfirm={mergePicked}
@@ -374,7 +375,7 @@ const CANDIDATE_MAX = 200
  * 勾选可跨类型累积（「已选 N 项」），底部一次性确定。
  *
  * 右侧三种形态：
- *   - 用户 / 用户组：扁平分页表格（每页 10 条 + 分页器）；
+ *   - 用户 / 职务：扁平分页表格（每页 10 条 + 分页器）；
  *   - 部门 + 关键词：扁平搜索结果（跨层级，带层级路径，也分页）；
  *   - 部门 + 无关键词：**按层加载的部门树**（展开某节点时才取它的下一层，
  *     顶层与每层都提供「加载更多」）——大组织的部门树不可能一次拉全。
@@ -392,7 +393,7 @@ function AccessPickerDialog({ open, onOpenChange, initialType, authorized, onCon
   const [keyword, setKeyword] = useState('')
   const [showSelected, setShowSelected] = useState(false)
 
-  // 扁平分页（用户 / 用户组 / 部门搜索）
+  // 扁平分页（用户 / 职务 / 部门搜索）
   const [page, setPage] = useState(1)
   const [flat, setFlat] = useState<{ items: ApplicationSubjectOption[]; total: number }>({ items: [], total: 0 })
   // 部门树（顶层 + 逐层懒加载）
@@ -504,7 +505,7 @@ function AccessPickerDialog({ open, onOpenChange, initialType, authorized, onCon
 
   const selectable = flat.items.filter((item) => !authorized[activeType].includes(item.name))
   const selectedNames = draft[activeType]
-  const totalSelected = draft.user.length + draft.group.length + draft.department.length
+  const totalSelected = draft.user.length + draft.job_title.length + draft.department.length
   const allSelected = selectable.length > 0 && selectable.every((item) => selectedNames.includes(item.name))
   const someSelected = selectable.some((item) => selectedNames.includes(item.name))
 
@@ -548,7 +549,7 @@ function AccessPickerDialog({ open, onOpenChange, initialType, authorized, onCon
 
   const confirm = () => {
     const picked: PickedSubject[] = []
-    for (const type of ['user', 'group', 'department'] as SubjectType[]) {
+    for (const type of ['user', 'job_title', 'department'] as SubjectType[]) {
       for (const name of draft[type]) {
         const info = draftInfo[name]
         picked.push({ type, name, display_name: info?.display_name || name, path: info?.path })
@@ -695,7 +696,7 @@ function AccessPickerDialog({ open, onOpenChange, initialType, authorized, onCon
 
             {showSelected && totalSelected > 0 ? (
               <div className="flex flex-wrap gap-1.5 px-4 pb-2">
-                {(['user', 'group', 'department'] as SubjectType[]).flatMap((type) =>
+                {(['user', 'job_title', 'department'] as SubjectType[]).flatMap((type) =>
                   draft[type].map((name) => (
                     <Badge key={`${type}:${name}`} variant="secondary">
                       {draftInfo[name]?.display_name || name}

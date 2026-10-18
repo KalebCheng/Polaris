@@ -20,6 +20,10 @@ type SyncerService struct {
 	syncers     repository.SyncerRepository
 	users       repository.UserRepository
 	departments repository.DepartmentRepository
+	// links / userDepts：外部身份锚点与多部门归属（Spec FR-1 / Q2 = A）
+	links     repository.SyncerLinkRepository
+	userDepts repository.UserDepartmentRepository
+	jobTitles repository.JobTitleRepository
 	orgs        repository.InstitutionRepository
 	cipher      *auth.SecretCipher
 	audits      *AuditRecorder
@@ -38,12 +42,16 @@ func NewSyncerService(
 	syncers repository.SyncerRepository,
 	users repository.UserRepository,
 	departments repository.DepartmentRepository,
+	links repository.SyncerLinkRepository,
+	userDepts repository.UserDepartmentRepository,
+	jobTitles repository.JobTitleRepository,
 	orgs repository.InstitutionRepository,
 	cipher *auth.SecretCipher,
 	audits *AuditRecorder,
 ) *SyncerService {
 	return &SyncerService{
-		syncers: syncers, users: users, departments: departments, orgs: orgs,
+		syncers: syncers, users: users, departments: departments,
+		links: links, userDepts: userDepts, jobTitles: jobTitles, orgs: orgs,
 		cipher: cipher, audits: audits,
 	}
 }

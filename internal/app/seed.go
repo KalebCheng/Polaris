@@ -46,7 +46,8 @@ func seed(ctx context.Context, db *dbclient.Client) error {
 	certRepo := postgres.NewCertRepository(db)
 	roleRepo := postgres.NewRoleRepository(db)
 	permRepo := postgres.NewPermissionRepository(db)
-	groupRepo := postgres.NewGroupRepository(db)
+	jobTitleRepo := postgres.NewJobTitleRepository(db)
+	userDeptRepo := postgres.NewUserDepartmentRepository(db)
 
 	// 1) 内置租户
 	org := &repository.Institution{
@@ -72,6 +73,7 @@ func seed(ctx context.Context, db *dbclient.Client) error {
 		CodePath:      builtInRootDept,
 		NamePath:      builtInInstitutionName,
 		Level:         0,
+		IsRoot:        true, // 组织根节点（Spec Q4.5：每个组织恰好一行，禁止改名/移动/删除）
 	}
 	if _, err := deptRepo.Create(ctx, rootDept); err != nil {
 		return err
@@ -92,14 +94,17 @@ func seed(ctx context.Context, db *dbclient.Client) error {
 	}
 
 	// 3) 内置应用（OAuth/OIDC 客户端）
+	// 回调中间页挂在前端命名空间 /sso/callback（与后端 OIDC 协议路径 /oauth/* 分开）
 	redirects := []string{
-		"http://localhost:5173/oauth/callback",
-		"http://127.0.0.1:5173/oauth/callback",
-		"http://localhost:8000/oauth/callback",
+		"http://localhost:5173/sso/callback",
+		"http://127.0.0.1:5173/sso/callback",
+		"http://localhost:8000/sso/callback",
 	}
 	if _, err := appRepo.Create(ctx, &repository.Application{
 		InstitutionID: orgID, Code: builtInApp, Name: "内置应用",
 		Category: "default", Type: "oidc", Cert: builtInCert,
+		// access_mode 从 031 起有 CHECK 约束（all | restricted）；缺省零值空串会直接违反约束
+		AccessMode: repository.AccessModeAll,
 		SelfSignupEnabled: true, SignupAutoSignin: true, MaxSessions: 5,
 		EmailCodeTTLSeconds: 300, SMSCodeTTLSeconds: 300, MagicLinkTTLSeconds: 600,
 		SigninMethods: []repository.SigninMethod{
@@ -132,7 +137,7 @@ func seed(ctx context.Context, db *dbclient.Client) error {
 	}
 	userPerm := &repository.Permission{
 		InstitutionID: orgID, Name: "permission-self", DisplayName: "自行读取",
-		Resources: []string{"user", "application", "institution", "department", "connector", "account_strategy", "app_account", "provision_history"},
+		Resources: []string{"user", "application", "institution", "department", "connector", "account_strategy", "application_account", "provision_history"},
 		Actions:   []string{"read"}, Effect: "Allow",
 		IsEnabled: true, State: "Approved",
 	}
@@ -156,9 +161,9 @@ func seed(ctx context.Context, db *dbclient.Client) error {
 		return err
 	}
 
-	// 6) 用户组
-	group := &repository.Group{InstitutionID: orgID, Name: "built-in-group", DisplayName: "内置用户组", IsEnabled: true}
-	if _, err := groupRepo.Create(ctx, group); err != nil {
+	// 6) 内置职务（原「用户组」；Spec 第六阶段 Q3 = A 升级为职务）
+	jobTitle := &repository.JobTitle{InstitutionID: orgID, Name: "built-in-job-title", DisplayName: "内置职务", IsEnabled: true}
+	if _, err := jobTitleRepo.Create(ctx, jobTitle); err != nil {
 		return err
 	}
 
@@ -183,12 +188,18 @@ func seed(ctx context.Context, db *dbclient.Client) error {
 	if _, err := userRepo.Create(ctx, adminUser); err != nil {
 		return err
 	}
+	// 管理员归属根部门：多值归属的真相在 user_departments（users.department_id 只是主部门的便利视图）
+	if adminUser.ID > 0 && rootDept.ID > 0 {
+		if err := userDeptRepo.ReplaceForUser(ctx, orgID, adminUser.ID, []int64{rootDept.ID}, rootDept.ID, nil); err != nil {
+			return err
+		}
+	}
 	if err := roleRepo.SetMembers(ctx, adminRole.ID, &repository.RoleRelations{
 		Users: []string{builtInAdmin}, Permissions: []string{"permission-all"},
 	}); err != nil {
 		return err
 	}
-	if err := groupRepo.SetMembers(ctx, group.ID, []string{builtInAdmin}); err != nil {
+	if err := jobTitleRepo.SetMembers(ctx, jobTitle.ID, []string{builtInAdmin}); err != nil {
 		return err
 	}
 

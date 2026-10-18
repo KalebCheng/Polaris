@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,7 +25,7 @@ const (
 	ProvisionActionRetry   = "retry"
 )
 
-// 供给状态（写入 app_accounts.status / provision_history.status）。
+// 供给状态（写入 application_accounts.status / provision_history.status）。
 const (
 	ProvisionStatusActive   = "active"
 	ProvisionStatusDisabled = "disabled"
@@ -58,6 +59,11 @@ type provisionTask struct {
 	Action        string
 }
 
+// taskEnqueuer 抽出 asyncd 的入队能力，便于单测验证"删除/ JIT 是否真的派发了任务"。
+type taskEnqueuer interface {
+	Enqueue(ctx context.Context, jobName string, payload any, uniqueKey string, runAt time.Time, opts ...asyncd.EnqueueOption) (int64, bool, error)
+}
+
 // ProvisioningService 应用账号供给与生命周期服务（P2）。
 //
 // 职责：
@@ -65,12 +71,12 @@ type provisionTask struct {
 //   - 供给任务编排（进程内工作池异步执行 + scheduler 兜底重试）；
 //   - 与用户/角色变更事件挂钩（创建 / 禁用 / 离职 / 角色授予 / 登录 JIT）。
 //
-// 幂等键：(institutionID, application, user)；下游失败以 app_accounts.status='failed' 记录，
+// 幂等键：(institutionID, application, user)；下游失败以 application_accounts.status='failed' 记录，
 // 由 scheduler 的 provision-retry 任务重新入队直至成功。
 type ProvisioningService struct {
 	connectors repository.ConnectorRepository
 	strategies repository.AccountStrategyRepository
-	accounts   repository.AppAccountRepository
+	accounts   repository.ApplicationAccountRepository
 	history    repository.ProvisionHistoryRepository
 	users      repository.UserRepository
 	apps       repository.ApplicationRepository
@@ -84,14 +90,14 @@ type ProvisioningService struct {
 	// asyncd 任务入队（异步执行 + 单飞）：由 app 装配注入。
 	// 说明：此前用的是进程内 channel，**队列满会直接丢任务**，且多实例各自为战——
 	// 换成 asyncd 后，任务落库、可重试、可观测，且同一账号不会被重复排队。
-	asyncd *asyncd.Service
+	asyncd taskEnqueuer
 }
 
 // NewProvisioningService 创建供给服务。
 func NewProvisioningService(
 	connectors repository.ConnectorRepository,
 	strategies repository.AccountStrategyRepository,
-	accounts repository.AppAccountRepository,
+	accounts repository.ApplicationAccountRepository,
 	history repository.ProvisionHistoryRepository,
 	users repository.UserRepository,
 	apps repository.ApplicationRepository,
@@ -107,6 +113,32 @@ func NewProvisioningService(
 
 // TaskTypeProvisionAccount 供给任务类型（asyncd 处理器注册名）
 const TaskTypeProvisionAccount = "provision.account"
+
+// resolveAppID 把应用标识（code）解析为主键（0 = 未解析到）。
+// 任务载荷（provisionTask）里存的是 code / 账号名——它是**瞬时命令**而非存储；
+// 落库一律用主键（§3.8），因此在写库前于服务层完成 code → id 解析。
+func (s *ProvisioningService) resolveAppID(ctx context.Context, institutionID int64, code string) int64 {
+	if code == "" || s.apps == nil {
+		return 0
+	}
+	app, err := s.apps.GetByCode(ctx, institutionID, code)
+	if err != nil || app == nil {
+		return 0
+	}
+	return app.ID
+}
+
+// resolveUserID 把用户账号名解析为主键（0 = 未解析到）
+func (s *ProvisioningService) resolveUserID(ctx context.Context, institutionID int64, name string) int64 {
+	if name == "" || s.users == nil {
+		return 0
+	}
+	u, err := s.users.GetByName(ctx, institutionID, name)
+	if err != nil || u == nil {
+		return 0
+	}
+	return u.ID
+}
 
 // SetAsyncd 注入 asyncd（装配期调用）
 func (s *ProvisioningService) SetAsyncd(service *asyncd.Service) { s.asyncd = service }
@@ -131,7 +163,7 @@ type Field = connection.Field
 type ProvisionTask = provisionTask
 
 // enqueue 把一次供给动作交给 asyncd 异步执行。
-// 单飞键 = 机构×应用×用户（与 app_accounts 的幂等键一致）：同一账号在途时不会重复排队。
+// 单飞键 = 机构×应用×用户（与 application_accounts 的幂等键一致）：同一账号在途时不会重复排队。
 func (s *ProvisioningService) enqueue(ctx context.Context, task provisionTask) {
 	if s.asyncd == nil {
 		logger.Error("provisioning: asyncd 未装配，任务被丢弃", "application", task.Application, "user", task.User)
@@ -146,7 +178,7 @@ func (s *ProvisioningService) enqueue(ctx context.Context, task provisionTask) {
 	}
 }
 
-// ProvisionUniqueKey 供给任务的单飞键（与 app_accounts 幂等键一致，导出以便测试与排查）
+// ProvisionUniqueKey 供给任务的单飞键（与 application_accounts 幂等键一致，导出以便测试与排查）
 func ProvisionUniqueKey(institutionID int64, application, user string) string {
 	return fmt.Sprintf("provision:%d:%s:%s", institutionID, application, user)
 }
@@ -173,7 +205,7 @@ func (s *ProvisioningService) TriggerRoleGranted(ctx context.Context, institutio
 //   - revokeWhen=disable（默认）：停用即禁用下游账号。
 func (s *ProvisioningService) TriggerUserStatusChange(ctx context.Context, institutionID int64, user string, deleted bool) {
 	for _, acc := range s.userAccounts(ctx, institutionID, user) {
-		strategy, _ := s.strategies.FindForApplication(ctx, institutionID, acc.Application)
+		strategy, _ := s.strategies.FindForApplication(ctx, institutionID, s.resolveAppID(ctx, institutionID, acc.Application))
 		var action string
 		switch policyRevokeWhen(strategy) {
 		case RevokeWhenDelete:
@@ -190,18 +222,26 @@ func (s *ProvisioningService) TriggerUserStatusChange(ctx context.Context, insti
 	}
 }
 
-// TriggerJIT 登录即时建号：仅当该应用存在 just_in_time 的连接器时派发。
+// TriggerJIT 登录即时建号：以账号策略 policy.createWhen=jit 为唯一触发源。
+//
+// 历史上连接器上还有一个 just_in_time 开关（Spec D12），同一件事两个开关导致"配了不生效"。
+// 该字段已由迁移 048 删除；这里只读策略，且仍要求应用存在启用的出方向连接器作为执行者。
 func (s *ProvisioningService) TriggerJIT(ctx context.Context, institutionID int64, application, user string) {
-	conns, err := s.connectors.ListEnabled(ctx, institutionID, application)
-	if err != nil {
+	appID := s.resolveAppID(ctx, institutionID, application)
+	if appID == 0 || s.strategies == nil {
 		return
 	}
-	for _, c := range conns {
-		if c.JustInTime {
-			s.enqueue(ctx, provisionTask{InstitutionID: institutionID, Application: application, User: user, Action: ProvisionActionCreate})
-			return
-		}
+	strategy, err := s.strategies.FindForApplication(ctx, institutionID, appID)
+	if err != nil || strategy == nil || !strategy.IsEnabled || policyCreateWhen(strategy) != CreateWhenJIT {
+		return
 	}
+	if s.connectors == nil {
+		return
+	}
+	if _, err := s.primaryConnector(ctx, institutionID, application); err != nil {
+		return
+	}
+	s.enqueue(ctx, provisionTask{InstitutionID: institutionID, Application: application, User: user, Action: ProvisionActionCreate})
 }
 
 // TriggerRetry 兜底重试：扫描失败的应用账号，重新派发建号任务。
@@ -246,9 +286,9 @@ func (s *ProvisioningService) autoCreateApplications(ctx context.Context, instit
 }
 
 // userAccounts 返回某用户在本租户下已有的应用账号。
-func (s *ProvisioningService) userAccounts(ctx context.Context, institutionID int64, user string) []*repository.AppAccount {
+func (s *ProvisioningService) userAccounts(ctx context.Context, institutionID int64, user string) []*repository.ApplicationAccount {
 	items, err := s.accounts.List(ctx, repository.ListQuery{
-		InstitutionID: institutionID, Field: "user", Value: user, Limit: 500,
+		InstitutionID: institutionID, Field: "user_id", Value: strconv.FormatInt(s.resolveUserID(ctx, institutionID, user), 10), Limit: 500,
 	})
 	if err != nil {
 		return nil
@@ -312,8 +352,9 @@ func (s *ProvisioningService) processCreate(
 	ctx context.Context, task provisionTask, prov provisioner.Provisioner,
 	cfg provisioner.Config, user *repository.User, conn *repository.Connector,
 ) {
-	strategy, _ := s.strategies.FindForApplication(ctx, task.InstitutionID, task.Application)
-	existing, _ := s.accounts.GetByUserApp(ctx, task.InstitutionID, task.Application, task.User)
+	strategy, _ := s.strategies.FindForApplication(ctx, task.InstitutionID, s.resolveAppID(ctx, task.InstitutionID, task.Application))
+	existing, _ := s.accounts.GetByUserApp(ctx, task.InstitutionID,
+		s.resolveAppID(ctx, task.InstitutionID, task.Application), s.resolveUserID(ctx, task.InstitutionID, task.User))
 
 	account, plainPassword := s.buildAccount(user, strategy, existing, prov.Capabilities(cfg).Password)
 
@@ -348,7 +389,7 @@ func (s *ProvisioningService) processCreate(
 	if downstreamName == "" {
 		downstreamName = account.Username
 	}
-	record := &repository.AppAccount{
+	record := &repository.ApplicationAccount{
 		InstitutionID: task.InstitutionID, Application: task.Application, User: task.User,
 		Username: user.Name, RelatedUsername: downstreamName, CreateType: "automatic",
 		Status: ProvisionStatusActive,
@@ -367,7 +408,8 @@ func (s *ProvisioningService) processRecycle(
 	ctx context.Context, task provisionTask, prov provisioner.Provisioner,
 	cfg provisioner.Config, user *repository.User, conn *repository.Connector, action string,
 ) {
-	acc, err := s.accounts.GetByUserApp(ctx, task.InstitutionID, task.Application, task.User)
+	acc, err := s.accounts.GetByUserApp(ctx, task.InstitutionID,
+		s.resolveAppID(ctx, task.InstitutionID, task.Application), s.resolveUserID(ctx, task.InstitutionID, task.User))
 	if err != nil {
 		return // 无下游账号，无需回收
 	}
@@ -385,7 +427,18 @@ func (s *ProvisioningService) processRecycle(
 			map[string]interface{}{"application": task.Application})
 		return
 	}
-	// delete
+	// delete：先确认下游是否还存在。failed 账号可能从未建成功；重复删除也应幂等——
+	// 确认不存在时只清理本地台账，不再调用下游 delete 把"删除不存在的账号"记成失败。
+	if reporter, ok := prov.(provisioner.ExistsReporter); ok {
+		result, err := reporter.ExistsUser(ctx, cfg, account.Username)
+		if err == nil && result.State == provisioner.ExistsNo {
+			_ = s.accounts.Delete(ctx, acc.ID)
+			s.recordHistory(ctx, task, conn.Name, ProvisionStatusSkipped, "下游账号已不存在，已清理本地台账")
+			s.audits.Record(ctx, "provisioning", task.InstitutionID, "app_account.delete", task.User,
+				map[string]interface{}{"application": task.Application, "downstream": account.Username})
+			return
+		}
+	}
 	if err := prov.Delete(ctx, cfg, account); err != nil {
 		s.recordHistory(ctx, task, conn.Name, ProvisionStatusFailed, err.Error())
 		return
@@ -398,11 +451,13 @@ func (s *ProvisioningService) processRecycle(
 
 // createFailedAccount 记录一条失败的 pending 账号，供 scheduler 兜底重试。
 func (s *ProvisioningService) createFailedAccount(ctx context.Context, task provisionTask, account *provisioner.Account, cause error) {
-	if _, err := s.accounts.GetByUserApp(ctx, task.InstitutionID, task.Application, task.User); err == nil {
+	appID := s.resolveAppID(ctx, task.InstitutionID, task.Application)
+	userID := s.resolveUserID(ctx, task.InstitutionID, task.User)
+	if _, err := s.accounts.GetByUserApp(ctx, task.InstitutionID, appID, userID); err == nil {
 		return // 已存在记录，无需重建
 	}
-	rec := &repository.AppAccount{
-		InstitutionID: task.InstitutionID, Application: task.Application, User: task.User,
+	rec := &repository.ApplicationAccount{
+		InstitutionID: task.InstitutionID, ApplicationID: &appID, UserID: &userID,
 		Username: account.Username, RelatedUsername: account.Username,
 		CreateType: "automatic", Status: ProvisionStatusFailed,
 	}
@@ -413,7 +468,7 @@ func (s *ProvisioningService) createFailedAccount(ctx context.Context, task prov
 
 // buildAccount 依据用户与账号策略构造下游账号载荷；返回账号与本次生成的明文口令。
 func (s *ProvisioningService) buildAccount(
-	user *repository.User, strategy *repository.AccountStrategy, existing *repository.AppAccount, withPassword bool,
+	user *repository.User, strategy *repository.AccountStrategy, existing *repository.ApplicationAccount, withPassword bool,
 ) (*provisioner.Account, string) {
 	plainPassword := ""
 	if withPassword {
@@ -448,7 +503,7 @@ func (s *ProvisioningService) buildAccount(
 }
 
 // markPasswordSet 记录"本次向下游设置过初始口令"这一事实（口令本体不落库）。
-func markPasswordSet(acc *repository.AppAccount, plain string) {
+func markPasswordSet(acc *repository.ApplicationAccount, plain string) {
 	if plain != "" {
 		acc.HasPassword = true
 	}
@@ -475,7 +530,7 @@ func (s *ProvisioningService) connectorConfig(conn *repository.Connector) provis
 
 // primaryConnector 返回应用下首个启用连接器。
 func (s *ProvisioningService) primaryConnector(ctx context.Context, institutionID int64, application string) (*repository.Connector, error) {
-	conns, err := s.connectors.ListEnabled(ctx, institutionID, application)
+	conns, err := s.connectors.ListEnabled(ctx, institutionID, s.resolveAppID(ctx, institutionID, application))
 	if err != nil {
 		return nil, err
 	}
@@ -486,9 +541,12 @@ func (s *ProvisioningService) primaryConnector(ctx context.Context, institutionI
 }
 
 func (s *ProvisioningService) recordHistory(ctx context.Context, task provisionTask, connector, status, message string) {
+	appID := s.resolveAppID(ctx, task.InstitutionID, task.Application)
+	userID := s.resolveUserID(ctx, task.InstitutionID, task.User)
 	_, _ = s.history.Create(ctx, &repository.ProvisionHistory{
-		InstitutionID: task.InstitutionID, Connector: connector, Application: task.Application,
-		User: task.User, Action: task.Action, Status: status, Message: message,
+		InstitutionID: task.InstitutionID, Connector: connector,
+		ApplicationID: nullableID(appID), UserID: nullableID(userID),
+		Action: task.Action, Status: status, Message: message,
 	})
 }
 
@@ -496,7 +554,7 @@ func (s *ProvisioningService) recordHistory(ctx context.Context, task provisionT
 
 // ConnectorInput 连接器创建/更新入参。
 type ConnectorInput struct {
-	// Connector 承载通用字段（name / display_name / application / type / state / just_in_time）
+	// Connector 承载通用字段（name / display_name / application / type / state）
 	Connector *repository.Connector
 	// Config 类型专属的非敏感配置（键必须由目录声明，未知键一律拒绝）
 	Config map[string]string
@@ -557,7 +615,7 @@ func (s *ProvisioningService) buildConnectorValues(
 	// 通用字段由连接器实体承载（name / display_name / application / state），
 	// 只有"类型专属"字段才走 config / secrets。
 	generic := map[string]bool{
-		"name": true, "display_name": true, "application": true, "state": true, "just_in_time": true,
+		"name": true, "display_name": true, "application": true, "state": true,
 	}
 	declared := map[string]Field{}
 	for _, field := range info.Fields {
@@ -706,6 +764,36 @@ func (s *ProvisioningService) PingConnector(ctx context.Context, institutionID i
 	return nil
 }
 
+// bindStrategyApplication 把策略的应用引用收敛为主键。
+//
+// 请求可能携带 application_id（控制台应用详情）或 application（应用 code，兼容旧客户端）；
+// 存储只认主键（§3.8）。两者都没有时表示组织默认策略（application_id = NULL）。
+func (s *ProvisioningService) bindStrategyApplication(ctx context.Context, a *repository.AccountStrategy) error {
+	if a == nil {
+		return nil
+	}
+	if a.ApplicationID != nil && *a.ApplicationID > 0 {
+		app, err := s.apps.GetByID(ctx, *a.ApplicationID)
+		if err != nil || app == nil || app.InstitutionID != a.InstitutionID {
+			return bizerrors.ErrInvalidParams.WithDetail("application_id", *a.ApplicationID)
+		}
+		a.Application = app.Code
+		return nil
+	}
+	code := strings.TrimSpace(a.Application)
+	if code == "" {
+		a.ApplicationID = nil
+		return nil
+	}
+	app, err := s.apps.GetByCode(ctx, a.InstitutionID, code)
+	if err != nil || app == nil {
+		return bizerrors.ErrInvalidParams.WithDetail("application", code)
+	}
+	a.ApplicationID = &app.ID
+	a.Application = app.Code
+	return nil
+}
+
 // CreateStrategy 创建账号策略。
 func (s *ProvisioningService) CreateStrategy(ctx context.Context, actor string, a *repository.AccountStrategy) (*repository.AccountStrategy, error) {
 	if a.InstitutionID == 0 || a.Name == "" {
@@ -713,6 +801,9 @@ func (s *ProvisioningService) CreateStrategy(ctx context.Context, actor string, 
 	}
 	if _, err := s.orgs.GetByID(ctx, a.InstitutionID); err != nil {
 		return nil, bizerrors.ErrNotFound.WithDetail("institution_id", a.InstitutionID)
+	}
+	if err := s.bindStrategyApplication(ctx, a); err != nil {
+		return nil, err
 	}
 	if _, err := s.strategies.GetByName(ctx, a.InstitutionID, a.Name); err == nil {
 		return nil, bizerrors.New(bizerrors.CodeConflict, "account strategy already exists")
@@ -733,6 +824,14 @@ func (s *ProvisioningService) UpdateStrategy(ctx context.Context, actor string, 
 		return bizerrors.ErrNotFound.WithDetail("account_strategy", a.Name)
 	}
 	a.ID = existing.ID
+	// 编辑时未携带应用信息（旧客户端 / 只改策略字段）沿用原应用，避免被静默改成租户默认。
+	if a.ApplicationID == nil && strings.TrimSpace(a.Application) == "" {
+		a.ApplicationID = existing.ApplicationID
+		a.Application = existing.Application
+	}
+	if err := s.bindStrategyApplication(ctx, a); err != nil {
+		return err
+	}
 	if err := s.strategies.Update(ctx, a); err != nil {
 		return err
 	}
@@ -763,8 +862,8 @@ func (s *ProvisioningService) DeleteStrategy(ctx context.Context, actor string, 
 }
 
 // ListStrategies 分页列出账号策略。
-func (s *ProvisioningService) ListStrategies(ctx context.Context, institutionID int64, keyword string, offset, limit int) ([]*repository.AccountStrategy, int64, error) {
-	q := institutionQuery(institutionID, keyword, offset, limit)
+func (s *ProvisioningService) ListStrategies(ctx context.Context, institutionID int64, keyword string, applicationID int64, offset, limit int) ([]*repository.AccountStrategy, int64, error) {
+	q := withApplicationFilter(institutionQuery(institutionID, keyword, offset, limit), applicationID)
 	items, err := s.strategies.List(ctx, q)
 	if err != nil {
 		return nil, 0, err
@@ -778,9 +877,9 @@ func (s *ProvisioningService) ListStrategies(ctx context.Context, institutionID 
 
 // ── 应用账号与供给历史 ──────────────────────────────────────────
 
-// ListAppAccounts 分页列出应用账号。（口令已不落库，DTO 只以 has_password 表达"设置过初始口令"）
-func (s *ProvisioningService) ListAppAccounts(ctx context.Context, institutionID int64, keyword string, offset, limit int) ([]*repository.AppAccount, int64, error) {
-	q := institutionQuery(institutionID, keyword, offset, limit)
+// ListApplicationAccounts 分页列出应用账号。（口令已不落库，DTO 只以 has_password 表达"设置过初始口令"）
+func (s *ProvisioningService) ListApplicationAccounts(ctx context.Context, institutionID int64, keyword string, applicationID int64, offset, limit int) ([]*repository.ApplicationAccount, int64, error) {
+	q := withApplicationFilter(institutionQuery(institutionID, keyword, offset, limit), applicationID)
 	items, err := s.accounts.List(ctx, q)
 	if err != nil {
 		return nil, 0, err
@@ -792,10 +891,10 @@ func (s *ProvisioningService) ListAppAccounts(ctx context.Context, institutionID
 	return items, total, nil
 }
 
-// ListAppAccountsForUser 列出某用户的应用账号（门户"我的应用账号"只读视图）。
-func (s *ProvisioningService) ListAppAccountsForUser(ctx context.Context, institutionID int64, user string) ([]*repository.AppAccount, error) {
+// ListApplicationAccountsForUser 列出某用户的应用账号（门户"我的应用账号"只读视图）。
+func (s *ProvisioningService) ListApplicationAccountsForUser(ctx context.Context, institutionID int64, user string) ([]*repository.ApplicationAccount, error) {
 	items, err := s.accounts.List(ctx, repository.ListQuery{
-		InstitutionID: institutionID, Field: "user", Value: user, Limit: 200,
+		InstitutionID: institutionID, Field: "user_id", Value: strconv.FormatInt(s.resolveUserID(ctx, institutionID, user), 10), Limit: 200,
 	})
 	if err != nil {
 		return nil, err
@@ -819,7 +918,7 @@ type PortalApplication struct {
 // ListApplicationsForUser 仅列出当前用户已有有效下游账号且仍启用的应用。
 func (s *ProvisioningService) ListApplicationsForUser(ctx context.Context, institutionID int64, user string) ([]PortalApplication, error) {
 	accounts, err := s.accounts.List(ctx, repository.ListQuery{
-		InstitutionID: institutionID, Field: "user", Value: user, Limit: 200,
+		InstitutionID: institutionID, Field: "user_id", Value: strconv.FormatInt(s.resolveUserID(ctx, institutionID, user), 10), Limit: 200,
 	})
 	if err != nil {
 		return nil, err
@@ -832,13 +931,51 @@ func (s *ProvisioningService) ListApplicationsForUser(ctx context.Context, insti
 		}
 		s.appendPortalApplication(ctx, institutionID, user, account.Application, seen, &applications)
 	}
-	// JIT 应用在首次登录前还没有 app_accounts 记录；有启用的 JIT 连接器时仍应出现在工作台。
-	connectors, err := s.connectors.List(ctx, repository.ListQuery{InstitutionID: institutionID, Limit: 500})
+	// JIT 应用在首次登录前还没有 application_accounts 记录；有启用的 JIT 策略时仍应出现在工作台。
+	if s.strategies == nil {
+		return applications, nil
+	}
+	strategies, err := s.strategies.List(ctx, repository.ListQuery{InstitutionID: institutionID, Limit: 500})
 	if err != nil {
 		return nil, err
 	}
-	for _, connector := range connectors {
-		if connector.State == "active" && connector.JustInTime && connector.Application != "" {
+	defaultJIT := false
+	appScoped := map[int64]bool{}
+	for _, strategy := range strategies {
+		if !strategy.IsEnabled {
+			continue
+		}
+		if strategy.ApplicationID != nil {
+			appScoped[*strategy.ApplicationID] = true
+		}
+		if policyCreateWhen(strategy) != CreateWhenJIT {
+			continue
+		}
+		if strategy.Application == "" {
+			defaultJIT = true
+			continue
+		}
+		if s.connectors == nil {
+			continue
+		}
+		if _, err := s.primaryConnector(ctx, institutionID, strategy.Application); err != nil {
+			continue
+		}
+		s.appendPortalApplication(ctx, institutionID, user, strategy.Application, seen, &applications)
+	}
+	// 租户默认 JIT 策略作用于所有已配置出方向连接器、且没有应用专属策略覆盖的应用。
+	if defaultJIT && s.connectors != nil {
+		connectors, err := s.connectors.List(ctx, repository.ListQuery{InstitutionID: institutionID, Limit: 500})
+		if err != nil {
+			return nil, err
+		}
+		for _, connector := range connectors {
+			if connector.State != "active" || connector.Application == "" {
+				continue
+			}
+			if connector.ApplicationID != nil && appScoped[*connector.ApplicationID] {
+				continue
+			}
 			s.appendPortalApplication(ctx, institutionID, user, connector.Application, seen, &applications)
 		}
 	}
@@ -883,8 +1020,8 @@ func (s *ProvisioningService) appendPortalApplication(
 	})
 }
 
-// CreateAppAccount 手动建号（create_type=manual）。
-func (s *ProvisioningService) CreateAppAccount(ctx context.Context, actor string, institutionID int64, application, user string) error {
+// CreateApplicationAccount 手动建号（create_type=manual）。
+func (s *ProvisioningService) CreateApplicationAccount(ctx context.Context, actor string, institutionID int64, application, user string) error {
 	if institutionID == 0 || application == "" || user == "" {
 		return bizerrors.New(bizerrors.CodeInvalidParams, "institution_id, application and user are required")
 	}
@@ -900,23 +1037,29 @@ func (s *ProvisioningService) CreateAppAccount(ctx context.Context, actor string
 	return nil
 }
 
-// DeleteAppAccount 删除应用账号（并回收下游账号）。
-func (s *ProvisioningService) DeleteAppAccount(ctx context.Context, actor string, institutionID int64, user, application string) error {
-	acc, err := s.accounts.GetByUserApp(ctx, institutionID, application, user)
-	if err != nil {
+// DeleteApplicationAccount 删除应用账号：先派发下游删除任务，成功后才删本地台账。
+//
+// 历史实现直接 `accounts.Delete`，下游账号仍然存在，属于"界面删了、下游还在"的假删除。
+// 现在与禁用/离职走同一条 processRecycle(delete) 链路；失败会保留台账并写入供给历史，
+// 管理员可以再次点击删除重试。
+func (s *ProvisioningService) DeleteApplicationAccount(ctx context.Context, actor string, institutionID int64, user, application string) error {
+	if _, err := s.accounts.GetByUserApp(ctx, institutionID,
+		s.resolveAppID(ctx, institutionID, application), s.resolveUserID(ctx, institutionID, user)); err != nil {
 		return bizerrors.ErrNotFound.WithDetail("app_account", user)
 	}
-	if err := s.accounts.Delete(ctx, acc.ID); err != nil {
-		return err
+	if _, err := s.primaryConnector(ctx, institutionID, application); err != nil {
+		return bizerrors.New(bizerrors.CodeInvalidParams, "application has no enabled connector")
 	}
-	s.audits.Record(ctx, actor, institutionID, "app_account.delete", user,
+	s.enqueue(ctx, provisionTask{InstitutionID: institutionID, Application: application, User: user, Action: ProvisionActionDelete})
+	s.audits.Record(ctx, actor, institutionID, "app_account.delete_queued", user,
 		map[string]interface{}{"application": application})
 	return nil
 }
 
-// RetryAppAccount 手动重试某应用账号的建号。
-func (s *ProvisioningService) RetryAppAccount(ctx context.Context, actor string, institutionID int64, user, application string) error {
-	acc, err := s.accounts.GetByUserApp(ctx, institutionID, application, user)
+// RetryApplicationAccount 手动重试某应用账号的建号。
+func (s *ProvisioningService) RetryApplicationAccount(ctx context.Context, actor string, institutionID int64, user, application string) error {
+	acc, err := s.accounts.GetByUserApp(ctx, institutionID,
+		s.resolveAppID(ctx, institutionID, application), s.resolveUserID(ctx, institutionID, user))
 	if err != nil {
 		return bizerrors.ErrNotFound.WithDetail("app_account", user)
 	}
@@ -930,8 +1073,8 @@ func (s *ProvisioningService) RetryAppAccount(ctx context.Context, actor string,
 func (s *ProvisioningService) ListHistoryForUser(ctx context.Context, institutionID int64, user string, offset, limit int) ([]*repository.ProvisionHistory, int64, error) {
 	q := repository.ListQuery{
 		InstitutionID: institutionID,
-		Field:         "user",
-		Value:         user,
+		Field:         "user_id",
+		Value:         strconv.FormatInt(s.resolveUserID(ctx, institutionID, user), 10),
 		Offset:        offset,
 		Limit:         limit,
 	}
@@ -947,8 +1090,8 @@ func (s *ProvisioningService) ListHistoryForUser(ctx context.Context, institutio
 }
 
 // ListHistory 分页列出供给历史。
-func (s *ProvisioningService) ListHistory(ctx context.Context, institutionID int64, keyword string, offset, limit int) ([]*repository.ProvisionHistory, int64, error) {
-	q := institutionQuery(institutionID, keyword, offset, limit)
+func (s *ProvisioningService) ListHistory(ctx context.Context, institutionID int64, keyword string, applicationID int64, connector string, offset, limit int) ([]*repository.ProvisionHistory, int64, error) {
+	q := withConnectorFilter(withApplicationFilter(institutionQuery(institutionID, keyword, offset, limit), applicationID), connector)
 	items, err := s.history.List(ctx, q)
 	if err != nil {
 		return nil, 0, err
@@ -958,6 +1101,23 @@ func (s *ProvisioningService) ListHistory(ctx context.Context, institutionID int
 		return nil, 0, err
 	}
 	return items, total, nil
+}
+
+// withApplicationFilter 按应用主键追加列表过滤（0 = 不过滤）。
+func withApplicationFilter(q repository.ListQuery, applicationID int64) repository.ListQuery {
+	if applicationID > 0 {
+		q.Filters = append(q.Filters, repository.ColumnFilter{Field: "application_id", Value: applicationID})
+	}
+	return q
+}
+
+// withConnectorFilter 按连接器名称追加列表过滤（空 = 不过滤）。
+func withConnectorFilter(q repository.ListQuery, connector string) repository.ListQuery {
+	name := strings.TrimSpace(connector)
+	if name != "" {
+		q.Filters = append(q.Filters, repository.ColumnFilter{Field: "connector", Value: name})
+	}
+	return q
 }
 
 // ── 辅助 ──────────────────────────────────────────────────────
@@ -1061,4 +1221,12 @@ func payloadString(payload map[string]any, key string) string {
 		return value
 	}
 	return ""
+}
+
+// nullableID 把"0 表示未解析到"的 ID 转成可空主键（NULL 用于保留历史行、不阻断删除流程）。
+func nullableID(id int64) *int64 {
+	if id <= 0 {
+		return nil
+	}
+	return &id
 }

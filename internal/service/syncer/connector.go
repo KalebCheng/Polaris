@@ -24,17 +24,24 @@ type ExternalUser struct {
 	Location string
 	// CountryCode 手机区号（如 86）
 	CountryCode string
-	// DepartmentIDs 所属外部组织（部门）标识；用于写入 users.department_id
+	// DepartmentIDs 所属外部组织（部门）标识；写入 user_departments（多值）
 	DepartmentIDs []string
+	// Raw 源端字段原文（键名与目录声明的 source_fields 一致）。
+	// 落库到 syncer_user_links.raw 并在详情页展示——"同步结果对不上时能直接看到源端给了什么"。
+	Raw map[string]string
 }
 
 // ExternalGroup 外部组织（部门）的中立视图。
 // ParentID 为外部父节点标识：提供时按层级还原组织树；缺失时挂在「同步目标」节点之下（扁平）。
 type ExternalGroup struct {
-	ID        string
-	Name      string
-	ParentID  string
+	ID       string
+	Name     string
+	ParentID string
+	// IsRoot 源端根节点占位（钉钉 dept_id=1、企业微信 dept_id=1、飞书 0）。
+	// 它**不落库**：否则部门树的顶层会变成"1"而不是组织本身（见 Spec Q4.5）。
+	IsRoot    bool
 	MemberIDs []string
+	Raw       map[string]string
 }
 
 // Connector 外部数据源连接器

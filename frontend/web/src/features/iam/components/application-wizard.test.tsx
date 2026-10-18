@@ -27,7 +27,7 @@ function renderWizard(access: ApplicationAccessFormValue = emptyApplicationAcces
         editing={null}
         providers={[]}
         certs={[]}
-        groups={[]}
+        jobTitles={[]}
         onFinish={vi.fn()}
         finishLabelKey="common.save"
         access={access}
@@ -107,7 +107,7 @@ describe('ApplicationWizard', () => {
     expect(screen.getByText(i18n.t('applications.accessListEmpty'))).toBeInTheDocument()
     for (const key of [
       'applications.accessUsers',
-      'applications.accessGroups',
+      'applications.accessJobTitles',
       'applications.accessDepartments',
     ]) {
       expect(screen.getByText(i18n.t(key))).toBeInTheDocument()

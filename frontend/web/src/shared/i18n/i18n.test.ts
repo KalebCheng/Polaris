@@ -42,7 +42,6 @@ describe('i18n 资源一致性', () => {
       'nav.overview',
       'nav.directory',
       'nav.apps',
-      'nav.lifecycle',
       'nav.security',
       'nav.audit',
       'nav.profile',

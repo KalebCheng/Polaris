@@ -13,7 +13,7 @@ import {
   Skeleton,
 } from '@/shared/ui'
 import { PageShell } from '@/widgets/layout/page-shell'
-import { institutionApi } from '@/features/iam/api'
+import { institutionApi, jobLevelApi } from '@/features/iam/api'
 import { useCurrentInstitution } from '@/features/iam/institution-context'
 import { useWorkspaceInstitution } from '@/features/iam/institution-context'
 import { PASSWORD_OPTIONS } from '@/features/iam/lib/password-policy'
@@ -22,7 +22,7 @@ import type { Institution, InstitutionStats } from '@/shared/api/types'
 /** 资源维度 → 对应管理页（点击后进入该组织的资源管理） */
 const resourceLinks: { key: string; labelKey: string; to: string }[] = [
   { key: 'users', labelKey: 'nav.users', to: 'users' },
-  { key: 'groups', labelKey: 'nav.groups', to: 'groups' },
+  { key: 'jobTitles', labelKey: 'nav.jobTitles', to: 'jobTitles' },
   { key: 'applications', labelKey: 'nav.applications', to: 'applications' },
   { key: 'providers', labelKey: 'nav.providers', to: 'providers' },
   { key: 'roles', labelKey: 'nav.roles', to: 'roles' },
@@ -57,6 +57,7 @@ export default function InstitutionDetailPage() {
 
   const [org, setOrg] = useState<Institution | null>(null)
   const [stats, setStats] = useState<InstitutionStats | null>(null)
+  const [levelDistribution, setLevelDistribution] = useState<{ name: string; count: number }[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -66,10 +67,15 @@ export default function InstitutionDetailPage() {
     setLoading(true)
     void (async () => {
       try {
-        const [detail, aggregated] = await Promise.all([institutionApi.get(orgID), institutionApi.stats(orgID)])
+        const [detail, aggregated, distribution] = await Promise.all([
+          institutionApi.get(orgID),
+          institutionApi.stats(orgID),
+          jobLevelApi.distribution(String(orgID)).catch(() => ({ items: [] })),
+        ])
         if (cancelled) return
         setOrg(detail)
         setStats(aggregated)
+        setLevelDistribution(distribution.items ?? [])
       } catch {
         if (!cancelled) setOrg(null)
       } finally {
@@ -148,6 +154,27 @@ export default function InstitutionDetailPage() {
               </Card>
             ))}
           </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">{t('institutions.jobLevelDistribution')}</CardTitle>
+              <CardDescription>{t('institutions.jobLevelDistributionHint')}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {levelDistribution.length === 0 ? (
+                <p className="text-muted-foreground text-sm">{t('institutions.jobLevelDistributionEmpty')}</p>
+              ) : (
+                <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {levelDistribution.map((item) => (
+                    <li key={item.name} className="bg-muted/40 flex items-center justify-between rounded-lg px-3 py-2 text-sm">
+                      <span className="truncate">{item.name}</span>
+                      <span className="font-medium tabular-nums">{item.count}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
 
           <Card>
             <CardHeader>

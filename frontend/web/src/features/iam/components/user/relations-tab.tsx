@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
-import { KeySquare, Link2, PlugZap, UserCog } from 'lucide-react'
+import { KeySquare, Link2, Plug, PlugZap, UserCog } from 'lucide-react'
 import {
   Badge,
   Button,
@@ -31,7 +31,7 @@ import { CopyButton } from '@/shared/components/copy-button'
 import { ListPagination } from '@/widgets/layout/list-pagination'
 import { formatDateTime } from '@/shared/lib/format'
 import { describeError } from '@/shared/lib/errors'
-import type { AppAccount, ProvisionHistory, User, UserIdentity } from '@/shared/api/types'
+import type { AppAccount, ExternalIdentityRef, ProvisionHistory, User, UserIdentity } from '@/shared/api/types'
 import { userApi } from '../../api'
 import { useWorkspaceInstitutionId } from '../../institution-context'
 import { useMutation } from '../../hooks/use-mutation'
@@ -57,13 +57,14 @@ export function RelationsTab({ user, onChanged }: RelationsTabProps) {
   const { pending, run } = useMutation()
 
   const [identities, setIdentities] = useState<UserIdentity[]>([])
+  const [external, setExternal] = useState<ExternalIdentityRef[]>([])
   const [accounts, setAccounts] = useState<AppAccount[]>([])
   const [history, setHistory] = useState<ProvisionHistory[]>([])
   const [historyTotal, setHistoryTotal] = useState(0)
   const [historyPage, setHistoryPage] = useState(1)
   const [loading, setLoading] = useState(true)
   // 三块数据各自独立：读不到时必须显式报错，不能渲染成"没有绑定 / 没有下游账号"
-  const [errors, setErrors] = useState({ identities: '', accounts: '', history: '' })
+  const [errors, setErrors] = useState({ identities: '', accounts: '', history: '', external: '' })
   const [unbinding, setUnbinding] = useState<UserIdentity | null>(null)
 
   const [apiKeyOpen, setApiKeyOpen] = useState(false)
@@ -73,11 +74,12 @@ export function RelationsTab({ user, onChanged }: RelationsTabProps) {
 
   const load = useCallback(async () => {
     setLoading(true)
-    setErrors({ identities: '', accounts: '', history: '' })
-    const [identityResult, accountResult, historyResult] = await Promise.allSettled([
+    setErrors({ identities: '', accounts: '', history: '', external: '' })
+    const [identityResult, accountResult, historyResult, externalResult] = await Promise.allSettled([
       userApi.identities(user.id),
       userApi.appAccounts(user.id),
       userApi.provisionHistory(user.id, { page: historyPage, size: PAGE_SIZE }),
+      userApi.externalIdentities(user.id),
     ])
     if (identityResult.status === 'fulfilled') {
       setIdentities(identityResult.value.items ?? [])
@@ -88,6 +90,11 @@ export function RelationsTab({ user, onChanged }: RelationsTabProps) {
       setAccounts(accountResult.value.items ?? [])
     } else {
       setErrors((prev) => ({ ...prev, accounts: describeError(accountResult.reason, t) }))
+    }
+    if (externalResult.status === 'fulfilled') {
+      setExternal(externalResult.value.items ?? [])
+    } else {
+      setErrors((prev) => ({ ...prev, external: describeError(externalResult.reason, t) }))
     }
     if (historyResult.status === 'fulfilled') {
       setHistory(historyResult.value.items ?? [])
@@ -145,6 +152,42 @@ export function RelationsTab({ user, onChanged }: RelationsTabProps) {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
+            <Plug className="size-4" /> {t('users.externalIdentityTitle')}
+          </CardTitle>
+          <CardDescription>{t('users.externalIdentityHint')}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {loading ? null : errors.external ? (
+            <LoadError compact onRetry={() => void load()} detail={errors.external} />
+          ) : external.length === 0 ? (
+            <p className="text-muted-foreground text-sm">{t('users.externalIdentityEmpty')}</p>
+          ) : (
+            <ul className="space-y-2">
+              {external.map((item) => (
+                <li key={`${item.syncer_id}-${item.external_id}`} className="bg-muted/40 rounded-lg px-3 py-2 text-sm">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="secondary">{item.syncer_name || item.syncer_type}</Badge>
+                    <span className="font-mono text-xs">{item.external_id}</span>
+                    <span className="text-muted-foreground ml-auto text-xs">{item.updated_at}</span>
+                  </div>
+                  {item.raw ? (
+                    <details className="mt-1">
+                      <summary className="text-muted-foreground cursor-pointer text-xs">
+                        {t('users.externalIdentityRaw')}
+                      </summary>
+                      <pre className="mt-1 max-h-40 overflow-auto text-xs">{item.raw}</pre>
+                    </details>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
             <UserCog className="size-4" /> {t('users.appAccountsTitle')}
           </CardTitle>
           <CardDescription>{t('users.appAccountsHint')}</CardDescription>
@@ -170,7 +213,18 @@ export function RelationsTab({ user, onChanged }: RelationsTabProps) {
               <TableBody>
                 {accounts.map((account) => (
                   <TableRow key={account.id}>
-                    <TableCell>{account.application}</TableCell>
+                    <TableCell>
+                      {account.application_id ? (
+                        <Link
+                          to={`/institutions/${institutionId}/applications/${account.application_id}?tab=provisioning`}
+                          className="text-primary hover:underline"
+                        >
+                          {account.application}
+                        </Link>
+                      ) : (
+                        account.application
+                      )}
+                    </TableCell>
                     <TableCell className="font-mono text-xs">{account.related_username || account.username}</TableCell>
                     <TableCell>
                       <Badge variant={account.status === 'active' ? 'success' : 'destructive'}>{account.status}</Badge>
@@ -184,7 +238,7 @@ export function RelationsTab({ user, onChanged }: RelationsTabProps) {
           )}
           <div className="mt-3">
             <Link
-              to={`/institutions/${institutionId}/app-accounts`}
+              to={`/institutions/${institutionId}/applications`}
               className="text-primary inline-flex items-center gap-1 text-sm hover:underline"
             >
               <PlugZap className="size-3.5" /> {t('users.appAccountsManage')}

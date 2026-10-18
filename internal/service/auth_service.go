@@ -22,6 +22,7 @@ type AuthService struct {
 	orgs        repository.InstitutionRepository
 	users       repository.UserRepository
 	apps        repository.ApplicationRepository
+	jobTitles   repository.JobTitleRepository
 	captcha     *CaptchaService
 	codes       repository.CodeStore
 	magicLinks  repository.MagicLinkStore
@@ -68,6 +69,7 @@ func NewAuthService(
 	orgs repository.InstitutionRepository,
 	users repository.UserRepository,
 	apps repository.ApplicationRepository,
+	jobTitles repository.JobTitleRepository,
 	providerRuntime *providerpkg.Runtime,
 	oauthResolver *providerpkg.Resolver,
 	captcha *CaptchaService,
@@ -82,12 +84,36 @@ func NewAuthService(
 	cfg AuthServiceConfig,
 ) *AuthService {
 	return &AuthService{
-		orgs: orgs, users: users, apps: apps,
+		orgs: orgs, users: users, apps: apps, jobTitles: jobTitles,
 		providerRuntime: providerRuntime, oauthResolver: oauthResolver,
 		captcha: captcha, codes: codes, magicLinks: magicLinks,
 		userService: userService, sessions: sessions, jwt: jwt,
 		states: states, rateLimiter: rateLimiter, audits: audits,
 		oauthCfg: cfg.OAuth, loginMax: cfg.LoginMax, loginWindow: cfg.LoginWindow, sessionTTL: cfg.SessionTTL,
+	}
+}
+
+// addDefaultJobTitle 把新注册/验证码 JIT 建号的用户加入应用配置的默认职务。
+//
+// 应用向导里的「默认职务」字段（applications.default_group）此前只写进了
+// users.signup_application，职务关系从未建立——典型的"配了不生效"。
+// 这里在用户落库后调用 AddMembers（幂等，只增不删），失败只记日志，不回滚已创建的用户。
+func (s *AuthService) addDefaultJobTitle(ctx context.Context, institutionID int64, jobTitle, user string) {
+	name := strings.TrimSpace(jobTitle)
+	if s.jobTitles == nil || name == "" || user == "" {
+		return
+	}
+	item, err := s.jobTitles.GetByName(ctx, institutionID, name)
+	if err != nil || item == nil {
+		logger.Warn("default job title not found", "institution_id", institutionID, "job_title", name, "error", err)
+		return
+	}
+	if err := s.jobTitles.AddMembers(ctx, item.ID, []string{user}); err != nil {
+		logger.Warn("add default job title member failed", "institution_id", institutionID, "job_title", name, "user", user, "error", err)
+		return
+	}
+	if s.provisioning != nil {
+		s.provisioning.TriggerRoleGranted(ctx, institutionID, user)
 	}
 }
 
@@ -230,7 +256,7 @@ func (s *AuthService) Login(ctx context.Context, req auth.LoginRequest, host, ip
 	_ = s.users.UpdateLastSignin(ctx, user.ID, time.Now(), ip)
 	_ = s.users.SetOnline(ctx, user.ID, true)
 	s.audits.Record(ctx, user.Name, user.InstitutionID, "auth.login", user.Name, nil)
-	// 登录成功：触发 JIT 建号（仅针对配置了 just_in_time 连接器的应用）
+	// 登录成功：触发 JIT 建号（仅针对账号策略 createWhen=jit 的应用）
 	if s.provisioning != nil && appName != "" {
 		s.provisioning.TriggerJIT(ctx, user.InstitutionID, appName, user.Name)
 	}
@@ -949,7 +975,7 @@ func (s *AuthService) OAuthPlatformInfo() (callbackURL, homepageURL string) {
 }
 
 // resolveRedirectURI 解析 IdP 授权回跳地址，优先级：
-// 请求覆盖 > 提供商行上的 redirect_uri > 全局 oauth.redirect_uri > {base_url}/oauth/callback。
+// 请求覆盖 > 提供商行上的 redirect_uri > 全局 oauth.redirect_uri > {base_url}/sso/callback。
 //
 // 注意：禁止把 from 等自定义参数拼进 redirect_uri（IdP 会按精确匹配拒绝）。
 func (s *AuthService) resolveRedirectURI(item *repository.Provider, override string) string {
@@ -963,7 +989,7 @@ func (s *AuthService) resolveRedirectURI(item *repository.Provider, override str
 		return s.oauthCfg.RedirectURI
 	}
 	base := strings.TrimSuffix(s.oauthCfg.BaseURL, "/")
-	return base + "/oauth/callback"
+	return base + "/sso/callback"
 }
 
 // sanitizeFrom 仅允许站内相对路径作为回跳目标。
