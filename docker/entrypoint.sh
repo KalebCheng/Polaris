@@ -3,6 +3,12 @@
 # 由 tini 作为 PID 1 负责信号转发与僵尸回收（见 Dockerfile ENTRYPOINT）。
 set -uo pipefail
 
+# 允许把镜像当作一次性 CLI 使用（例如迁移）：
+#   docker run --rm <image> /app/polaris -migrate
+if [ "$#" -gt 0 ]; then
+    exec "$@"
+fi
+
 echo "[polaris] starting backend and nginx..."
 
 /app/polaris &

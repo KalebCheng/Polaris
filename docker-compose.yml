@@ -1,26 +1,28 @@
-# Polaris 本地/单机部署：PostgreSQL + Redis + Polaris 应用镜像。
+# Polaris 单机部署：PostgreSQL + Redis + Polaris 一体镜像。
+#
+# 适用场景：本地体验 / 单机小规模部署。生产环境建议使用外部托管 PostgreSQL/Redis，
+# 并只暴露应用 nginx 端口（见 docs/deployment.md）。
 #
 # 快速开始：
-#   export POLARIS_JWT_SECRET=dev-secret-for-local-testing-only
-#   export POLARIS_CREDENTIAL_ENC_KEY=$(openssl rand -base64 32)
+#   cp .env.example .env    # 按需修改镜像名与密码
+#   docker compose pull
 #   docker compose up -d
-#   访问 http://localhost:8100 （组织 built-in / admin / admin123）
-#
-# 说明：app 使用发布到 Docker Hub 的镜像；如需本地构建，见 README「用镜像部署」。
+#   访问 http://localhost:8100 （默认组织 built-in / 管理员 admin / 密码见 .env）
+
 services:
   postgres:
     image: postgres:16-alpine
     container_name: polaris-postgres
     environment:
-      POSTGRES_USER: polaris
-      POSTGRES_PASSWORD: polaris123
-      POSTGRES_DB: polaris
+      POSTGRES_USER: ${POLARIS_DB_USER:-polaris}
+      POSTGRES_PASSWORD: ${POLARIS_DB_PASSWORD:-polaris123}
+      POSTGRES_DB: ${POLARIS_DB_NAME:-polaris}
     ports:
-      - "5432:5432"
+      - "${POLARIS_DB_PUBLISHED_PORT:-5432}:5432"
     volumes:
       - polaris-pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U polaris"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -28,16 +30,19 @@ services:
   redis:
     image: redis:7-alpine
     container_name: polaris-redis
+    environment:
+      REDIS_PASSWORD: ${POLARIS_REDIS_PASSWORD:-redis}
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\""]
     ports:
-      - "6379:6379"
+      - "${POLARIS_REDIS_PUBLISHED_PORT:-6379}:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 5s
       timeout: 5s
       retries: 10
 
   app:
-    image: ${POLARIS_IMAGE:-polaris/polaris:latest}
+    image: ${POLARIS_IMAGE:-kalebcheng/polaris:latest}
     container_name: polaris-app
     depends_on:
       postgres:
@@ -47,18 +52,28 @@ services:
     environment:
       POLARIS_ENV: production
       POLARIS_DB_HOST: postgres
-      POLARIS_DB_PASSWORD: polaris123
+      POLARIS_DB_PORT: "5432"
+      POLARIS_DB_USER: ${POLARIS_DB_USER:-polaris}
+      POLARIS_DB_PASSWORD: ${POLARIS_DB_PASSWORD:-polaris123}
+      POLARIS_DB_NAME: ${POLARIS_DB_NAME:-polaris}
+      POLARIS_DB_SSLMODE: ${POLARIS_DB_SSLMODE:-disable}
+      POLARIS_DB_AUTO_MIGRATE: ${POLARIS_DB_AUTO_MIGRATE:-true}
+      POLARIS_DB_SEED: ${POLARIS_DB_SEED:-true}
       POLARIS_REDIS_HOST: redis
+      POLARIS_REDIS_PORT: "6379"
+      POLARIS_REDIS_PASSWORD: ${POLARIS_REDIS_PASSWORD:-redis}
       # 以下两项必须注入（生产红线：禁止使用默认值）
       POLARIS_JWT_SECRET: ${POLARIS_JWT_SECRET:?必须设置 POLARIS_JWT_SECRET}
       POLARIS_CREDENTIAL_ENC_KEY: ${POLARIS_CREDENTIAL_ENC_KEY:?必须设置 POLARIS_CREDENTIAL_ENC_KEY}
-      POLARIS_COOKIE_SECURE: "false"
-      POLARIS_CSRF_ALLOWED_ORIGINS: "http://localhost:8100"
-      POLARIS_DB_SEED: "true"
-      # 生产请改为强口令或关闭种子
+      # 对外访问地址与浏览器安全策略
+      POLARIS_ISSUER: ${POLARIS_ISSUER:-http://localhost:8100}
+      POLARIS_COOKIE_SECURE: ${POLARIS_COOKIE_SECURE:-false}
+      POLARIS_CSRF_ALLOWED_ORIGINS: ${POLARIS_CSRF_ALLOWED_ORIGINS:-http://localhost:8100}
       POLARIS_ADMIN_PASSWORD: ${POLARIS_ADMIN_PASSWORD:-admin123}
     ports:
-      - "8100:8100"
+      # 容器内 nginx 监听 80，Go 后端仅作为内部上游使用
+      - "${POLARIS_HTTP_PORT:-8100}:80"
+    stop_grace_period: 30s
     restart: unless-stopped
 
 volumes:

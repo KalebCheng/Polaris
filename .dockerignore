@@ -4,6 +4,10 @@
 .idea
 .vscode
 .github
+.codegraph
+.agents
+.claude
+**/.DS_Store
 
 # 构建产物与缓存（镜像内会重新构建）
 bin/
@@ -26,8 +30,10 @@ logs/
 tmp/
 temp/
 .env
-.env.local
+.env.*
+!.env.example
 
 # 演示与脚本
 scripts/
 examples/
+docker-compose*.yml

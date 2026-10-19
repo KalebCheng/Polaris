@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-
 # ─────────────────────────────────────────────────────────────
 # Polaris 一体镜像：后端（Go）+ 前端（React SPA）+ nginx（静态托管 + 反代）
 #
@@ -18,7 +16,7 @@ COPY frontend/web/ ./
 RUN pnpm build
 
 # ── 2. 后端构建 ──────────────────────────────────────────────
-FROM golang:alpine AS backend
+FROM golang:1.26-alpine AS backend
 WORKDIR /src
 # go.mod 声明 go 1.26，允许工具链自动下载；静态编译便于放入 alpine 运行镜像
 ENV GOTOOLCHAIN=auto CGO_ENABLED=0 GOOS=linux
@@ -61,10 +59,11 @@ ENV POLARIS_CONFIG=/app/configs/app.yaml \
     POLARIS_DB_HOST=postgres \
     POLARIS_REDIS_HOST=redis
 
-EXPOSE 8100
+# 对外服务端口由容器内 nginx 提供；Go 后端只监听容器内 :8100。
+EXPOSE 80
 
-# 健康检查走就绪探针（含依赖状态）
+# 健康检查走 nginx 的 /readyz：同时验证静态站点、反向代理与依赖状态。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD wget -qO- http://127.0.0.1:8100/healthz >/dev/null 2>&1 || exit 1
+    CMD wget -qO- http://127.0.0.1/readyz >/dev/null 2>&1 || exit 1
 
 ENTRYPOINT ["/sbin/tini", "--", "/app/entrypoint.sh"]

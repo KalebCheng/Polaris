@@ -44,11 +44,18 @@ Polaris 是一个统一身份认证与访问管理平台（IAM / IdP）：以 **
 ### 1. 启动依赖
 
 ```bash
-# 方式一：Docker Compose（若端口未被占用）
-make docker-up
+# 方式一：完整容器栈（应用镜像 + PostgreSQL + Redis）
+cp .env.example .env      # 修改镜像名、密码与密钥
+docker compose up -d
 
-# 方式二：使用已有的 PostgreSQL / Redis，按需创建库
-#   PostgreSQL: 创建用户 polaris / 密码 polaris123 / 数据库 polaris
+# 方式二：本地开发只启动依赖（口令与 configs/app.yaml 默认值一致）
+docker run -d --name polaris-dev-postgres -p 5432:5432 \
+  -e POSTGRES_USER=polaris -e POSTGRES_PASSWORD=polaris123 -e POSTGRES_DB=polaris \
+  postgres:16-alpine
+docker run -d --name polaris-dev-redis -p 6379:6379 redis:7-alpine --requirepass redis
+
+# 也可以使用已有的 PostgreSQL / Redis，按需建库：
+#   PostgreSQL: 用户 polaris / 密码 polaris123 / 数据库 polaris
 ```
 
 ### 2. 启动后端
@@ -80,39 +87,39 @@ pnpm dev            # http://localhost:5173，/api、/oauth、/.well-known、/st
 
 ### 4. 用镜像部署（Docker Hub）
 
-镜像把**后端 API + 前端 SPA + nginx**打包为单容器（nginx 托管静态资源并把
-`/api`、`/oauth`、`/.well-known`、`/static` 反代到内部 Go 服务），因此单容器即可运行完整平台。
+镜像把**后端 API + 前端 SPA + nginx**打包为单容器。容器对外端口是 nginx 的 **80**，
+Go 后端只监听容器内 `:8100`；映射端口时请使用 `宿主机端口:80`。
 
 ```bash
-# 1) 启动依赖（PostgreSQL + Redis）+ 应用
-export POLARIS_JWT_SECRET=dev-secret-for-local-testing-only
-export POLARIS_CREDENTIAL_ENC_KEY=$(openssl rand -base64 32)   # 生产必须显式注入
+cp .env.example .env            # 按需修改镜像名、密码与密钥
+docker compose pull
 docker compose up -d
 
-# 访问 http://localhost:8100 （组织 built-in / admin / admin123）
+# 访问 http://localhost:8100 （组织 built-in / 管理员 admin）
 ```
 
-也可直接用镜像运行（需自备 PostgreSQL / Redis）：
+生产环境建议使用外部 PostgreSQL / Redis，并固定版本标签：
 
 ```bash
-docker run -d --name polaris -p 8100:8100 \
-  -e POLARIS_ENV=production \
-  -e POLARIS_DB_HOST=your-pg-host \
-  -e POLARIS_DB_PASSWORD=your-pg-password \
-  -e POLARIS_REDIS_HOST=your-redis-host \
-  -e POLARIS_JWT_SECRET=your-jwt-secret \
-  -e POLARIS_CREDENTIAL_ENC_KEY=$(openssl rand -base64 32) \
-  polaris/polaris:latest
+docker run -d --name polaris \
+  --env-file /etc/polaris/polaris.env \
+  -p 127.0.0.1:8100:80 \
+  kalebcheng/polaris:1.2.3
 ```
 
-镜像由 GitHub Actions 在打 tag 时自动构建并推送（`.github/workflows/release.yml`）：
+镜像由 GitHub Actions 构建并推送到 Docker Hub：
+
+- push `main` → `main`、`sha-*`（多架构）；
+- push tag `v*` → 版本标签、`latest`（多架构）；
+- PR 只构建验证，不推送。
 
 ```bash
-git tag v0.1.0 && git push origin v0.1.0   # 触发多架构（amd64/arm64）构建 → Docker Hub
+git tag v1.2.3 && git push origin v1.2.3
 ```
 
-发布前需在仓库配置 Secrets：`DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`；
+发布前需在仓库配置 Secrets `DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`；
 镜像名可用仓库变量 `DOCKERHUB_IMAGE` 覆盖（默认 `<用户名>/polaris`）。
+完整步骤见 [容器部署手册](docs/deployment.md)。
 
 ## 对外接口
 
@@ -266,8 +273,9 @@ GET    /readyz                          # 就绪探针（含依赖状态）
 | `POLARIS_CONFIG` | 配置文件路径（默认 `configs/app.yaml`） |
 | `POLARIS_ENV` / `POLARIS_PORT` | 运行环境 / HTTP 端口 |
 | `POLARIS_DB_HOST` `_PORT` `_USER` `_PASSWORD` `_NAME` | PostgreSQL 连接（密码敏感） |
+| `POLARIS_DB_SSLMODE` | PostgreSQL SSL 模式（`disable` / `require` 等） |
 | `POLARIS_REDIS_HOST` `_PORT` `_DB` | Redis 连接地址 / 库号 |
-| `POLARIS_REDIS_PASSWORD` | Redis 密码（敏感） |
+| `POLARIS_REDIS_PASSWORD` | Redis 密码（敏感；无认证 Redis 可显式设为空） |
 | `POLARIS_JWT_SECRET` | JWT 签名密钥（敏感，必须注入） |
 | `POLARIS_CREDENTIAL_ENC_KEY` | 敏感字段加密密钥（base64 32 字节，生产必须注入） |
 | `POLARIS_COOKIE_SECURE` | 会话 Cookie Secure（生产 true） |

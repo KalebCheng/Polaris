@@ -251,6 +251,7 @@ const (
 	EnvDBUser             = "POLARIS_DB_USER"
 	EnvDBPassword         = "POLARIS_DB_PASSWORD"
 	EnvDBName             = "POLARIS_DB_NAME"
+	EnvDBSSLMode          = "POLARIS_DB_SSLMODE"
 	EnvRedisHost          = "POLARIS_REDIS_HOST"
 	EnvRedisPort          = "POLARIS_REDIS_PORT"
 	EnvRedisDB            = "POLARIS_REDIS_DB"
@@ -279,8 +280,9 @@ func applyEnvOverrides(cfg *Config) {
 	cfg.Database.Host = envOr(EnvDBHost, cfg.Database.Host)
 	cfg.Database.Port = envIntOr(EnvDBPort, cfg.Database.Port)
 	cfg.Database.User = envOr(EnvDBUser, cfg.Database.User)
-	cfg.Database.Password = envOr(EnvDBPassword, cfg.Database.Password)
+	cfg.Database.Password = envOrAllowEmpty(EnvDBPassword, cfg.Database.Password)
 	cfg.Database.Name = envOr(EnvDBName, cfg.Database.Name)
+	cfg.Database.SSLMode = envOr(EnvDBSSLMode, cfg.Database.SSLMode)
 	cfg.Database.AutoMigrate = envBoolOr(EnvDBAutoMigrate, cfg.Database.AutoMigrate)
 	cfg.Database.MigrationsDir = envOr(EnvMigrationsDir, cfg.Database.MigrationsDir)
 	cfg.Database.Seed = envBoolOr(EnvSeed, cfg.Database.Seed)
@@ -288,7 +290,7 @@ func applyEnvOverrides(cfg *Config) {
 	cfg.Redis.Host = envOr(EnvRedisHost, cfg.Redis.Host)
 	cfg.Redis.Port = envIntOr(EnvRedisPort, cfg.Redis.Port)
 	cfg.Redis.DB = envIntOr(EnvRedisDB, cfg.Redis.DB)
-	cfg.Redis.Password = envOr(EnvRedisPassword, cfg.Redis.Password)
+	cfg.Redis.Password = envOrAllowEmpty(EnvRedisPassword, cfg.Redis.Password)
 
 	if v := os.Getenv(EnvCSRFAllowed); v != "" {
 		parts := strings.Split(v, ",")
@@ -352,6 +354,15 @@ func envIntOr(key string, current int) int {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
 		}
+	}
+	return current
+}
+
+// envOrAllowEmpty 与 envOr 的区别：环境变量存在但值为空时也覆盖，
+// 用于"密码为空"本身有意义的配置（如无认证 Redis）。
+func envOrAllowEmpty(key, current string) string {
+	if v, ok := os.LookupEnv(key); ok {
+		return v
 	}
 	return current
 }

@@ -14,6 +14,13 @@ app:
   name: polaris
   env: development
   port: 8100
+database:
+  host: yaml-db
+  port: 5432
+  user: polaris
+  password: yaml-db-pass
+  name: polaris
+  sslmode: disable
 redis:
   host: yaml-redis
   port: 6379
@@ -38,6 +45,7 @@ security:
 	t.Setenv(EnvAppEnv, "production")
 	t.Setenv(EnvAppPort, "9100")
 	t.Setenv(EnvJWTSecret, "injected-secret")
+	t.Setenv(EnvDBSSLMode, "require")
 	t.Setenv(EnvRedisHost, "injected-redis")
 	t.Setenv(EnvRedisPort, "6380")
 	t.Setenv(EnvRedisDB, "3")
@@ -58,6 +66,9 @@ security:
 	}
 	if cfg.Auth.JWTSecret != "injected-secret" {
 		t.Errorf("jwt_secret 未注入: %q", cfg.Auth.JWTSecret)
+	}
+	if cfg.Database.SSLMode != "require" {
+		t.Errorf("database.sslmode 未注入: %q", cfg.Database.SSLMode)
 	}
 	if cfg.Redis.Host != "injected-redis" || cfg.Redis.Port != 6380 || cfg.Redis.DB != 3 {
 		t.Errorf("redis host/port/db 未注入: %+v", cfg.Redis)
@@ -129,5 +140,33 @@ func TestDefaultProvisioning(t *testing.T) {
 	p := DefaultProvisioning()
 	if p.Mode != "jit" || !p.AutoCreate || !p.LinkByEmail {
 		t.Fatalf("代码级默认供给策略错误: %+v", p)
+	}
+}
+
+func TestLoadAllowsEmptyPasswordOverrides(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.yaml")
+	content := `
+database:
+  password: yaml-db-placeholder
+redis:
+  password: yaml-redis-placeholder
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("写入配置失败: %v", err)
+	}
+
+	t.Setenv(EnvDBPassword, "")
+	t.Setenv(EnvRedisPassword, "")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	if cfg.Database.Password != "" {
+		t.Errorf("database.password 应允许被空值覆盖，实际 %q", cfg.Database.Password)
+	}
+	if cfg.Redis.Password != "" {
+		t.Errorf("redis.password 应允许被空值覆盖，实际 %q", cfg.Redis.Password)
 	}
 }
