@@ -1,0 +1,39 @@
+# 版本控制与 IDE
+.git
+.gitignore
+.idea
+.vscode
+.github
+.codegraph
+.agents
+.claude
+**/.DS_Store
+
+# 构建产物与缓存（镜像内会重新构建）
+bin/
+frontend/web/node_modules/
+frontend/web/dist/
+frontend/web/.pnpm-store/
+.gocache/
+.gomodcache/
+
+# 文档与本地文件（运行镜像不需要）
+docs/
+*.md
+!README.md
+configs/app.local.yaml
+configs/secrets.yaml
+*.pem
+*.key
+*.log
+logs/
+tmp/
+temp/
+.env
+.env.*
+!.env.example
+
+# 演示与脚本
+scripts/
+examples/
+docker-compose*.yml

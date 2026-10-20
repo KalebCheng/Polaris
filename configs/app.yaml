@@ -1,0 +1,119 @@
+# Polaris configuration.
+# This file must contain placeholders only. Inject secrets through POLARIS_* variables.
+
+app:
+  name: polaris
+  version: 0.1.0
+  env: development          # development/staging/production
+  port: 8100
+
+log:
+  level: debug              # debug/info/warn/error
+  format: json              # json/console
+  output: stdout
+
+database:
+  host: localhost
+  port: 5432
+  user: postgres
+  password: "postgres"               # POLARIS_DB_PASSWORD
+  name: polaris
+  sslmode: disable
+  max_open_conns: 25
+  max_idle_conns: 5
+  conn_max_lifetime: 300
+  auto_migrate: true        # Apply pending migrations at startup.
+  migrations_dir: migrations
+  seed: true                # Seed built-in data; disable in production after bootstrap.
+
+redis:
+  host: localhost
+  port: 6379
+  password: "redis"               # POLARIS_REDIS_PASSWORD
+  db: 1
+  pool_size: 10
+  min_idle_conns: 2
+
+auth:
+  jwt_secret: ""             # POLARIS_JWT_SECRET
+  session_ttl: 3600         # Session TTL in seconds.
+  refresh_ttl: 7200
+  issuer: polaris            # JWT / ID token issuer.
+  rate_limit:
+    login_max_attempts: 5
+    login_window_seconds: 300
+  # OIDC Provider behavior.
+  oidc:
+    issuer: ""               # Falls back to oauth.base_url.
+    cert_name: cert-built-in # Signing certificate name.
+    # Additional verification keys published in JWKS during key rotation.
+    additional_key_cert_names: []
+    access_token_expire_hours: 1
+    refresh_token_expire_hours: 24
+    authorization_code_expire_seconds: 300
+  # SP-side external provider settings.
+  oauth:
+    # Override public URLs in production.
+    base_url: http://127.0.0.1:8100
+    success_redirect: http://127.0.0.1:5173/
+    # Must exactly match the callback registered with the external IdP.
+    redirect_uri: http://127.0.0.1:5173/sso/callback
+    state_ttl: 600
+    cookie_secure: false    # Must be true in production.
+    # This section only seeds providers; runtime changes belong in the console.
+    default_institution: built-in
+    providers:
+      # Seed example for the built-in institution.
+      dingtalk:
+        type: dingtalk
+        enabled: false
+        display_name: 钉钉
+        client_id: ""
+        client_secret: ""   # POLARIS_OAUTH_DINGTALK_CLIENT_SECRET
+        provisioning:
+          auto_create: true
+          link_by_email: true
+          allowed_domains: []
+      wechat:
+        type: wechat
+        enabled: false
+        display_name: 微信
+        client_id: ""
+        client_secret: ""   # POLARIS_OAUTH_WECHAT_CLIENT_SECRET
+        provisioning:
+          auto_create: true
+          link_by_email: true
+      feishu:
+        type: feishu
+        enabled: false
+        display_name: 飞书
+        client_id: ""
+        client_secret: ""   # POLARIS_OAUTH_FEISHU_CLIENT_SECRET
+        scopes: []
+        provisioning:
+          auto_create: true
+          link_by_email: true
+
+# CORS controls which origins can read cross-origin responses.
+cors:
+  allow_origins:
+    - "*"
+  allow_methods:
+    - GET
+    - POST
+    - PUT
+    - DELETE
+    - OPTIONS
+  allow_headers:
+    - Authorization
+    - Content-Type
+    - X-Request-ID
+
+# Security settings are independent from CORS.
+security:
+  # Empty disables origin checks; this is development-only.
+  csrf_allowed_origins: []
+  # Base64-encoded 32-byte key for sensitive fields.
+  credential_enc_key: ""
+  access_key_rate_limit_max: 10
+  access_key_rate_limit_window_seconds: 900

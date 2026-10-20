@@ -1,0 +1,486 @@
+@import 'tailwindcss';
+@import '@radix-ui/colors/violet.css';
+@import '@radix-ui/colors/violet-dark.css';
+@import '@radix-ui/colors/mauve.css';
+@import '@radix-ui/colors/mauve-dark.css';
+@import '@radix-ui/colors/amber.css';
+@import '@radix-ui/colors/amber-dark.css';
+@import '@radix-ui/colors/jade.css';
+@import '@radix-ui/colors/jade-dark.css';
+@import '@radix-ui/colors/cyan.css';
+@import '@radix-ui/colors/cyan-dark.css';
+@import '@radix-ui/colors/red.css';
+@import '@radix-ui/colors/red-dark.css';
+
+/* 主题变体：dark class 由 next-themes 控制 */
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * 设计令牌（唯一载体，明暗双值）
+ * 设计语言：**精密控制台（Control Plane，2026-10 Radix 配色修订）**——
+ *   Radix Mauve 雾紫中性画布 + 紫罗兰主色 + 琥珀品牌点缀 + 翡翠成功 / 琥珀警示。
+ *   所有语义色映射到 Radix Colors 的 12 步色阶：亮色用 11 步保证文字对比，
+ *   实心控件用 9/10 步，暗色再由 Radix 的 `*-dark` 色阶整体反相。
+ * 品牌氛围（星场 / 玻璃）仅用于登录 / OAuth 回调页（`.auth-scope`）。
+ *
+ * 三层结构：`--canvas` 是页面底色，`--card` 是浮在上面的面板，`--ink` 是**品牌深紫选中色**
+ * （顶部导航选中胶囊、分段控件选中项）——与主色同色系但压深，既保持"我在哪"的强指示，
+ * 又不会像纯黑那样从雾紫画布上"跳"出来。
+ */
+:root {
+  /* 圆角：控件 12px、小面板 18px、卡片 24px */
+  --radius: 0.75rem;
+
+  /*
+   * 画布与浮层：Mauve 是带极轻紫调的中性色阶，能和 Violet 主色形成同源关系，
+   * 又不会像纯灰那样让界面显得发冷。亮色下画布用 2 步、卡片用 1 步。
+   */
+  --canvas: var(--mauve-2);
+  --background: var(--canvas);
+  --foreground: var(--mauve-12);
+  --card: var(--mauve-1);
+  --card-foreground: var(--mauve-12);
+  --popover: var(--mauve-1);
+  --popover-foreground: var(--mauve-12);
+
+  /* 玻璃材质：以 Radix Mauve 1 为基准做半透明叠层，保留可读底色而不是直接写白色。 */
+  --glass: color-mix(in srgb, var(--mauve-1) 78%, transparent);
+  --glass-strong: color-mix(in srgb, var(--mauve-1) 90%, transparent);
+  --glass-highlight: color-mix(in srgb, var(--mauve-1) 82%, transparent);
+
+  /* 主色：Radix Violet 10，白字对比约 6.01:1，适合按钮与可点文本。 */
+  --primary: var(--violet-10);
+  --primary-foreground: var(--mauve-1);
+
+  /* 选中态实底：Violet 11 压深一档，白字对比约 6.03:1。 */
+  --ink: var(--violet-11);
+  --ink-foreground: var(--mauve-1);
+
+  --secondary: var(--mauve-3);
+  --secondary-foreground: var(--mauve-12);
+  --muted: var(--mauve-3);
+  --muted-foreground: var(--mauve-11);
+  --accent: var(--violet-3);
+  --accent-foreground: var(--violet-11);
+  /* 错误色取 Red 11：在浅底上仍达到小字号文字对比要求，且与品牌紫拉得开。 */
+  --destructive: var(--red-11);
+  --destructive-foreground: var(--mauve-1);
+
+  --border: var(--mauve-6);
+  --input: var(--mauve-7);
+  --ring: var(--violet-9);
+
+  /*
+   * 状态色统一取 Radix 11 步：它专门面向低饱和底上的可读文字，
+   * 避免把 9 步的实心色直接当正文色而损失对比度。
+   */
+  --success-500: var(--jade-11);
+  --success-foreground: var(--mauve-1);
+  --warning-500: var(--amber-11);
+  --warning-foreground: var(--mauve-1);
+  --info-500: var(--cyan-11);
+  --info-foreground: var(--mauve-1);
+
+  /* 图表色板：紫 / 琥珀 / 青 / 翡翠 / 红，冷暖兼有且不把警告色当主色。 */
+  --chart-1: var(--violet-9);
+  --chart-2: var(--amber-9);
+  --chart-3: var(--cyan-9);
+  --chart-4: var(--jade-9);
+  --chart-5: var(--red-9);
+
+  --sidebar: var(--mauve-1);
+  --sidebar-foreground: var(--mauve-12);
+  --sidebar-primary: var(--violet-10);
+  --sidebar-primary-foreground: var(--mauve-1);
+  --sidebar-accent: var(--violet-3);
+  --sidebar-accent-foreground: var(--violet-11);
+  --sidebar-border: var(--mauve-6);
+  --sidebar-ring: var(--violet-9);
+
+  /* 投影：用 Mauve 12 的透明混合，阴影也跟随主题而不是引入额外灰值。 */
+  --elevation-soft: 0 1px 2px color-mix(in srgb, var(--mauve-12) 6%, transparent), 0 10px 30px -18px color-mix(in srgb, var(--mauve-12) 18%, transparent);
+  --elevation-lifted: 0 2px 8px -2px color-mix(in srgb, var(--mauve-12) 10%, transparent), 0 20px 44px -24px color-mix(in srgb, var(--mauve-12) 22%, transparent);
+  --elevation-pop: 0 28px 70px -28px color-mix(in srgb, var(--mauve-12) 28%, transparent), 0 6px 16px -8px color-mix(in srgb, var(--mauve-12) 14%, transparent);
+
+  /* 画布光晕：紫罗兰为主、青色作冷平衡，琥珀只作为品牌回声。 */
+  --canvas-glow-a: color-mix(in srgb, var(--violet-7) 48%, transparent);
+  --canvas-glow-b: color-mix(in srgb, var(--cyan-6) 30%, transparent);
+  --canvas-glow-warm: color-mix(in srgb, var(--amber-4) 34%, transparent);
+
+  /* 字标渐变：紫罗兰承接 Logo 核心，琥珀承接 Logo 暖芯。 */
+  --brand-wordmark-from: var(--violet-11);
+  --brand-wordmark-to: var(--amber-11);
+
+  /* 动效令牌：弹性缓动＝终点前后各有一小段回弹（"跟手 + 收得住"），只用于"位置/尺寸"这类空间变化 */
+  --motion-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --motion-pill-move: 420ms;
+  --motion-pill-size: 340ms;
+}
+
+.dark {
+  --canvas: var(--mauve-1);
+  --background: var(--canvas);
+  --foreground: var(--mauve-12);
+  --card: var(--mauve-2);
+  --card-foreground: var(--mauve-12);
+  --popover: var(--mauve-3);
+  --popover-foreground: var(--mauve-12);
+
+  /* 暗色玻璃：比画布略亮，靠 Violet 的冷紫余晖与描边分层。 */
+  --glass: color-mix(in srgb, var(--mauve-2) 82%, transparent);
+  --glass-strong: color-mix(in srgb, var(--mauve-3) 92%, transparent);
+  --glass-highlight: color-mix(in srgb, var(--mauve-12) 8%, transparent);
+
+  /* 暗色主色换到 Violet 10，浅紫底配深字，保留发光感但避免纯白刺眼。 */
+  --primary: var(--violet-10);
+  --primary-foreground: var(--mauve-1);
+
+  /* 暗色选中胶囊用 Violet 9 实底；白字对比约 5.27:1。 */
+  --ink: var(--violet-9);
+  --ink-foreground: var(--mauve-1);
+
+  --secondary: var(--mauve-3);
+  --secondary-foreground: var(--mauve-12);
+  --muted: var(--mauve-3);
+  --muted-foreground: var(--mauve-11);
+  --accent: var(--violet-3);
+  --accent-foreground: var(--violet-11);
+  --destructive: var(--red-11);
+  --destructive-foreground: var(--mauve-1);
+
+  --border: var(--mauve-6);
+  --input: var(--mauve-7);
+  --ring: var(--violet-9);
+
+  --success-500: var(--jade-11);
+  --success-foreground: var(--mauve-1);
+  --warning-500: var(--amber-11);
+  --warning-foreground: var(--mauve-1);
+  --info-500: var(--cyan-11);
+  --info-foreground: var(--mauve-1);
+
+  --chart-1: var(--violet-10);
+  --chart-2: var(--amber-10);
+  --chart-3: var(--cyan-10);
+  --chart-4: var(--jade-10);
+  --chart-5: var(--red-10);
+
+  --sidebar: var(--mauve-2);
+  --sidebar-foreground: var(--mauve-12);
+  --sidebar-primary: var(--violet-10);
+  --sidebar-primary-foreground: var(--mauve-1);
+  --sidebar-accent: var(--violet-3);
+  --sidebar-accent-foreground: var(--violet-11);
+  --sidebar-border: var(--mauve-6);
+  --sidebar-ring: var(--violet-9);
+
+  /* 暗色下投影退到结构辅助位，分层主要交给描边与内高光。 */
+  --elevation-soft: 0 1px 2px oklch(0 0 0 / 0.3);
+  --elevation-lifted: 0 4px 16px -8px oklch(0 0 0 / 0.5);
+  --elevation-pop: 0 20px 50px -20px oklch(0 0 0 / 0.6);
+
+  --canvas-glow-a: color-mix(in srgb, var(--violet-9) 18%, transparent);
+  --canvas-glow-b: color-mix(in srgb, var(--cyan-9) 12%, transparent);
+  --canvas-glow-warm: color-mix(in srgb, var(--amber-9) 8%, transparent);
+
+  /* 暗色下字标反向提亮（同色相，靠明度而非换色） */
+  --brand-wordmark-from: var(--violet-11);
+  --brand-wordmark-to: var(--amber-11);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-ink: var(--ink);
+  --color-ink-foreground: var(--ink-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-success: var(--success-500);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning-500);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info-500);
+  --color-info-foreground: var(--info-foreground);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* 圆角刻度：控件 12px、小面板 18px、卡片 24px */
+  --radius-sm: 0.5rem;
+  --radius-md: 0.625rem;
+  --radius-lg: var(--radius);
+  --radius-xl: 1.125rem;
+  --radius-2xl: 1.5rem;
+  --radius-3xl: 2rem;
+
+  --shadow-soft: var(--elevation-soft);
+  --shadow-lifted: var(--elevation-lifted);
+  --shadow-pop: var(--elevation-pop);
+
+  --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, monospace;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* 画布：雾紫底 + 多处极淡的品牌光晕（暗色下自动退化为中性底） */
+  .app-canvas {
+    background-color: var(--canvas);
+    background-image:
+      radial-gradient(60rem 32rem at 8% -8%, var(--canvas-glow-a), transparent 62%),
+      radial-gradient(52rem 30rem at 96% -14%, var(--canvas-glow-b), transparent 60%),
+      radial-gradient(46rem 30rem at 62% 98%, var(--canvas-glow-b), transparent 66%),
+      radial-gradient(38rem 26rem at 96% 88%, var(--canvas-glow-warm), transparent 68%);
+    background-attachment: fixed;
+  }
+
+  /* 细滚动条：长列表页（用户 / 审计）滚动时不再出现系统粗条 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 9999px;
+    background-clip: content-box;
+    background-color: var(--border);
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--input);
+  }
+
+  /* 键盘可达性：统一焦点环 */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  /*
+   * 玻璃面板：卡片 / 顶栏 / 侧栏 / 弹窗共用同一层材质。
+   *
+   * 纯白卡片浮在雾紫画布上会显得"跳"，这里用半透明卡片色 + 背景模糊 + 一道内高光，
+   * 让面板像画布上的一层薄玻璃，而不是贴上去的白纸；暗色下靠描边与内高光分层。
+   */
+  .surface {
+    background-color: var(--glass);
+    border: 1px solid var(--border);
+    backdrop-filter: blur(20px) saturate(150%);
+    -webkit-backdrop-filter: blur(20px) saturate(150%);
+    box-shadow:
+      var(--elevation-soft),
+      inset 0 1px 0 var(--glass-highlight);
+  }
+
+  /* 需要更强遮盖的浮层（登录卡、弹窗）：玻璃更实，但保留透视感 */
+  .surface-strong {
+    background-color: var(--glass-strong);
+    border: 1px solid var(--border);
+    backdrop-filter: blur(28px) saturate(160%);
+    -webkit-backdrop-filter: blur(28px) saturate(160%);
+    box-shadow:
+      var(--elevation-pop),
+      inset 0 1px 0 var(--glass-highlight);
+  }
+
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .surface,
+    .surface-strong {
+      background-color: var(--card);
+    }
+  }
+
+  /*
+   * 认证舞台（登录 / OAuth 回调）：与系统同一套画布与玻璃材质，
+   * 只额外保留一层品牌光晕与极淡网格——认证页是唯一允许有氛围的页面。
+   *
+   * 注意：主按钮与标签选中态统一走**品牌深紫**（与控制台导航选中胶囊同一语义），
+   * 与控制台保持一致；品牌色只留在标识与焦点环上。
+   * 这里重映射语义令牌，使 @/shared/ui 的组件在本作用域内自动落到认证配色，页面无需逐个传 class。
+   */
+  .auth-scope {
+    color-scheme: dark;
+    /* color 在 body 上即已按全局令牌解析并被继承；此处必须重新声明，
+       作用域内的令牌重映射才会真正生效（否则浅色主题下正文会残留深色而不可读） */
+    color: var(--foreground);
+    position: relative;
+    isolation: isolate;
+
+    --background: var(--canvas);
+    --foreground: var(--mauve-12);
+    --muted: var(--mauve-3);
+    --muted-foreground: var(--mauve-11);
+    --accent: var(--violet-3);
+    --accent-foreground: var(--violet-11);
+    --border: var(--mauve-6);
+    --input: var(--mauve-7);
+    --ring: var(--violet-9);
+    /* 认证页默认使用暗色舞台：选中胶囊和主按钮都走 Violet 9。 */
+    --ink: var(--violet-9);
+    --ink-foreground: var(--mauve-1);
+    --primary: var(--ink);
+    --primary-foreground: var(--ink-foreground);
+    /* 品牌光晕只做低透明度材质，不承担任何信息层级。 */
+    --auth-aurora-a: color-mix(in srgb, var(--violet-8) 30%, transparent);
+    --auth-aurora-b: color-mix(in srgb, var(--cyan-8) 18%, transparent);
+    --auth-aurora-warm: color-mix(in srgb, var(--amber-8) 14%, transparent);
+    --auth-grid-line: color-mix(in srgb, var(--mauve-12) 7%, transparent);
+
+    background: var(--background);
+  }
+
+  /* 浅色：切换为亮色画布，但主按钮 / 标签选中态仍是同一套 Violet 语义。 */
+  html:not(.dark) .auth-scope {
+    color-scheme: light;
+    --ink: var(--violet-11);
+    --primary: var(--ink);
+    --primary-foreground: var(--ink-foreground);
+  }
+
+  /* 品牌光晕：认证页专属氛围，放在内容层之下，不承载信息 */
+  .auth-scope::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(42rem 26rem at 10% -6%, var(--auth-aurora-a), transparent 62%),
+      radial-gradient(38rem 24rem at 94% 4%, var(--auth-aurora-b), transparent 60%),
+      radial-gradient(32rem 24rem at 86% 96%, var(--auth-aurora-warm), transparent 66%),
+      radial-gradient(34rem 26rem at 50% 112%, var(--auth-aurora-a), transparent 68%);
+  }
+
+  /* 极淡网格：只在中心区域可见，给"舞台"一点纵深但不抢表单注意力 */
+  .auth-scope::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background-image:
+      linear-gradient(to right, var(--auth-grid-line) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--auth-grid-line) 1px, transparent 1px);
+    background-size: 44px 44px;
+    mask-image: radial-gradient(70% 60% at 50% 40%, black, transparent 100%);
+    -webkit-mask-image: radial-gradient(70% 60% at 50% 40%, black, transparent 100%);
+  }
+
+  .brand-mark {
+    animation: brand-breathe 7s ease-in-out infinite;
+  }
+
+  /*
+   * 弹性滑块：一块跟着选中项走的品牌紫胶囊（顶栏导航 + 分段控件 Tabs 共用，渲染在 shared/ui 的
+   * SlidingPill 里）。
+   *
+   * 位移与宽度用**不同时长**是刻意的——位移先到、宽度稍慢，滑块在换项时会被"拉长再收回"，
+   * 这就是弹性手感的来源；缓动本身带终点回弹（`--motion-spring`）。
+   * 首帧用 `data-ready="false"` 关掉过渡：否则页面加载时滑块会从最左侧"飞"过去。
+   */
+  .sliding-pill-indicator {
+    transition:
+      transform var(--motion-pill-move) var(--motion-spring),
+      width var(--motion-pill-size) var(--motion-spring),
+      height var(--motion-pill-size) var(--motion-spring);
+    will-change: transform, width, height;
+  }
+
+  .sliding-pill-indicator[data-ready='false'] {
+    transition: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .sliding-pill-indicator {
+      transition: none;
+    }
+  }
+
+  /* 单次编排的入场：整列内容轻微上浮淡入，而不是逐元素散落动画 */
+  .auth-rise {
+    animation: auth-rise 620ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  @keyframes brand-breathe {
+    0%,
+    100% {
+      opacity: 0.88;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 1;
+      transform: scale(1.03);
+    }
+  }
+
+  @keyframes auth-rise {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .brand-mark,
+    .auth-rise {
+      animation: none;
+    }
+  }
+}

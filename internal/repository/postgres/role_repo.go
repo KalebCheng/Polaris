@@ -1,0 +1,647 @@
+package postgres
+
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5"
+
+	bizerrors "polaris/internal/errors"
+	"polaris/internal/repository"
+	"polaris/pkg/dbclient"
+)
+
+const roleColumns = `id, institution_id, name, display_name, description, is_enabled, is_system, created_at, updated_at`
+
+// RoleRepository 角色仓库（PostgreSQL 实现）
+type RoleRepository struct{ db *dbclient.Client }
+
+// NewRoleRepository 创建角色仓库
+func NewRoleRepository(db *dbclient.Client) *RoleRepository { return &RoleRepository{db: db} }
+
+func scanRole(row interface{ Scan(...interface{}) error }) (*repository.Role, error) {
+	var r repository.Role
+	err := row.Scan(&r.ID, &r.InstitutionID, &r.Name, &r.DisplayName, &r.Description, &r.IsEnabled,
+		&r.IsSystem, &r.CreatedAt, &r.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// Create 创建角色
+func (r *RoleRepository) Create(ctx context.Context, role *repository.Role) (int64, error) {
+	var id int64
+	err := r.db.QueryRow(ctx, `INSERT INTO roles (institution_id, name, display_name, description, is_enabled, is_system)
+		VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+		role.InstitutionID, role.Name, role.DisplayName, role.Description, role.IsEnabled, role.IsSystem).Scan(&id)
+	if err != nil {
+		return 0, mapError(err, "role not found")
+	}
+	role.ID = id
+	return id, nil
+}
+
+// GetByID 按 ID 查询（装配成员关系）
+func (r *RoleRepository) GetByID(ctx context.Context, id int64) (*repository.Role, error) {
+	role, err := scanRole(r.db.QueryRow(ctx, `SELECT `+roleColumns+` FROM roles WHERE id=$1`, id))
+	if err != nil {
+		return nil, mapError(err, "role not found")
+	}
+	if err := r.loadRelations(ctx, role); err != nil {
+		return nil, err
+	}
+	return role, nil
+}
+
+// GetByName 按组织+名称查询
+func (r *RoleRepository) GetByName(ctx context.Context, institutionID int64, name string) (*repository.Role, error) {
+	role, err := scanRole(r.db.QueryRow(ctx, `SELECT `+roleColumns+` FROM roles WHERE institution_id=$1 AND name=$2`, institutionID, name))
+	if err != nil {
+		return nil, mapError(err, "role not found")
+	}
+	if err := r.loadRelations(ctx, role); err != nil {
+		return nil, err
+	}
+	return role, nil
+}
+
+// loadRelations 装配角色关联（用户/职务/子角色/权限）
+func (r *RoleRepository) loadRelations(ctx context.Context, role *repository.Role) error {
+	var err error
+	role.Users, err = r.references(ctx, `SELECT u.id, u.name, u.display_name FROM role_users ru
+		JOIN users u ON u.id = ru.user_id WHERE ru.role_id=$1 ORDER BY u.name`, role.ID)
+	if err != nil {
+		return err
+	}
+	role.JobTitles, err = r.references(ctx, `SELECT jt.id, jt.name, jt.display_name FROM role_job_titles rjt
+		JOIN job_titles jt ON jt.id = rjt.job_title_id
+		WHERE rjt.role_id=$1 ORDER BY jt.name`, role.ID)
+	if err != nil {
+		return err
+	}
+	role.Roles, err = r.references(ctx, `SELECT child.id, child.name, child.display_name FROM role_roles rr
+		JOIN roles child ON child.id = rr.child_role_id
+		WHERE rr.role_id=$1 ORDER BY child.name`, role.ID)
+	if err != nil {
+		return err
+	}
+	role.Permissions, err = r.references(ctx, `SELECT p.id, p.name, p.display_name FROM role_permissions rp
+		JOIN permissions p ON p.id = rp.permission_id
+		WHERE rp.role_id=$1 ORDER BY p.name`, role.ID)
+	return err
+}
+
+func (r *RoleRepository) references(ctx context.Context, sql string, args ...interface{}) ([]repository.RelationRef, error) {
+	rows, err := r.db.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, mapError(err, "")
+	}
+	defer rows.Close()
+	out := []repository.RelationRef{}
+	for rows.Next() {
+		var item repository.RelationRef
+		if err := rows.Scan(&item.ID, &item.Name, &item.DisplayName); err != nil {
+			return nil, mapError(err, "")
+		}
+		out = append(out, item)
+	}
+	return out, mapError(rows.Err(), "")
+}
+
+func (r *RoleRepository) strings(ctx context.Context, sql string, args ...interface{}) ([]string, error) {
+	rows, err := r.db.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, mapError(err, "")
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return nil, mapError(err, "")
+		}
+		out = append(out, s)
+	}
+	return out, mapError(rows.Err(), "")
+}
+
+// Update 更新角色基础信息
+func (r *RoleRepository) Update(ctx context.Context, role *repository.Role) error {
+	return mapError(r.db.Exec(ctx, `UPDATE roles SET display_name=$2, description=$3, is_enabled=$4, updated_at=NOW() WHERE id=$1`,
+		role.ID, role.DisplayName, role.Description, role.IsEnabled), "role not found")
+}
+
+// Delete 删除角色
+func (r *RoleRepository) Delete(ctx context.Context, id int64) error {
+	return mapError(r.db.Exec(ctx, `DELETE FROM roles WHERE id=$1`, id), "role not found")
+}
+
+// List 分页列出角色
+func (r *RoleRepository) List(ctx context.Context, q repository.ListQuery) ([]*repository.Role, error) {
+	b := &queryBuilder{}
+	if q.InstitutionID != 0 {
+		b.add(`institution_id=` + b.arg(q.InstitutionID))
+	}
+	if q.Keyword != "" {
+		p := b.arg(like(q.Keyword))
+		b.add(`(name ILIKE ` + p + ` OR display_name ILIKE ` + p + `)`)
+	}
+	sql := `SELECT ` + roleColumns + ` FROM roles` + b.where() + b.orderLimit("name ASC", q.Offset, q.Limit)
+	rows, err := r.db.Query(ctx, sql, b.args...)
+	if err != nil {
+		return nil, mapError(err, "")
+	}
+	defer rows.Close()
+	var result []*repository.Role
+	for rows.Next() {
+		role, err := scanRole(rows)
+		if err != nil {
+			return nil, mapError(err, "")
+		}
+		result = append(result, role)
+	}
+	return result, mapError(rows.Err(), "")
+}
+
+// Count 统计角色数量
+func (r *RoleRepository) Count(ctx context.Context, q repository.ListQuery) (int64, error) {
+	b := &queryBuilder{}
+	if q.InstitutionID != 0 {
+		b.add(`institution_id=` + b.arg(q.InstitutionID))
+	}
+	if q.Keyword != "" {
+		p := b.arg(like(q.Keyword))
+		b.add(`(name ILIKE ` + p + ` OR display_name ILIKE ` + p + `)`)
+	}
+	var n int64
+	err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM roles`+b.where(), b.args...).Scan(&n)
+	return n, mapError(err, "")
+}
+
+// SetMembers 整体替换角色的成员/子角色/权限（事务）。
+func (r *RoleRepository) SetMembers(ctx context.Context, roleID int64, rel *repository.RoleRelations) error {
+	return r.db.WithTx(ctx, func(tx pgx.Tx) error {
+		var institutionID int64
+		if err := tx.QueryRow(ctx, `SELECT institution_id FROM roles WHERE id=$1`, roleID).Scan(&institutionID); err != nil {
+			return mapError(err, "role not found")
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM role_users WHERE role_id=$1`, roleID); err != nil {
+			return mapError(err, "")
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM role_job_titles WHERE role_id=$1`, roleID); err != nil {
+			return mapError(err, "")
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM role_roles WHERE role_id=$1`, roleID); err != nil {
+			return mapError(err, "")
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM role_permissions WHERE role_id=$1`, roleID); err != nil {
+			return mapError(err, "")
+		}
+		for _, userID := range rel.UserIDs {
+			if err := ensureTenantEntity(ctx, tx, "users", institutionID, userID); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO role_users (role_id, user_id)
+				VALUES ($1,$2) ON CONFLICT DO NOTHING`, roleID, userID); err != nil {
+				return mapError(err, "")
+			}
+		}
+		for _, jobTitleID := range rel.JobTitleIDs {
+			if err := ensureTenantEntity(ctx, tx, "job_titles", institutionID, jobTitleID); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO role_job_titles (role_id, job_title_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, roleID, jobTitleID); err != nil {
+				return mapError(err, "")
+			}
+		}
+		for _, childRoleID := range rel.RoleIDs {
+			if childRoleID == roleID {
+				return bizerrors.ErrInvalidParams.WithDetail("role_id", childRoleID)
+			}
+			if err := ensureTenantEntity(ctx, tx, "roles", institutionID, childRoleID); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO role_roles (role_id, child_role_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, roleID, childRoleID); err != nil {
+				return mapError(err, "")
+			}
+		}
+		for _, permissionID := range rel.PermissionIDs {
+			if err := ensureTenantEntity(ctx, tx, "permissions", institutionID, permissionID); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO role_permissions (role_id, permission_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, roleID, permissionID); err != nil {
+				return mapError(err, "")
+			}
+		}
+		return nil
+	})
+}
+
+func ensureTenantEntity(ctx context.Context, tx pgx.Tx, table string, institutionID, id int64) error {
+	switch table {
+	case "users", "roles", "permissions", "job_titles":
+	default:
+		return bizerrors.ErrInvalidParams.WithDetail("relation_table", table)
+	}
+	var found int64
+	if err := tx.QueryRow(ctx, `SELECT id FROM `+table+` WHERE institution_id=$1 AND id=$2`,
+		institutionID, id).Scan(&found); err != nil {
+		return bizerrors.ErrInvalidParams.WithDetail("id", id)
+	}
+	return nil
+}
+
+const affectedUsersForRolesSQL = `
+WITH RECURSIVE target_roles(name) AS (
+    SELECT unnest($2::text[])
+),
+ancestor_roles(name) AS (
+    SELECT name FROM target_roles
+    UNION
+    SELECT parent.name
+      FROM role_roles rr
+      JOIN roles parent ON parent.id = rr.role_id
+      JOIN roles child_role ON child_role.id = rr.child_role_id
+      JOIN ancestor_roles child ON child.name = child_role.name
+     WHERE parent.institution_id = $1
+)
+SELECT DISTINCT u.name
+  FROM users u
+  JOIN role_users ru ON ru.user_id = u.id
+  JOIN roles r ON r.id = ru.role_id
+  JOIN ancestor_roles ar ON ar.name = r.name
+ WHERE r.institution_id = $1
+UNION
+SELECT DISTINCT u.name
+  FROM job_title_members jtm
+  JOIN job_titles jt ON jt.id = jtm.job_title_id
+  JOIN users u ON u.id = jtm.user_id
+  JOIN role_job_titles rjt ON rjt.job_title_id = jt.id
+  JOIN roles r ON r.id = rjt.role_id
+  JOIN ancestor_roles ar ON ar.name = r.name
+ WHERE jt.institution_id = $1 AND r.institution_id = $1
+ORDER BY 1`
+
+// AffectedUsersForRoles returns users who inherit any target role through
+// direct membership, job-title membership, or parent-role inheritance.
+func (r *RoleRepository) AffectedUsersForRoles(ctx context.Context, institutionID int64, roleNames []string) ([]string, error) {
+	return r.strings(ctx, affectedUsersForRolesSQL, institutionID, roleNames)
+}
+
+const affectedUsersForPermissionSQL = `
+WITH RECURSIVE target_roles(name) AS (
+    SELECT r.name
+      FROM permission_roles rp
+      JOIN permissions p ON p.id = rp.permission_id
+      JOIN roles r ON r.id = rp.role_id
+     WHERE p.institution_id = $1 AND p.name = $2
+),
+ancestor_roles(name) AS (
+    SELECT name FROM target_roles
+    UNION
+    SELECT parent.name
+      FROM role_roles rr
+      JOIN roles parent ON parent.id = rr.role_id
+      JOIN roles child_role ON child_role.id = rr.child_role_id
+      JOIN ancestor_roles child ON child.name = child_role.name
+     WHERE parent.institution_id = $1
+)
+SELECT DISTINCT u.name
+  FROM permission_users pu
+  JOIN users u ON u.id = pu.user_id
+  JOIN permissions p ON p.id = pu.permission_id
+ WHERE p.institution_id = $1 AND p.name = $2
+UNION
+SELECT DISTINCT u.name
+  FROM permission_job_titles pjt
+  JOIN permissions p ON p.id = pjt.permission_id
+  JOIN job_titles jt ON jt.institution_id = $1 AND jt.id = pjt.job_title_id
+  JOIN job_title_members jtm ON jtm.job_title_id = jt.id
+  JOIN users u ON u.id = jtm.user_id
+ WHERE p.institution_id = $1 AND p.name = $2
+UNION
+SELECT DISTINCT u.name
+  FROM users u
+  JOIN role_users ru ON ru.user_id = u.id
+  JOIN roles r ON r.id = ru.role_id
+  JOIN ancestor_roles ar ON ar.name = r.name
+ WHERE r.institution_id = $1
+UNION
+SELECT DISTINCT u.name
+  FROM job_title_members jtm
+  JOIN job_titles jt ON jt.id = jtm.job_title_id
+  JOIN users u ON u.id = jtm.user_id
+  JOIN role_job_titles rjt ON rjt.job_title_id = jt.id
+  JOIN roles r ON r.id = rjt.role_id
+  JOIN ancestor_roles ar ON ar.name = r.name
+ WHERE jt.institution_id = $1 AND r.institution_id = $1
+ORDER BY 1`
+
+// AffectedUsersForPermission returns every user whose effective permissions
+// include the named permission.
+func (r *RoleRepository) AffectedUsersForPermission(ctx context.Context, institutionID int64, permissionName string) ([]string, error) {
+	return r.strings(ctx, affectedUsersForPermissionSQL, institutionID, permissionName)
+}
+
+const rolesForUserSQL = `
+WITH RECURSIVE user_job_titles(name) AS (
+    SELECT t.name FROM job_titles t
+    JOIN job_title_members tm ON tm.job_title_id = t.id
+    JOIN users u ON u.id = tm.user_id
+    WHERE t.institution_id = $1 AND u.name = $2
+),
+base_roles(name) AS (
+    SELECT r.name FROM roles r
+    JOIN role_users ru ON ru.role_id = r.id
+    JOIN users u ON u.id = ru.user_id
+    WHERE r.institution_id = $1 AND u.name = $2
+    UNION
+    SELECT r.name FROM roles r
+    JOIN role_job_titles rg ON rg.role_id = r.id
+    JOIN job_titles jt ON jt.id = rg.job_title_id
+    JOIN user_job_titles ug ON ug.name = jt.name
+    WHERE r.institution_id = $1
+),
+role_tree(name) AS (
+    SELECT name FROM base_roles
+    UNION
+    SELECT child.name FROM role_roles rr
+    JOIN roles r ON r.id = rr.role_id
+    JOIN roles child ON child.id = rr.child_role_id
+    JOIN role_tree rt ON rt.name = r.name
+    WHERE r.institution_id = $1
+)
+SELECT name FROM role_tree`
+
+// RolesForUser 返回用户直接/经职务/经嵌套获得的角色名。
+func (r *RoleRepository) RolesForUser(ctx context.Context, institutionID int64, user string) ([]string, error) {
+	return r.strings(ctx, rolesForUserSQL, institutionID, user)
+}
+
+const permissionsForUserSQL = `
+WITH RECURSIVE user_job_titles(name) AS (
+    SELECT t.name FROM job_titles t
+    JOIN job_title_members tm ON tm.job_title_id = t.id
+    JOIN users u ON u.id = tm.user_id
+    WHERE t.institution_id = $1 AND u.name = $2
+),
+base_roles(name) AS (
+    SELECT r.name FROM roles r
+    JOIN role_users ru ON ru.role_id = r.id
+    JOIN users u ON u.id = ru.user_id
+    WHERE r.institution_id = $1 AND u.name = $2
+    UNION
+    SELECT r.name FROM roles r
+    JOIN role_job_titles rg ON rg.role_id = r.id
+    JOIN job_titles jt ON jt.id = rg.job_title_id
+    JOIN user_job_titles ug ON ug.name = jt.name
+    WHERE r.institution_id = $1
+),
+role_tree(name) AS (
+    SELECT name FROM base_roles
+    UNION
+    SELECT child.name FROM role_roles rr
+    JOIN roles r ON r.id = rr.role_id
+    JOIN roles child ON child.id = rr.child_role_id
+    JOIN role_tree rt ON rt.name = r.name
+    WHERE r.institution_id = $1
+)
+SELECT p.name, p.resource_type, p.resources, p.actions, p.effect
+FROM permissions p
+WHERE p.institution_id = $1 AND p.is_enabled = TRUE
+  AND (p.expire_time IS NULL OR p.expire_time > NOW())
+  AND (
+    p.id IN (SELECT rp.permission_id FROM role_permissions rp
+               JOIN roles r ON r.id = rp.role_id
+               WHERE r.institution_id = $1 AND r.name IN (SELECT name FROM role_tree))
+    OR p.id IN (SELECT pu.permission_id FROM permission_users pu
+                JOIN users pu_u ON pu_u.id = pu.user_id
+                WHERE pu_u.institution_id = $1 AND pu_u.name = $2)
+    OR p.id IN (SELECT pg.permission_id FROM permission_job_titles pg
+                JOIN job_titles jt ON jt.id = pg.job_title_id
+                WHERE jt.name IN (SELECT name FROM user_job_titles))
+  )`
+
+// PermissionsForUser 返回用户的有效权限集合（角色 / 职务 / 直接绑定 三种来源的并集）。
+func (r *RoleRepository) PermissionsForUser(ctx context.Context, institutionID int64, user string) ([]*repository.Permission, error) {
+	rows, err := r.db.Query(ctx, permissionsForUserSQL, institutionID, user)
+	if err != nil {
+		return nil, mapError(err, "")
+	}
+	defer rows.Close()
+	var result []*repository.Permission
+	for rows.Next() {
+		var p repository.Permission
+		p.InstitutionID = institutionID
+		if err := rows.Scan(&p.Name, &p.ResourceType, &p.Resources, &p.Actions, &p.Effect); err != nil {
+			return nil, mapError(err, "")
+		}
+		result = append(result, &p)
+	}
+	return result, mapError(rows.Err(), "")
+}
+
+// directRolesForUserSQL 用户**直接**归属的角色（不含经职务、不含嵌套子角色）。
+const directRolesForUserSQL = `
+SELECT r.name FROM roles r
+JOIN role_users ru ON ru.role_id = r.id
+JOIN users u ON u.id = ru.user_id
+WHERE r.institution_id = $1 AND u.name = $2
+ORDER BY r.name`
+
+// DirectRolesForUser 返回用户的直接角色（"用户详情-授权"标签的整体替换基线）。
+func (r *RoleRepository) DirectRolesForUser(ctx context.Context, institutionID int64, user string) ([]string, error) {
+	return r.strings(ctx, directRolesForUserSQL, institutionID, user)
+}
+
+// DirectRoleIDsForUser returns the user's direct role primary keys.
+func (r *RoleRepository) DirectRoleIDsForUser(ctx context.Context, institutionID, userID int64) ([]int64, error) {
+	rows, err := r.db.Query(ctx, `SELECT r.id FROM roles r
+		JOIN role_users ru ON ru.role_id=r.id
+		WHERE r.institution_id=$1 AND ru.user_id=$2
+		ORDER BY r.id`, institutionID, userID)
+	if err != nil {
+		return nil, mapError(err, "")
+	}
+	defer rows.Close()
+	out := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, mapError(err, "")
+		}
+		out = append(out, id)
+	}
+	return out, mapError(rows.Err(), "")
+}
+
+// SetDirectRoleIDs replaces the user's direct roles atomically.
+func (r *RoleRepository) SetDirectRoleIDs(ctx context.Context, institutionID, userID int64, roleIDs []int64) error {
+	return r.db.WithTx(ctx, func(tx pgx.Tx) error {
+		var userExists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(
+			SELECT 1 FROM users WHERE institution_id=$1 AND id=$2 AND is_deleted=FALSE
+		)`, institutionID, userID).Scan(&userExists); err != nil {
+			return mapError(err, "")
+		}
+		if !userExists {
+			return bizerrors.ErrInvalidParams.WithDetail("user_id", userID)
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM role_users
+			WHERE user_id=$2
+			  AND role_id IN (SELECT id FROM roles WHERE institution_id=$1)`,
+			institutionID, userID); err != nil {
+			return mapError(err, "")
+		}
+		if len(roleIDs) == 0 {
+			return nil
+		}
+		result, err := tx.Exec(ctx, `INSERT INTO role_users (role_id, user_id)
+			SELECT r.id, $2 FROM roles r
+			WHERE r.institution_id=$1 AND r.id=ANY($3)
+			ON CONFLICT DO NOTHING`, institutionID, userID, roleIDs)
+		if err != nil {
+			return mapError(err, "")
+		}
+		if result.RowsAffected() != int64(len(roleIDs)) {
+			return bizerrors.ErrInvalidParams.WithDetail("role_ids", roleIDs)
+		}
+		return nil
+	})
+}
+
+// permissionBindingsForUserSQL 有效权限的**来源**明细（与 permissionsForUserSQL 同一套继承语义）。
+const permissionBindingsForUserSQL = `
+WITH RECURSIVE user_job_titles(name) AS (
+    SELECT t.name FROM job_titles t
+    JOIN job_title_members tm ON tm.job_title_id = t.id
+    JOIN users u ON u.id = tm.user_id
+    WHERE t.institution_id = $1 AND u.name = $2
+),
+base_roles(name) AS (
+    SELECT r.name FROM roles r
+    JOIN role_users ru ON ru.role_id = r.id
+    JOIN users u ON u.id = ru.user_id
+    WHERE r.institution_id = $1 AND u.name = $2
+    UNION
+    SELECT r.name FROM roles r
+    JOIN role_job_titles rg ON rg.role_id = r.id
+    JOIN job_titles jt ON jt.id = rg.job_title_id
+    JOIN user_job_titles ug ON ug.name = jt.name
+    WHERE r.institution_id = $1
+),
+role_tree(name) AS (
+    SELECT name FROM base_roles
+    UNION
+    SELECT child.name FROM role_roles rr
+    JOIN roles r ON r.id = rr.role_id
+    JOIN roles child ON child.id = rr.child_role_id
+    JOIN role_tree rt ON rt.name = r.name
+    WHERE r.institution_id = $1
+)
+SELECT p.name, 'user' AS source
+FROM permissions p
+JOIN permission_users pu ON pu.permission_id = p.id
+JOIN users pu_u ON pu_u.id = pu.user_id
+WHERE p.institution_id = $1 AND pu_u.name = $2
+UNION ALL
+SELECT p.name, 'role:' || r.name AS source
+FROM permissions p
+JOIN role_permissions rp ON rp.permission_id = p.id
+JOIN roles r ON r.id = rp.role_id
+WHERE p.institution_id = $1 AND r.institution_id = $1 AND r.name IN (SELECT name FROM role_tree)
+UNION ALL
+SELECT p.name, 'job_title:' || jt.name AS source
+FROM permissions p
+JOIN permission_job_titles pg ON pg.permission_id = p.id
+JOIN job_titles jt ON jt.id = pg.job_title_id
+WHERE p.institution_id = $1 AND jt.name IN (SELECT name FROM user_job_titles)
+ORDER BY 1, 2`
+
+// PermissionBindingsForUser 返回"权限名 → 来源"明细（user / role:<角色> / group:<职务>）。
+func (r *RoleRepository) PermissionBindingsForUser(ctx context.Context, institutionID int64, user string) ([]repository.PermissionBinding, error) {
+	rows, err := r.db.Query(ctx, permissionBindingsForUserSQL, institutionID, user)
+	if err != nil {
+		return nil, mapError(err, "")
+	}
+	defer rows.Close()
+	out := []repository.PermissionBinding{}
+	for rows.Next() {
+		var b repository.PermissionBinding
+		if err := rows.Scan(&b.Permission, &b.Source); err != nil {
+			return nil, mapError(err, "")
+		}
+		out = append(out, b)
+	}
+	return out, mapError(rows.Err(), "")
+}
+
+// rolesForJobTitleSQL 职务关联的角色（含经嵌套子角色继承）。
+const rolesForJobTitleSQL = `
+WITH RECURSIVE base_roles(name) AS (
+    SELECT r.name FROM roles r
+    JOIN role_job_titles rg ON rg.role_id = r.id
+    JOIN job_titles jt ON jt.id = rg.job_title_id
+    WHERE r.institution_id = $1 AND jt.name = $2
+),
+role_tree(name) AS (
+    SELECT name FROM base_roles
+    UNION
+    SELECT child.name FROM role_roles rr
+    JOIN roles r ON r.id = rr.role_id
+    JOIN roles child ON child.id = rr.child_role_id
+    JOIN role_tree rt ON rt.name = r.name
+    WHERE r.institution_id = $1
+)
+SELECT name FROM role_tree ORDER BY name`
+
+// RolesForJobTitle 返回职务关联的角色名。
+func (r *RoleRepository) RolesForJobTitle(ctx context.Context, institutionID int64, group string) ([]string, error) {
+	return r.strings(ctx, rolesForJobTitleSQL, institutionID, group)
+}
+
+// permissionsForGroupSQL 职务经角色获得的有效权限。
+const permissionsForGroupSQL = `
+WITH RECURSIVE base_roles(name) AS (
+    SELECT r.name FROM roles r
+    JOIN role_job_titles rg ON rg.role_id = r.id
+    JOIN job_titles jt ON jt.id = rg.job_title_id
+    WHERE r.institution_id = $1 AND jt.name = $2
+),
+role_tree(name) AS (
+    SELECT name FROM base_roles
+    UNION
+    SELECT child.name FROM role_roles rr
+    JOIN roles r ON r.id = rr.role_id
+    JOIN roles child ON child.id = rr.child_role_id
+    JOIN role_tree rt ON rt.name = r.name
+    WHERE r.institution_id = $1
+)
+SELECT p.name, p.resource_type, p.resources, p.actions, p.effect
+FROM permissions p
+WHERE p.institution_id = $1 AND p.is_enabled = TRUE
+  AND (p.expire_time IS NULL OR p.expire_time > NOW())
+  AND p.id IN (SELECT rp.permission_id FROM role_permissions rp
+                 JOIN roles r ON r.id = rp.role_id
+                 WHERE r.institution_id = $1 AND r.name IN (SELECT name FROM role_tree))`
+
+// PermissionsForJobTitle 返回职务经角色获得的权限（去重）。
+func (r *RoleRepository) PermissionsForJobTitle(ctx context.Context, institutionID int64, group string) ([]*repository.Permission, error) {
+	rows, err := r.db.Query(ctx, permissionsForGroupSQL, institutionID, group)
+	if err != nil {
+		return nil, mapError(err, "")
+	}
+	defer rows.Close()
+	out := []*repository.Permission{}
+	for rows.Next() {
+		var p repository.Permission
+		p.InstitutionID = institutionID
+		if err := rows.Scan(&p.Name, &p.ResourceType, &p.Resources, &p.Actions, &p.Effect); err != nil {
+			return nil, mapError(err, "")
+		}
+		out = append(out, &p)
+	}
+	return out, mapError(rows.Err(), "")
+}
+
+var _ repository.RoleRepository = (*RoleRepository)(nil)

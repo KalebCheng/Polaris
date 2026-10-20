@@ -1,0 +1,536 @@
+package service
+
+import (
+	"context"
+	"net"
+	"strings"
+
+	bizerrors "polaris/internal/errors"
+	"polaris/internal/repository"
+	providerpkg "polaris/internal/service/provider"
+)
+
+// 本文件集中实现"应用（Application）配置在运行时的真实生效逻辑"。
+// 原则：后台能配置的字段必须影响实际行为，避免出现"配了但不生效"的死配置。
+
+// AppInfo 登录页所需的公开应用信息（不含任何密钥）。
+type AppInfo struct {
+	// Institution 组织标识（组织 name）：兼容旧客户端；新客户端请用 InstitutionID（主键）。
+	// 历史教训：这里曾写成驼峰 `institutionID`（名字像 id、值却是 name），前端读 `info.institution`
+	// 永远拿到 undefined，于是"应用驱动登录页"虽渲染出了组织名/Logo，却始终不往登录、授权请求里带组织。
+	Institution string `json:"institution"`
+	// InstitutionID 组织主键：公开面组织引用的**权威值**（登录/发码/授权请求都传它）
+	InstitutionID int64                 `json:"institution_id"`
+	Code          string                `json:"code"`
+	Name          string                `json:"name"`
+	Logo          string                `json:"logo,omitempty"`
+	Favicon       string                `json:"favicon,omitempty"`
+	Title         string                `json:"title,omitempty"`
+	ThemeData     *repository.ThemeData `json:"theme_data,omitempty"`
+
+	// 登录方式：**已按组织能力过滤**——组织缺邮件/短信提供商时对应方式不下发，
+	// 前端因此只会渲染真正可用的入口（避免"配了不生效"）。
+	SigninMethods       []repository.SigninMethod `json:"signin_methods"`
+	SelfSignupEnabled   bool                      `json:"self_signup_enabled"`
+	SignupAutoSignin    bool                      `json:"signup_auto_signin"`
+	MagicLinkTTLSeconds int                       `json:"magic_link_ttl_seconds"`
+
+	OrgChoiceMode   string                    `json:"org_choice_mode,omitempty"`
+	SMSProviders    []string                  `json:"sms_providers"`
+	EmailProviders  []string                  `json:"email_providers"`
+	Providers       []repository.ProviderItem `json:"providers"`
+	SignupItems     []repository.SignupItem   `json:"signup_items"`
+	SignupURL       string                    `json:"signup_url,omitempty"`
+	TermsOfUse      string                    `json:"terms_of_use,omitempty"`
+	CaptchaRequired bool                      `json:"captcha_required"`
+
+	// OrgDisplayName / OrgDescription：登录页左上角品牌名与欢迎语取自**组织**（而非平台名），
+	// 仅下发展示性字段（不含任何敏感信息）。
+	OrgDisplayName string `json:"org_display_name,omitempty"`
+	OrgDescription string `json:"org_description,omitempty"`
+	OrgLogo        string `json:"org_logo,omitempty"`
+	OrgFavicon     string `json:"org_favicon,omitempty"`
+}
+
+// AppInfo 汇总登录页需要的公开信息：
+// 应用策略 + 该应用启用的身份提供方 + 组织可用的短信/邮件/验证码能力开关。
+func (s *AuthService) AppInfo(ctx context.Context, institution string, application string) (*AppInfo, error) {
+	if strings.TrimSpace(application) == "" {
+		org, err := s.resolveOrgForLogin(ctx, institution)
+		if err != nil {
+			return nil, err
+		}
+		return s.buildPlatformInfo(ctx, org), nil
+	}
+	app, err := s.resolveApplication(ctx, institution, application)
+	if err != nil {
+		return nil, err
+	}
+	return s.buildAppInfo(ctx, app), nil
+}
+
+// buildPlatformInfo returns organization-level login information without any application policy.
+func (s *AuthService) buildPlatformInfo(ctx context.Context, org *repository.Institution) *AppInfo {
+	info := &AppInfo{
+		Institution:    org.Name,
+		InstitutionID:  org.ID,
+		OrgDisplayName: orDefault(org.DisplayName, org.Name),
+		OrgDescription: org.Description,
+		OrgLogo:        org.Logo,
+		OrgFavicon:     org.Favicon,
+		SigninMethods: []repository.SigninMethod{
+			normalizeMethodForClient(repository.SigninMethod{
+				Name:        repository.SigninMethodPassword,
+				DisplayName: "Password",
+				Rule:        "All",
+			}),
+		},
+		SMSProviders:   []string{},
+		EmailProviders: []string{},
+		Providers:      []repository.ProviderItem{},
+		SignupItems:    []repository.SignupItem{},
+	}
+	if s.providerRuntime != nil {
+		info.SMSProviders, info.EmailProviders, info.CaptchaRequired = s.providerCapabilities(ctx, org.ID)
+	}
+	return info
+}
+
+// InstitutionNameByID 把组织主键解析为组织标识（公开面以主键为权威引用，服务层内部仍以标识定位）。
+func (s *AuthService) InstitutionNameByID(ctx context.Context, id int64) (string, error) {
+	org, err := s.orgs.GetByID(ctx, id)
+	if err != nil || org == nil {
+		return "", bizerrors.ErrNotFound.WithDetail("institution_id", id)
+	}
+	return org.Name, nil
+}
+
+// AppInfoByClientID 按 client_id 解析应用并汇总登录页信息（应用驱动登录页：/oauth/authorize 携带 client_id）。
+func (s *AuthService) AppInfoByClientID(ctx context.Context, clientID string) (*AppInfo, error) {
+	if clientID == "" {
+		return nil, bizerrors.New(bizerrors.CodeApplicationNotFound, "application not found")
+	}
+	app, err := s.apps.GetByClientID(ctx, clientID)
+	if err != nil {
+		return nil, bizerrors.NewWithCode(bizerrors.CodeApplicationNotFound).WithDetail("client_id", clientID)
+	}
+	return s.buildAppInfo(ctx, app), nil
+}
+
+// AppAccessResult 登录页预检：当前会话用户能否以该应用为上下文完成认证。
+// 只返回判定结果与展示信息，不泄露授权名单。
+type AppAccessResult struct {
+	Allowed         bool   `json:"allowed"`
+	Reason          string `json:"reason,omitempty"`
+	ApplicationCode string `json:"application_code,omitempty"`
+	ApplicationName string `json:"application_name,omitempty"`
+}
+
+// AppAccessByClientID 供「应用驱动登录页」在自动续走 /oauth/authorize 之前做一次预检，
+// 避免未授权用户被直接送到 RP 后看到一段 JSON / 空白错误页。
+func (s *AuthService) AppAccessByClientID(ctx context.Context, clientID, userName string) (*AppAccessResult, error) {
+	if clientID == "" {
+		return nil, bizerrors.New(bizerrors.CodeApplicationNotFound, "application not found")
+	}
+	app, err := s.apps.GetByClientID(ctx, clientID)
+	if err != nil {
+		return nil, bizerrors.NewWithCode(bizerrors.CodeApplicationNotFound).WithDetail("client_id", clientID)
+	}
+	result := &AppAccessResult{
+		ApplicationCode: app.Code,
+		ApplicationName: orDefault(app.Name, app.Code),
+	}
+	if app.State != "" && app.State != "active" {
+		result.Reason = "application_disabled"
+		return result, nil
+	}
+	user, err := s.users.GetByName(ctx, app.InstitutionID, userName)
+	if err != nil {
+		// 当前会话用户不属于该应用所在组织：对登录页而言同样是"无权访问"。
+		result.Reason = "institution_mismatch"
+		return result, nil
+	}
+	if s.access == nil {
+		result.Allowed = true
+		return result, nil
+	}
+	allowed, err := s.access.Allowed(ctx, app, user)
+	if err != nil {
+		return nil, err
+	}
+	if !allowed {
+		result.Reason = "app_access_denied"
+		return result, nil
+	}
+	result.Allowed = true
+	return result, nil
+}
+
+func (s *AuthService) buildAppInfo(ctx context.Context, app *repository.Application) *AppInfo {
+	info := &AppInfo{
+		Institution:         "",
+		InstitutionID:       app.InstitutionID,
+		Code:                app.Code,
+		Name:                orDefault(app.Name, app.Code),
+		Logo:                app.Logo,
+		Favicon:             app.Favicon,
+		Title:               app.Title,
+		ThemeData:           app.ThemeData,
+		SelfSignupEnabled:   app.SelfSignupEnabled,
+		SignupAutoSignin:    app.SignupAutoSignin,
+		MagicLinkTTLSeconds: app.MagicLinkTTLSeconds,
+		OrgChoiceMode:       app.OrgChoiceMode,
+		Providers:           orEmptyItems(app.Providers),
+		SignupItems:         orEmptySignupItems(app.SignupItems),
+		SignupURL:           app.SignupURL,
+		TermsOfUse:          app.TermsOfUse,
+	}
+	if org, err := s.orgs.GetByID(ctx, app.InstitutionID); err == nil {
+		info.Institution = org.Name
+		info.OrgDisplayName = orDefault(org.DisplayName, org.Name)
+		info.OrgDescription = org.Description
+		info.OrgLogo = org.Logo
+		info.OrgFavicon = org.Favicon
+	}
+	if s.providerRuntime != nil {
+		info.SMSProviders, info.EmailProviders, info.CaptchaRequired = s.providerCapabilities(ctx, app.InstitutionID)
+	}
+	info.SigninMethods = s.availableSigninMethods(ctx, app, info.EmailProviders, info.SMSProviders)
+	return info
+}
+
+// implementedSigninMethods 已实现运行时的登录方式白名单。
+// Guest（匿名会话）尚未实现，故不在列——即使被写进配置也不会下发到登录页。
+var implementedSigninMethods = map[string]bool{
+	repository.SigninMethodPassword:  true,
+	repository.SigninMethodEmailCode: true,
+	repository.SigninMethodSMSCode:   true,
+	repository.SigninMethodMagicLink: true,
+	repository.SigninMethodProvider:  true,
+}
+
+// availableSigninMethods 依据组织能力过滤登录方式（不可用的方式不下发）：
+//   - 邮箱验证码 / 魔法链接：需要组织启用邮件提供商；
+//   - 短信验证码：需要组织启用短信提供商；
+//   - 第三方：需要应用自身配置了提供方。
+func (s *AuthService) availableSigninMethods(ctx context.Context, app *repository.Application, email, sms []string) []repository.SigninMethod {
+	return s.filterSigninMethods(ctx, app, email, sms)
+}
+
+// availableSigninMethods 保留纯函数入口给单元测试；生产路径使用 filterSigninMethods（含显式 provider/template 校验）。
+func availableSigninMethods(app *repository.Application, email, sms []string) []repository.SigninMethod {
+	return (&AuthService{}).filterSigninMethods(context.Background(), app, email, sms)
+}
+
+func (s *AuthService) filterSigninMethods(ctx context.Context, app *repository.Application, email, sms []string) []repository.SigninMethod {
+	// 与 HasSigninMethod 保持一致：signin_methods 为空的历史应用兜底为"仅密码"，
+	// 避免登录页无任何入口而后端却仍放行密码登录（两边语义必须一致）。
+	if len(app.SigninMethods) == 0 {
+		return []repository.SigninMethod{normalizeMethodForClient(repository.SigninMethod{Name: repository.SigninMethodPassword, DisplayName: "Password", Rule: "All"})}
+	}
+	out := []repository.SigninMethod{}
+	for _, m := range app.SigninMethods {
+		if !implementedSigninMethods[m.Name] {
+			continue // 尚未实现运行时的登录方式不下发（避免"配了不生效"）
+		}
+		switch m.Name {
+		case repository.SigninMethodEmailCode, repository.SigninMethodMagicLink:
+			if m.ProviderID == 0 && len(email) == 0 {
+				continue
+			}
+			if s != nil && s.templates != nil && m.ProviderID > 0 {
+				scene := repository.TemplateSceneLoginCode
+				if m.Name == repository.SigninMethodMagicLink {
+					scene = repository.TemplateSceneMagicLink
+				}
+				p, tpl, err := s.templates.ResolveNotification(ctx, app.InstitutionID, m.ProviderID, m.TemplateID, scene, providerpkg.CategoryEmail)
+				if err != nil || p == nil || tpl == nil {
+					continue
+				}
+				m.TemplateID = tpl.ID
+			}
+		case repository.SigninMethodSMSCode:
+			if m.ProviderID == 0 && len(sms) == 0 {
+				continue
+			}
+			if s != nil && s.templates != nil && m.ProviderID > 0 {
+				p, tpl, err := s.templates.ResolveNotification(ctx, app.InstitutionID, m.ProviderID, m.TemplateID, repository.TemplateSceneLoginCode, providerpkg.CategorySMS)
+				if err != nil || p == nil || tpl == nil {
+					continue
+				}
+				m.TemplateID = tpl.ID
+			}
+		case repository.SigninMethodProvider:
+			if len(app.Providers) == 0 {
+				continue
+			}
+		}
+		out = append(out, normalizeMethodForClient(m))
+	}
+	return out
+}
+
+func normalizeMethodForClient(m repository.SigninMethod) repository.SigninMethod {
+	if m.Name == repository.SigninMethodPassword {
+		m.Identifiers = m.ResolvePasswordIdentifiers()
+	}
+	m.MfaEnabled = m.MFAEnabled()
+	m.MfaRequired = m.MFARequired()
+	if m.MfaProviderIDs == nil {
+		m.MfaProviderIDs = []int64{}
+	}
+	return m
+}
+
+// providerCapabilities 返回组织内可用于验证码登录/邮件的提供商名，以及是否要求人机校验。
+// 数据源与通知发送链路**同源**（provider.Runtime），避免"这里说有、发码时说没有"。
+func (s *AuthService) providerCapabilities(ctx context.Context, institutionID int64) (sms, email []string, captcha bool) {
+	sms, email = []string{}, []string{}
+	if s.providerRuntime == nil {
+		return sms, email, false
+	}
+	for _, category := range []providerpkg.Category{
+		providerpkg.CategorySMS, providerpkg.CategoryEmail, providerpkg.CategoryCaptcha,
+	} {
+		items, err := s.providerRuntime.ListActive(ctx, institutionID, category)
+		if err != nil {
+			continue
+		}
+		for _, item := range items {
+			switch category {
+			case providerpkg.CategorySMS:
+				sms = append(sms, item.Name)
+			case providerpkg.CategoryEmail:
+				email = append(email, item.Name)
+			case providerpkg.CategoryCaptcha:
+				captcha = true
+			}
+		}
+	}
+	return sms, email, captcha
+}
+
+// resolveOrgForLogin 解析登录目标组织实体。
+//
+// 认证入口（登录 / 注册 / 应用信息）对外仍是**组织标识**（名字或域名）——用户看到的是组织名，
+// 不是主键；解析成实体后，内部一律用 org.ID 访问数据（库层已是 id 语义）。
+func (s *AuthService) resolveOrgForLogin(ctx context.Context, institutionName string) (*repository.Institution, error) {
+	name := institutionName
+	if name == "" {
+		name = s.oauthCfg.DefaultInstitution
+	}
+	org, err := s.orgs.GetByName(ctx, name)
+	if err != nil {
+		return nil, bizerrors.ErrNotFound.WithDetail("institution_id", name)
+	}
+	return org, nil
+}
+
+// resolveApplication 解析目标应用：未指定时回退到组织的默认应用（再回退到该组织第一个应用）。
+func (s *AuthService) resolveApplication(ctx context.Context, institutionName, application string) (*repository.Application, error) {
+	org, err := s.resolveOrgForLogin(ctx, institutionName)
+	if err != nil {
+		return nil, err
+	}
+	if application == "" {
+		application = org.DefaultApplication
+	}
+	if application == "" {
+		apps, err := s.apps.List(ctx, repository.ListQuery{InstitutionID: org.ID, Limit: 1})
+		if err != nil || len(apps) == 0 {
+			return nil, bizerrors.New(bizerrors.CodeApplicationNotFound, "application not found").
+				WithDetail("institution_id", org.Name)
+		}
+		return apps[0], nil
+	}
+	app, err := s.apps.GetByCode(ctx, org.ID, application)
+	if err != nil {
+		return nil, bizerrors.NewWithCode(bizerrors.CodeApplicationNotFound).
+			WithDetail("institution_id", org.Name).WithDetail("application", application)
+	}
+	return app, nil
+}
+
+// resolveApplicationOptional 宽松解析目标应用，供**登录 / 注册**等"应用级策略可选"的路径使用：
+// 组织尚未配置任何应用时返回 (nil, nil)，由调用方跳过应用级策略，而不是让登录失败。
+//   - 显式指定了应用名却不存在：仍返回 APPLICATION_NOT_FOUND（应用驱动场景需明确失败）；
+//   - 未显式指定：默认应用（可能已被删除 → 忽略）→ 组织首个应用 → 都没有则返回 nil。
+func (s *AuthService) resolveApplicationOptional(ctx context.Context, institutionName, application string) (*repository.Application, error) {
+	org, err := s.resolveOrgForLogin(ctx, institutionName)
+	if err != nil {
+		return nil, nil // 组织不存在时交由调用方处理（登录已单独校验组织）
+	}
+	if application != "" {
+		app, err := s.apps.GetByCode(ctx, org.ID, application)
+		if err != nil {
+			return nil, bizerrors.NewWithCode(bizerrors.CodeApplicationNotFound).
+				WithDetail("institution_id", org.Name).WithDetail("application", application)
+		}
+		return app, nil
+	}
+	if org.DefaultApplication != "" {
+		if app, err := s.apps.GetByCode(ctx, org.ID, org.DefaultApplication); err == nil {
+			return app, nil
+		}
+	}
+	apps, err := s.apps.List(ctx, repository.ListQuery{InstitutionID: org.ID, Limit: 1})
+	if err != nil || len(apps) == 0 {
+		return nil, nil
+	}
+	return apps[0], nil
+}
+
+// resolveAppContext 解析请求**显式携带**的"应用上下文"——应用准入判定的前提。
+//
+// 契约（Spec FR-3）：client_id（应用驱动入口的标准形态）优先，其次 application（应用标识，兼容旧链接）；
+// 两者都为空时返回 (nil, nil) = "登录平台"，调用方因此**跳过准入判定**。
+//
+// 关键点（勿改）：这里**不得**回退到组织默认应用。回退解析出的应用只用于其它应用级策略；
+// 若把它也用于准入判定，一旦默认应用被配成"受限 + 空名单"，全组织（含管理员）都无法登录平台，
+// 只能改库恢复——Spec Q6 明确要求"误配不锁死平台"。
+func (s *AuthService) resolveAppContext(ctx context.Context, institutionID int64, institution, application, clientID string) (*repository.Application, error) {
+	if cid := strings.TrimSpace(clientID); cid != "" {
+		app, err := s.apps.GetByClientID(ctx, cid)
+		if err != nil {
+			return nil, bizerrors.NewWithCode(bizerrors.CodeApplicationNotFound).WithDetail("client_id", cid)
+		}
+		return app, nil
+	}
+	code := strings.TrimSpace(application)
+	if code == "" {
+		return nil, nil
+	}
+	orgID := institutionID
+	if orgID == 0 {
+		org, err := s.resolveOrgForLogin(ctx, institution)
+		if err != nil {
+			return nil, bizerrors.NewWithCode(bizerrors.CodeApplicationNotFound).WithDetail("application", code)
+		}
+		orgID = org.ID
+	}
+	app, err := s.apps.GetByCode(ctx, orgID, code)
+	if err != nil {
+		return nil, bizerrors.NewWithCode(bizerrors.CodeApplicationNotFound).
+			WithDetail("institution_id", orgID).WithDetail("application", code)
+	}
+	return app, nil
+}
+
+// enforceAppAccess 应用准入判定（app 为 nil —— 请求未携带应用上下文 —— 时直接放行）。
+//
+// 判定对所有人一致：**没有管理员直通**（Spec Q5）。拒绝时写审计，便于复盘"谁被哪个应用挡在外面"。
+func (s *AuthService) enforceAppAccess(ctx context.Context, app *repository.Application, user *repository.User) error {
+	if s.access == nil || app == nil || user == nil {
+		return nil
+	}
+	if err := s.access.Enforce(ctx, app, user); err != nil {
+		if bizerrors.Is(err, bizerrors.CodeAppAccessDenied) {
+			s.audits.Record(ctx, user.Name, user.InstitutionID, "auth.app_access_denied", app.Code, nil)
+		}
+		return err
+	}
+	return nil
+}
+
+// enforceSigninPolicy 校验应用级登录策略（禁用登录 / 是否允许密码登录 / IP 限制）。
+func (s *AuthService) enforceSigninPolicy(app *repository.Application, ip string) error {
+	if app == nil {
+		return nil
+	}
+	if app.State != "" && app.State != "active" {
+		return bizerrors.New(bizerrors.CodeForbidden, "application is disabled")
+	}
+	if !ipAllowed(app.IPWhitelist, ip) || !ipAllowed(app.IPRestriction, ip) {
+		return bizerrors.New(bizerrors.CodeForbidden, "sign-in from this ip is not allowed").WithDetail("ip", ip)
+	}
+	return nil
+}
+
+// ipAllowed 校验 IP 是否命中白名单；空列表表示不限制。
+// 支持精确 IP 与 CIDR（如 10.0.0.0/8）；配置项既用于白名单也用于组织级限制。
+func ipAllowed(csv string, ip string) bool {
+	csv = strings.TrimSpace(csv)
+	if csv == "" {
+		return true
+	}
+	target := net.ParseIP(strings.TrimSpace(ip))
+	if target == nil {
+		return false
+	}
+	for _, entry := range strings.Split(csv, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if _, network, err := net.ParseCIDR(entry); err == nil {
+			if network.Contains(target) {
+				return true
+			}
+			continue
+		}
+		if parsed := net.ParseIP(entry); parsed != nil && parsed.Equal(target) {
+			return true
+		}
+	}
+	return false
+}
+
+// enforceSessionPolicy 依据应用配置收敛用户会话数量。
+//
+// 单一字段 MaxSessions 表达全部语义（见迁移 015：独占登录已合并进来）：
+//   - 0：不限制（返回，不做任何清理）；
+//   - 1：独占——新登录踢掉该用户在同一应用下的其他会话；
+//   - N：最多保留最近 N 个（含本次新会话），更早的下线。
+func (s *AuthService) enforceSessionPolicy(ctx context.Context, app *repository.Application, user *repository.User, keepSessionID string) {
+	if app == nil || app.MaxSessions == 0 {
+		return // 未配置则不限制
+	}
+	ids, err := s.sessions.UserSessions(ctx, user.InstitutionID, user.Name)
+	if err != nil {
+		return
+	}
+	type candidate struct {
+		id        string
+		createdAt int64
+	}
+	var others []candidate
+	for _, id := range ids {
+		if id == keepSessionID {
+			continue
+		}
+		session, err := s.sessions.Load(ctx, id)
+		if err != nil {
+			continue
+		}
+		if app.Code != "" && session.Application != "" && session.Application != app.Code {
+			continue // 仅统计同一应用下的会话
+		}
+		others = append(others, candidate{id: id, createdAt: session.CreatedAt})
+	}
+	// 保留最近 (MaxSessions-1) 个，其余下线（新会话已占用 1 个名额）
+	limit := app.MaxSessions - 1
+	if limit < 0 {
+		limit = 0
+	}
+	if len(others) <= limit {
+		return
+	}
+	// 按创建时间升序，先淘汰最旧的（保持稳定：相等时按原顺序）
+	for i := 0; i < len(others); i++ {
+		for j := i + 1; j < len(others); j++ {
+			if others[j].createdAt < others[i].createdAt {
+				others[i], others[j] = others[j], others[i]
+			}
+		}
+	}
+	for _, item := range others[:len(others)-limit] {
+		s.dropSession(ctx, user, item.id)
+	}
+}
+
+// dropSession 删除指定会话（仅清理会话本体与用户索引）。
+func (s *AuthService) dropSession(ctx context.Context, user *repository.User, sessionID string) {
+	_ = s.sessions.Drop(ctx, user.InstitutionID, user.Name, sessionID)
+}
+
+// validateAppScopes 校验请求的 scope 是否在应用允许列表内（openid 恒定允许）。

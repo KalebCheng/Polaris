@@ -1,0 +1,60 @@
+# 二进制
+/bin/
+__debug_bin*
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
+# 构建缓存 / 依赖缓存（本地）
+.gocache/
+.gomodcache/
+.pnpm-store/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# 本地配置与密钥
+configs/app.local.yaml
+configs/secrets.yaml
+*.pem
+*.key
+
+# 日志
+*.log
+logs/
+
+# 环境变量
+.env
+.env.local
+
+# 构建产物
+dist/
+build/
+tmp/
+temp/
+
+# 前端
+frontend/web/node_modules/
+frontend/web/dist/
+
+# 前端构建缓存
+frontend/web/tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db
+
+.agents/
+.claude/
+.codegraph/
+
+docs/specs/
+docs/upgrades/*
+!docs/upgrades/sensitive-storage-hardening.up.sql
