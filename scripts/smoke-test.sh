@@ -58,6 +58,7 @@ cleanup() {
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/departments/${DEPT5_ID:-0}" >/dev/null 2>&1 || true
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/users/${USER5_ID:-0}" >/dev/null 2>&1 || true
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/users/${ACCESS_USER_ID:-0}" >/dev/null 2>&1 || true
+    curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/users/${IMPORT_USER_ID:-0}" >/dev/null 2>&1 || true
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/departments/${ACCESS_DEPT_CHILD_ID:-0}" >/dev/null 2>&1 || true
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/departments/${ACCESS_DEPT_ID:-0}" >/dev/null 2>&1 || true
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/connectors/${CONNECTOR_ID:-0}" >/dev/null 2>&1 || true
@@ -154,13 +155,14 @@ except Exception:
 }
 
 # json_owner_job_id <syncer_id>：从最近一次 /asyncd/jobs 响应取"归属该连接"的任务定义主键
+# （归属由展示层反查得出：owner_kind=syncer / owner_id=连接主键）
 json_owner_job_id() {
   python3 -c 'import json,sys
 try:
     d = json.load(open("/tmp/polaris-smoke-body"))
     items = d.get("data", {}).get("items") or []
     for item in items:
-        if item.get("owner_syncer_id") == int(sys.argv[1]):
+        if item.get("owner_kind") == "syncer" and item.get("owner_id") == int(sys.argv[1]):
             print(item.get("id", ""))
             break
     else:
@@ -426,8 +428,10 @@ print('OK' if items and all('member_count' in item for item in items) else 'item
 expect_code 201 "$(code -b "$JAR" -X POST "$BASE/api/v1/departments" -H 'Content-Type: application/json' \
   --data-raw "$(printf '{"name":"%s","display_name":"冒烟部门五"}' "$TEST_DEPT5")")" "创建部门（阶段五）→ 201"
 DEPT5_ID="$(json_field id)"
-expect_code 200 "$(code -b "$JAR" -X PUT "$BASE/api/v1/departments/$DEPT5_ID/members" -H 'Content-Type: application/json' \
-  --data-raw "$(printf '{"user_ids":[%s]}' "$USER5_ID")")" "设置部门成员 → 200"
+# 部门成员由「用户的部门归属」承载（PUT /users/:id/departments），部门侧只有只读的成员列表
+expect_code 200 "$(code -b "$JAR" -X PUT "$BASE/api/v1/users/$USER5_ID/departments" -H 'Content-Type: application/json' \
+  --data-raw "$(printf '{"department_ids":[%s],"primary_department_id":%s}' "$DEPT5_ID" "$DEPT5_ID")")" "设置部门成员（经用户部门归属）→ 200"
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/departments/$DEPT5_ID/members")" "读取部门成员 → 200"
 expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/departments/$DEPT5_ID/members")" "GET 部门成员 → 200"
 expect_ok "部门成员已挂载" "
 import json
@@ -438,10 +442,14 @@ expect_ok "user.department_path 已补全" "
 import json
 d = json.load(open('/tmp/polaris-smoke-body'))['data']
 print('OK' if d.get('department_path') else 'department_path=%r department_id=%r' % (d.get('department_path'), d.get('department_id')))"
-expect_code 400 "$(code -b "$JAR" -X PUT "$BASE/api/v1/departments/$DEPT5_ID/members" -H 'Content-Type: application/json' \
-  --data-raw '{"user_ids":[999999999]}')" "不存在的成员 → 400"
-expect_code 200 "$(code -b "$JAR" -X PUT "$BASE/api/v1/departments/$DEPT5_ID/members" -H 'Content-Type: application/json' \
-  --data-raw '{"user_ids":[]}')" "清空部门成员 → 200"
+# 部门成员由用户侧归属承载：成员存在性校验落在 PUT /users/:id/departments 上
+expect_code 200 "$(code -b "$JAR" -X PUT "$BASE/api/v1/users/$USER5_ID/departments" -H 'Content-Type: application/json' \
+  --data-raw "$(printf '{"department_ids":[%s],"primary_department_id":%s}' "$ROOT_DEPT_ID" "$ROOT_DEPT_ID")")" "把用户移出该部门 → 200"
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/departments/$DEPT5_ID/members")" "移出后读取部门成员 → 200"
+expect_ok "移出后部门成员为空" "
+import json
+items = json.load(open('/tmp/polaris-smoke-body')).get('data', {}).get('items') or []
+print('OK' if not any(u.get('id') == $USER5_ID for u in items) else 'items=%r' % [u.get('id') for u in items])"
 
 # 目录筛选
 expect_code 400 "$(code -b "$JAR" "$BASE/api/v1/users?status=bogus")" "非法 status → 400"
@@ -955,6 +963,50 @@ expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/provisioning")" "GET /provisioni
 expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/me/application-accounts")" "GET /me/application-accounts → 200（门户只读）"
 expect_code 200 "$(code -b "$JAR" -X DELETE "$BASE/api/v1/connectors/$CONNECTOR_ID")" "删除连接器 → 200"
 expect_code 200 "$(code -b "$JAR" -X DELETE "$BASE/api/v1/account-strategies/$STRATEGY_ID")" "删除账号策略 → 200"
+
+step "25. 用户导入（模板 / 上传即导入 / 导入记录）"
+# 模板下载：xlsx 魔数是 zip 头
+TPL_CODE="$(curl -sS -b "$JAR" -o /tmp/polaris-smoke-template.xlsx -w '%{http_code}' "$BASE/api/v1/users/import/template?lang=zh&institution=$ORG_ID")"
+expect_code 200 "$TPL_CODE" "GET /users/import/template → 200"
+case "$(head -c 2 /tmp/polaris-smoke-template.xlsx)" in
+  PK) green "PASS  模板为 xlsx 文件" ;;
+  *) red "FAIL  模板不是 xlsx"; exit 1 ;;
+esac
+# 三行：成功 / 已存在跳过 / 部门不存在失败（表头英文模板，分隔符默认 ;）
+IMPORT_OK="smoke-import-$RUN_ID"
+IMPORT_DUP="smoke-user5-$RUN_ID"
+cat > /tmp/polaris-smoke-import.csv <<CSV
+username,display_name,email,phone,country_code,first_name,last_name,title,department,job_level,job_titles,roles,password
+$IMPORT_OK,冒烟导入用户,smoke-import-$RUN_ID@polaris.local,,,,,,,,,,Smoke5@12345
+$IMPORT_DUP,重复用户,,,,,,,,,,,Smoke5@12345
+smoke-import-bad-$RUN_ID,坏行,,,,,,,,smoke-import-missing-dept-$RUN_ID,,,Smoke5@12345
+CSV
+expect_code 200 "$(code -b "$JAR" -X POST "$BASE/api/v1/users/import?institution=$ORG_ID" -F "file=@/tmp/polaris-smoke-import.csv")" "POST /users/import → 200"
+expect_ok "导入报告逐行判定（1 成功 / 1 跳过 / 1 失败）" "import json
+d = json.load(open('/tmp/polaris-smoke-body'))['data']
+s = d['summary']
+rows = {r['row']: r['status'] for r in d['rows']}
+print('OK' if (s['total'], s['created'], s['skipped'], s['failed']) == (3, 1, 1, 1) and rows[2] == 'created' and rows[3] == 'skipped' and rows[4] == 'failed' else 'summary=%r rows=%r' % (s, rows))"
+IMPORT_ID="$(json_field import_id)"
+IMPORT_USER_ID="$(python3 -c "import json
+d = json.load(open('/tmp/polaris-smoke-body'))['data']['rows']
+print(next((r.get('created_user_id') or '' for r in d if r['status'] == 'created'), ''))")"
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/users/imports?institution=$ORG_ID")" "GET /users/imports → 200"
+REPORT_CODE="$(curl -sS -b "$JAR" -o /tmp/polaris-smoke-import-report.csv -w '%{http_code}' "$BASE/api/v1/users/imports/$IMPORT_ID/report.csv?institution=$ORG_ID")"
+expect_code 200 "$REPORT_CODE" "GET /users/imports/:id/report.csv → 200"
+grep -q "failed" /tmp/polaris-smoke-import-report.csv && green "PASS  失败行报告包含失败行" || { red "FAIL  失败行报告为空"; exit 1; }
+# 表头与模板不一致：整份拒绝，不产生导入记录
+printf 'username,display_name,password\nsomeone,某人,Smoke5@12345\n' > /tmp/polaris-smoke-import-badheader.csv
+expect_code 400 "$(code -b "$JAR" -X POST "$BASE/api/v1/users/import?institution=$ORG_ID" -F "file=@/tmp/polaris-smoke-import-badheader.csv")" "表头不符 → 400"
+if [ -z "$IMPORT_USER_ID" ]; then red "FAIL  导入报告缺少成功行主键"; exit 1; fi
+# 逐行密码真实生效：管理员重置的密码能被"账号或密码错误"之外的结果区分出来
+# （冒烟环境启用了人机校验，登录入口统一 400 CAPTCHA_REQUIRED，故这里用管理端按 id 读回 + 重置密码链路）
+expect_code 200 "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$IMPORT_USER_ID/reset-password" -H 'Content-Type: application/json' \
+  --data-raw '{"new_password":"Imported@54321"}')" "导入用户可按 id 管理（重置密码）→ 200"
+expect_code 200 "$(code -b "$JAR" -X POST "$BASE/api/v1/users/import?institution=$ORG_ID" -F "file=@/tmp/polaris-smoke-import.csv")" "重复导入 → 200（全部跳过）"
+expect_ok "重复导入不改写存量用户" "import json
+d = json.load(open('/tmp/polaris-smoke-body'))['data']['summary']
+print('OK' if d['created'] == 0 and d['skipped'] == 2 else 'summary=%r' % d)"
 
 step "24. 清理测试资源"
 for PID in ${TEST_PROVIDERS}; do

@@ -114,6 +114,16 @@ type Department struct {
 	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
 }
 
+// UserBatchItem 批量建用户的一条（导入）：用户实体 + 部门（[0] 为主）/ 职务 / 角色主键。
+// PrimaryID 与 Departments 一致时写入 user_departments.is_primary。
+type UserBatchItem struct {
+	User        *User
+	PrimaryID   int64
+	Departments []int64
+	JobTitleIDs []int64
+	RoleIDs     []int64
+}
+
 // User 用户账号（租户内唯一：institution + name）
 type User struct {
 	ID            int64  `db:"id" json:"id"`

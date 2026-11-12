@@ -135,10 +135,35 @@ type UserRepository interface {
 	// 外部身份绑定
 	GetIdentity(ctx context.Context, institutionID int64, provider, providerUserID string) (*UserIdentity, error)
 	GetIdentitiesByUser(ctx context.Context, institutionID int64, user string) ([]*UserIdentity, error)
+	// CreateManyWithRelations 在同一事务内创建多条用户并写入部门 / 职务 / 角色关联（导入批次）。
+	// 任一失败整批回滚；事务内会再查一次账号名 / 邮箱冲突，避免预检与写入之间的竞态。
+	// 返回后每个 item.User.ID 已回填。
+	CreateManyWithRelations(ctx context.Context, items []UserBatchItem) error
 	// CreateWithIdentity 事务内创建用户并绑定外部身份（JIT 供给；红线 §3.1-6）
 	CreateWithIdentity(ctx context.Context, u *User, identity *UserIdentity) (int64, error)
 	BindIdentity(ctx context.Context, identity *UserIdentity) (int64, error)
 	UnbindIdentity(ctx context.Context, id int64) error
+}
+
+// UserImportRepository 用户导入记录仓库接口
+// 存储: PostgreSQL（user_imports / user_import_rows）
+type UserImportRepository interface {
+	// Create 写入导入记录（ID 回填）
+	Create(ctx context.Context, item *UserImport) error
+	// Update 刷新汇总计数与状态
+	Update(ctx context.Context, item *UserImport) error
+	// Get 按主键取（校验组织归属）
+	Get(ctx context.Context, institutionID, id int64) (*UserImport, error)
+	List(ctx context.Context, q UserImportListQuery) ([]*UserImport, error)
+	Count(ctx context.Context, institutionID int64) (int64, error)
+	// CreateRows 批量写入逐行结果（(import_id, row_number) 冲突时忽略，续写幂等）
+	CreateRows(ctx context.Context, rows []*UserImportRow) error
+	// ListRows 按行号升序列出逐行结果
+	ListRows(ctx context.Context, importID int64) ([]*UserImportRow, error)
+	// MarkStaleFailed 把 updated_at 早于 before 且仍为 queued/running 的记录标记失败
+	MarkStaleFailed(ctx context.Context, before time.Time) (int64, error)
+	// PurgeBefore 删除创建时间早于 before 的导入记录（级联删行）
+	PurgeBefore(ctx context.Context, before time.Time) (int64, error)
 }
 
 // ApplicationRepository 应用仓库接口

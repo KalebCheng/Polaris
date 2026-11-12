@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -497,3 +498,73 @@ func (r *UserRepository) UnbindIdentity(ctx context.Context, id int64) error {
 }
 
 var _ repository.UserRepository = (*UserRepository)(nil)
+
+// CreateManyWithRelations 事务内批量创建用户并写入部门 / 职务 / 角色关联（导入批次）。
+//
+// 事务内再查一次账号名与邮箱冲突：导入侧的预检与写入之间可能被并发导入插入同名行，
+// 唯一约束虽能兜底，但 23505 无法指出是哪一行，按批重试时往返次数不可控。
+func (r *UserRepository) CreateManyWithRelations(ctx context.Context, items []repository.UserBatchItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	return r.db.WithTx(ctx, func(tx pgx.Tx) error {
+		for i := range items {
+			item := &items[i]
+			u := item.User
+			normalizeUser(u)
+			var clash int64
+			err := tx.QueryRow(ctx, `SELECT 1 FROM users
+				WHERE institution_id=$1 AND (name=$2 OR ($3 <> '' AND lower(email)=lower($3))) LIMIT 1`,
+				u.InstitutionID, u.Name, u.Email).Scan(&clash)
+			if err == nil {
+				return bizerrors.New(bizerrors.CodeConflict, "user already exists").WithDetail("user", u.Name)
+			}
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return mapError(err, "")
+			}
+			id, err := insertReturningID(ctx, tx, userTable, u)
+			if err != nil {
+				return mapError(err, "")
+			}
+			u.ID = id
+			seenDepts := make(map[int64]bool, len(item.Departments))
+			for _, deptID := range item.Departments {
+				if deptID == 0 || seenDepts[deptID] {
+					continue
+				}
+				seenDepts[deptID] = true
+				if _, err := tx.Exec(ctx, `INSERT INTO user_departments
+					(institution_id, user_id, department_id, is_primary)
+					VALUES ($1,$2,$3,$4)`, u.InstitutionID, id, deptID, deptID == item.PrimaryID); err != nil {
+					return mapError(err, "")
+				}
+			}
+			for _, titleID := range uniqueIDs(item.JobTitleIDs) {
+				if _, err := tx.Exec(ctx, `INSERT INTO job_title_members (job_title_id, user_id)
+					VALUES ($1,$2) ON CONFLICT DO NOTHING`, titleID, id); err != nil {
+					return mapError(err, "")
+				}
+			}
+			for _, roleID := range uniqueIDs(item.RoleIDs) {
+				if _, err := tx.Exec(ctx, `INSERT INTO role_users (role_id, user_id)
+					VALUES ($1,$2) ON CONFLICT DO NOTHING`, roleID, id); err != nil {
+					return mapError(err, "")
+				}
+			}
+		}
+		return nil
+	})
+}
+
+func uniqueIDs(ids []int64) []int64 {
+	out := make([]int64, 0, len(ids))
+	seen := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		if id == 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
