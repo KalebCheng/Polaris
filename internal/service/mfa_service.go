@@ -32,6 +32,7 @@ type MFAService struct {
 	runtime     *providerpkg.Runtime
 	codes       repository.CodeStore
 	rateLimiter repository.RateLimitRepository
+	codeLimits  VerificationCodeLimitConfig
 	sessions    *auth.SessionManager
 	jwt         *auth.JWTManager
 	audits      *AuditRecorder
@@ -48,6 +49,7 @@ func NewMFAService(
 	runtime *providerpkg.Runtime,
 	codes repository.CodeStore,
 	rateLimiter repository.RateLimitRepository,
+	codeLimits VerificationCodeLimitConfig,
 	sessions *auth.SessionManager,
 	jwt *auth.JWTManager,
 	audits *AuditRecorder,
@@ -56,7 +58,8 @@ func NewMFAService(
 	return &MFAService{
 		providers: providers, credentials: credentials, users: users, orgs: orgs,
 		templates: templates, runtime: runtime, codes: codes, rateLimiter: rateLimiter,
-		sessions: sessions, jwt: jwt, audits: audits, cipher: cipher,
+		codeLimits: codeLimits.withDefaults(),
+		sessions:   sessions, jwt: jwt, audits: audits, cipher: cipher,
 	}
 }
 
@@ -502,20 +505,17 @@ func (s *MFAService) verifyTOTP(ctx context.Context, cred *repository.UserMFACre
 	return auth.VerifyTOTPWithOptions(secret, code, totpOptions(provider))
 }
 
-func (s *MFAService) sendSMSCode(ctx context.Context, session *auth.Session, mfaProvider *repository.Provider, user *repository.User, resend bool) error {
+func (s *MFAService) sendSMSCode(
+	ctx context.Context,
+	session *auth.Session,
+	mfaProvider *repository.Provider,
+	user *repository.User,
+) error {
 	if s.templates == nil || s.codes == nil {
 		return bizerrors.ErrProviderUnavailable.WithDetail("reason", "mfa dependencies not configured")
 	}
-	rateKey := fmt.Sprintf("%s%d:%d:%d", mfaSendRateScope, session.InstitutionID, user.ID, mfaProvider.ID)
-	if resend && s.rateLimiter != nil {
-		if n, _ := s.rateLimiter.Get(ctx, rateKey); n > 0 {
-			return bizerrors.ErrVerifyCodeTooMany.WithDetail("retry_after_seconds", 60)
-		}
-	}
-	if s.rateLimiter != nil {
-		if _, err := s.rateLimiter.Incr(ctx, rateKey, time.Minute); err != nil {
-			return err
-		}
+	if err := s.enforceSMSCodeSendLimit(ctx, session, user, mfaProvider); err != nil {
+		return err
 	}
 	smsProvider, tpl, err := s.templates.ResolveNotification(ctx, session.InstitutionID,
 		mfaProvider.MfaSMSProviderID, mfaProvider.MfaSMSTemplateID, repository.TemplateSceneMfaCode, providerpkg.CategorySMS)
@@ -540,6 +540,52 @@ func (s *MFAService) sendSMSCode(ctx context.Context, session *auth.Session, mfa
 	}
 	s.audits.Record(ctx, user.Name, session.InstitutionID, "auth.mfa_send_code", user.Name,
 		map[string]interface{}{"provider": mfaProvider.Name})
+	return nil
+}
+
+func (s *MFAService) enforceSMSCodeSendLimit(
+	ctx context.Context,
+	session *auth.Session,
+	user *repository.User,
+	mfaProvider *repository.Provider,
+) error {
+	rateKey := fmt.Sprintf("%s%d:%d:%d", mfaSendRateScope, session.InstitutionID, user.ID, mfaProvider.ID)
+	limits := s.codeLimits.withDefaults()
+	minGapSeconds := int(limits.SendMinGap.Seconds())
+	if minGapSeconds < 1 {
+		minGapSeconds = 1
+	}
+	if err := enforceRateLimitRules(ctx, s.rateLimiter,
+		rateLimitRule{
+			key:    rateKey,
+			window: limits.SendMinGap,
+			max:    1,
+			scope:  "mfa",
+			details: map[string]interface{}{
+				"retry_after_seconds": minGapSeconds,
+			},
+		},
+		rateLimitRule{
+			key:    rateKey + ":hour",
+			window: time.Hour,
+			max:    limits.SendHourlyMax,
+			scope:  "mfa",
+			details: map[string]interface{}{
+				"window": "hourly",
+			},
+		},
+		rateLimitRule{
+			key:    rateKey + ":day",
+			window: 24 * time.Hour,
+			max:    limits.SendDailyMax,
+			scope:  "mfa",
+			details: map[string]interface{}{
+				"window": "daily",
+			},
+		},
+	); err != nil {
+		return err
+	}
 	return nil
 }
 

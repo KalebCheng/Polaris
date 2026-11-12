@@ -267,6 +267,9 @@ server {
 POLARIS_ISSUER=https://sso.example.com
 POLARIS_COOKIE_SECURE=true
 POLARIS_CSRF_ALLOWED_ORIGINS=https://sso.example.com
+# Only these reverse proxies may supply X-Forwarded-For / X-Real-IP.
+# Local nginx is the default; add the proxy address if it runs elsewhere.
+POLARIS_TRUSTED_PROXIES=127.0.0.1,::1
 ```
 
 要点：

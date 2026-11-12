@@ -63,6 +63,7 @@ type Application struct {
 	strategyRepo           *postgres.AccountStrategyRepository
 	applicationAccountRepo *postgres.ApplicationAccountRepository
 	provisionRepo          *postgres.ProvisionHistoryRepository
+	userImportRepo         *postgres.UserImportRepository
 	sessionRepo            *redisrepo.SessionRepository
 	rateLimitRepo          *redisrepo.RateLimitRepository
 	stateStore             *redisrepo.StateStore
@@ -82,6 +83,7 @@ type Application struct {
 	institutionSvc *service.InstitutionService
 	departmentSvc  *service.DepartmentService
 	userSvc        *service.UserService
+	userImportSvc  *service.UserImportService
 	lockoutSvc     *service.LoginLockoutService
 	applicationSvc *service.ApplicationService
 	appAccessSvc   *service.ApplicationAccessService
@@ -526,10 +528,22 @@ func (a *Application) initServices() {
 		a.connRepo, a.strategyRepo, a.applicationAccountRepo, a.provisionRepo,
 		a.userRepo, a.appRepo, a.orgRepo, a.secretCipher, a.audits, a.asyncdSvc, a.appAccessSvc,
 	)
+	codeLimits := service.VerificationCodeLimitConfig{
+		SendMinGap:            time.Duration(a.cfg.Auth.RateLimit.VerificationCode.SendMinIntervalSeconds) * time.Second,
+		SendHourlyMax:         int64(a.cfg.Auth.RateLimit.VerificationCode.SendHourlyMax),
+		SendDailyMax:          int64(a.cfg.Auth.RateLimit.VerificationCode.SendDailyMax),
+		SendIPMinuteMax:       int64(a.cfg.Auth.RateLimit.VerificationCode.SendIPMinuteMax),
+		SendIPHourlyMax:       int64(a.cfg.Auth.RateLimit.VerificationCode.SendIPHourlyMax),
+		SendOrgHourlyMax:      int64(a.cfg.Auth.RateLimit.VerificationCode.SendOrgHourlyMax),
+		SendProviderHourlyMax: int64(a.cfg.Auth.RateLimit.VerificationCode.SendProviderHourlyMax),
+		VerifyIPHourlyMax:     int64(a.cfg.Auth.RateLimit.VerificationCode.VerifyIPHourlyMax),
+		JITSignupIPHourlyMax:  int64(a.cfg.Auth.RateLimit.VerificationCode.JITSignupIPHourlyMax),
+	}
 	a.mfaSvc = service.NewMFAService(
 		a.providerRepo, a.userMFACredentialRepo, a.userRepo, a.orgRepo, a.templateSvc, a.providerRuntime,
-		a.codeStore, a.rateLimitRepo, a.sessionManager, a.jwtManager, a.audits, a.secretCipher,
+		a.codeStore, a.rateLimitRepo, codeLimits, a.sessionManager, a.jwtManager, a.audits, a.secretCipher,
 	)
+	a.userImportRepo = postgres.NewUserImportRepository(a.db)
 	a.userSvc = service.NewUserService(
 		a.userRepo, a.orgRepo, a.roleRepo, a.jobTitleRepo, a.deptRepo, a.userDeptRepo, a.jobLevelRepo,
 		a.linkRepo, a.sessionManager, a.audits, a.secretCipher, a.provisionSvc, a.mfaSvc,
@@ -551,6 +565,7 @@ func (a *Application) initServices() {
 			LoginMax:    int64(a.cfg.Auth.RateLimit.LoginMaxAttempts),
 			LoginWindow: time.Duration(a.cfg.Auth.RateLimit.LoginWindowSeconds) * time.Second,
 			SessionTTL:  time.Duration(a.cfg.Auth.SessionTTL) * time.Second,
+			CodeLimits:  codeLimits,
 		},
 	)
 	a.oidcSvc = service.NewOIDCService(a.appRepo, a.userRepo, a.orgRepo, a.roleRepo, a.jobTitleRepo,
@@ -562,6 +577,9 @@ func (a *Application) initServices() {
 
 func (a *Application) initServer() {
 	a.server = server.New(&a.cfg.App)
+	if err := a.server.Router().SetTrustedProxies(a.cfg.Security.TrustedProxies); err != nil {
+		logger.Fatal("invalid trusted proxies", "error", err)
+	}
 	a.middleware = server.NewMiddleware(a.cfg, a.authMiddleware)
 	a.middleware.Register(a.server.Router())
 

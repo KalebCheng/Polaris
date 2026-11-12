@@ -424,7 +424,7 @@ type SessionRepository interface {
 // RateLimitRepository 限流仓库接口
 // 存储: Redis
 type RateLimitRepository interface {
-	// Incr 自增计数；首次写入时设置窗口 TTL。
+	// Incr atomically increments the counter and ensures the window TTL is set.
 	Incr(ctx context.Context, key string, ttl time.Duration) (int64, error)
 	Get(ctx context.Context, key string) (int64, error)
 	Reset(ctx context.Context, key string) error

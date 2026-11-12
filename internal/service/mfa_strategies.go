@@ -106,7 +106,7 @@ func (smsMFAStrategy) Begin(ctx context.Context, svc *MFAService, session *auth.
 		return nil, bizerrors.New(bizerrors.CodeInvalidParams, "user has no bound phone")
 	}
 	cred.Phone = user.Phone
-	if err := svc.sendSMSCode(ctx, session, provider, user, false); err != nil {
+	if err := svc.sendSMSCode(ctx, session, provider, user); err != nil {
 		return nil, err
 	}
 	return &MFAEnrollResult{ProviderID: provider.ID, Type: providerpkg.TypeMFASMS, Sent: true,
@@ -143,5 +143,5 @@ func (smsMFAStrategy) Resend(ctx context.Context, svc *MFAService, session *auth
 	if err != nil {
 		return bizerrors.New(bizerrors.CodeUserNotFound, "user not found")
 	}
-	return svc.sendSMSCode(ctx, session, provider, user, true)
+	return svc.sendSMSCode(ctx, session, provider, user)
 }

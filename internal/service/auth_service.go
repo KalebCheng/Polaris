@@ -38,6 +38,7 @@ type AuthService struct {
 	loginMax        int64
 	loginWindow     time.Duration
 	sessionTTL      time.Duration
+	codeLimits      VerificationCodeLimitConfig
 	// provision 供给事件挂钩（可选；登录成功时触发 JIT 建号）。
 	provisioning *ProvisioningService
 	// backchannel 后端登出通知（可选；会话结束时通知下游 RP）。
@@ -52,6 +53,7 @@ type AuthServiceConfig struct {
 	LoginMax    int64
 	LoginWindow time.Duration
 	SessionTTL  time.Duration
+	CodeLimits  VerificationCodeLimitConfig
 }
 
 // NewAuthService 创建认证服务
@@ -87,6 +89,7 @@ func NewAuthService(
 		states: states, rateLimiter: rateLimiter, audits: audits,
 		provisioning: provisioning, backchannel: backchannel, access: access,
 		oauthCfg: cfg.OAuth, loginMax: cfg.LoginMax, loginWindow: cfg.LoginWindow, sessionTTL: cfg.SessionTTL,
+		codeLimits: cfg.CodeLimits.withDefaults(),
 	}
 }
 

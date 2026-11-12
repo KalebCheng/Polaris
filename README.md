@@ -103,6 +103,15 @@ The frontend runs at `http://localhost:5173` and proxies `/api`, `/oauth`,
 | `POLARIS_OAUTH_*` | SSO callback, base URL, and provider secrets |
 | `POLARIS_COOKIE_SECURE` | Must be `true` in production |
 | `POLARIS_CSRF_ALLOWED_ORIGINS` | Trusted browser origins for cookie-backed writes |
+| `POLARIS_TRUSTED_PROXIES` | Comma-separated reverse proxies allowed to supply forwarded client IPs |
+| `POLARIS_CODE_SEND_MIN_INTERVAL_SECONDS` | Minimum interval between verification-code sends to one target (default 60) |
+| `POLARIS_CODE_SEND_HOURLY_MAX` | Hourly verification-code cap per target (default 10) |
+| `POLARIS_CODE_SEND_DAILY_MAX` | Daily verification-code cap per target (default 20) |
+| `POLARIS_CODE_SEND_IP_MINUTE_MAX` / `POLARIS_CODE_SEND_IP_HOURLY_MAX` | Verification-code send caps per client IP (default 20/min, 300/hour) |
+| `POLARIS_CODE_SEND_ORG_HOURLY_MAX` / `POLARIS_CODE_SEND_PROVIDER_HOURLY_MAX` | Verification-code send caps per organization and provider (default 5000/10000 per hour) |
+| `POLARIS_CODE_VERIFY_IP_HOURLY_MAX` / `POLARIS_CODE_JIT_SIGNUP_IP_HOURLY_MAX` | Verification attempts and code-based JIT sign-ups per IP (default 300/20 per hour) |
+| `POLARIS_IMPORT_MAX_ROWS` / `POLARIS_IMPORT_BATCH_SIZE` | User import: max rows per file (default 2000) and commit batch size (default 200) |
+| `POLARIS_IMPORT_MAX_FILE_BYTES` / `POLARIS_IMPORT_RUNS_PER_HOUR` | User import: max upload size (default 10 MiB) and per-institution runs per hour (default 10) |
 
 See [deployment documentation](docs/deployment.md) for the complete list.
 

@@ -1,4 +1,4 @@
-import { api } from '@/shared/api/client'
+import { API_BASE, ApiError, api } from '@/shared/api/client'
 import type {
   ProviderTemplate,
   ProviderTemplateInput,
@@ -55,7 +55,9 @@ function orgQ(
   query?: Record<string, string | number | null | undefined>,
 ): Record<string, string | number | null | undefined> {
   const institution = getActiveInstitution()
-  const merged: Record<string, string | number | null | undefined> = { ...query }
+  const merged: Record<string, string | number | null | undefined> = {
+    ...query,
+  }
   if (!merged.institution && institution) merged.institution = institution
   return merged
 }
@@ -157,7 +159,10 @@ export const userApi = {
   setDepartments: (id: number, departmentIds: number[], primaryDepartmentId?: number) =>
     api.put<void>(
       `/users/${id}/departments`,
-      { department_ids: departmentIds, primary_department_id: primaryDepartmentId ?? departmentIds[0] ?? 0 },
+      {
+        department_ids: departmentIds,
+        primary_department_id: primaryDepartmentId ?? departmentIds[0] ?? 0,
+      },
       orgQ(),
     ),
   /** 职级（Spec Q4.1 = A：仅属性，不参与授权；0 = 清空） */
@@ -499,7 +504,9 @@ export const appAccountApi = {
     ),
   /** 门户：当前用户自己的应用账号（只读） */
   mine: (institution?: string) =>
-    api.get<{ items: AppAccount[] }>('/me/application-accounts', { institution }),
+    api.get<{ items: AppAccount[] }>('/me/application-accounts', {
+      institution,
+    }),
 }
 
 export const provisionHistoryApi = {
@@ -647,10 +654,16 @@ export const asyncdApi = {
    * `counts` 与列表同一作用域，前端据此派生分页总数。
    */
   jobRuns: (jobId: number, params?: { status?: string; page?: number; size?: number }) =>
-    api.get<{ items: AsyncdJobRun[]; counts: Record<string, number>; page: number; size: number }>(
-      `/asyncd/jobs/${jobId}/runs`,
-      { status: params?.status, page: params?.page ?? 1, size: params?.size ?? 20 },
-    ),
+    api.get<{
+      items: AsyncdJobRun[]
+      counts: Record<string, number>
+      page: number
+      size: number
+    }>(`/asyncd/jobs/${jobId}/runs`, {
+      status: params?.status,
+      page: params?.page ?? 1,
+      size: params?.size ?? 20,
+    }),
   /** 某次执行的尝试明细（执行记录） */
   jobRunAttempts: (jobId: number, runId: number) =>
     api.get<{ items: AsyncdJobRunAttempt[] }>(`/asyncd/jobs/${jobId}/runs/${runId}/attempts`),
@@ -658,4 +671,107 @@ export const asyncdApi = {
   retryJobRun: (jobId: number, runId: number) =>
     api.post<void>(`/asyncd/jobs/${jobId}/runs/${runId}/retry`, undefined),
   workers: () => api.get<{ items: AsyncdWorker[] }>('/asyncd/workers'),
+}
+
+/** 导入逐行问题（column 为字段标识，前端按 users.import.columns.<column> 本地化） */
+export interface UserImportIssue {
+  column: string
+  message: string
+}
+
+export interface UserImportRow {
+  id?: number
+  row_number?: number
+  /** 行内结果的字段名 `row`（上传响应）与记录明细的 `row_number` 择一 */
+  row?: number
+  user_name?: string
+  name?: string
+  email: string
+  status: 'created' | 'skipped' | 'failed'
+  created_user_id?: number | null
+  errors: UserImportIssue[]
+  warnings: UserImportIssue[]
+}
+
+export interface UserImportRecord {
+  id: number
+  institution_id: number
+  file_name: string
+  file_format: 'xlsx' | 'csv'
+  status: 'queued' | 'running' | 'succeeded' | 'partial' | 'failed'
+  total_rows: number
+  created_count: number
+  skipped_count: number
+  failed_count: number
+  auto_create_departments: boolean
+  operator: string
+  created_departments?: string[]
+  created_at: string
+  updated_at: string
+}
+
+export interface UserImportReport {
+  import_id: number
+  status: UserImportRecord['status']
+  summary: {
+    total: number
+    created: number
+    skipped: number
+    failed: number
+    created_departments: string[]
+  }
+  rows: UserImportRow[]
+}
+
+export interface UserImportUploadOptions {
+  institution?: string
+  delimiter?: string
+  autoCreateDepartments?: boolean
+  defaultJobLevelId?: number
+  /** 请求体上传进度（0–1） */
+  onUploadProgress?: (ratio: number) => void
+  /** 服务端开始处理（响应已到达、解析前）：此时可开始按 import_id 轮询进度 */
+  onResponse?: (response: globalThis.Response) => void
+}
+
+/**
+ * 用户导入：模板 / 上传即导入（同步、分批）/ 导入记录。
+ *
+ * 上传即导入是**单请求**：解析、校验、分批创建、报告都在一次请求内完成；
+ * 请求进行中以请求头 `X-Polaris-Import-Id` 指向导入记录，详情接口用于刷新进度。
+ */
+export const userImportApi = {
+  template: async (lang: 'zh' | 'en') => {
+    const institution = getActiveInstitution()
+    const response = await fetch(
+      `${API_BASE}/users/import/template?${new URLSearchParams({ lang, institution: institution ?? '' })}`,
+      { credentials: 'include' },
+    )
+    if (!response.ok) throw new ApiError('INTERNAL_ERROR', 'download failed', response.status)
+    return response.blob()
+  },
+  upload: (file: File, options: UserImportUploadOptions = {}) => {
+    const form = new FormData()
+    form.append('file', file)
+    if (options.delimiter) form.append('delimiter', options.delimiter)
+    if (options.autoCreateDepartments) form.append('auto_create_departments', 'true')
+    if (options.defaultJobLevelId) form.append('default_job_level_id', String(options.defaultJobLevelId))
+    return api.upload<UserImportReport>('/users/import', form, {
+      query: orgQ({ institution: options.institution }),
+      onUploadProgress: options.onUploadProgress,
+      onResponse: options.onResponse,
+    })
+  },
+  list: (params?: { institution?: string; page?: number; size?: number }) =>
+    api.get<PageData<UserImportRecord>>('/users/imports', orgQ(toQuery(params))),
+  detail: (id: number, institution?: string) =>
+    api.get<{ import: UserImportRecord; rows: UserImportRow[] }>(
+      `/users/imports/${id}`,
+      orgQ({ institution }),
+    ),
+  /** 失败 / 跳过行的报告 CSV（可修改后重导） */
+  reportUrl: (id: number) => {
+    const qs = new URLSearchParams(orgQ({}) as Record<string, string>).toString()
+    return `${API_BASE}/users/imports/${id}/report.csv${qs ? `?${qs}` : ''}`
+  },
 }

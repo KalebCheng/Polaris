@@ -25,8 +25,6 @@ import (
 
 const (
 	codeTTL            = 5 * time.Minute
-	codeSendMinGap     = 60 * time.Second
-	codeSendHourlyMax  = int64(10)
 	verifyCodeKeyScope = "polaris:verify:"
 	codeSendRateScope  = "polaris:verify_send:"
 )
@@ -35,7 +33,7 @@ type codeChannelStrategy struct {
 	category     providerpkg.Category
 	signinMethod string
 	scene        string
-	validate     func(string) error
+	normalize    func(string) (string, error)
 	ttl          func(*repository.Application) time.Duration
 	findUser     func(context.Context, *AuthService, int64, string) (*repository.User, error)
 	setIdentity  func(*repository.User, string)
@@ -45,11 +43,12 @@ var codeChannelStrategies = map[CodeKind]codeChannelStrategy{
 	CodeKindEmail: {
 		category: providerpkg.CategoryEmail, signinMethod: repository.SigninMethodEmailCode,
 		scene: repository.TemplateSceneLoginCode,
-		validate: func(target string) error {
+		normalize: func(target string) (string, error) {
+			target = strings.ToLower(strings.TrimSpace(target))
 			if !strings.Contains(target, "@") {
-				return bizerrors.New(bizerrors.CodeInvalidParams, "invalid email address")
+				return "", bizerrors.New(bizerrors.CodeInvalidParams, "invalid email address")
 			}
-			return nil
+			return target, nil
 		},
 		ttl: func(app *repository.Application) time.Duration { return durationFromSeconds(app.EmailCodeTTLSeconds) },
 		findUser: func(ctx context.Context, s *AuthService, institutionID int64, target string) (*repository.User, error) {
@@ -62,9 +61,9 @@ var codeChannelStrategies = map[CodeKind]codeChannelStrategy{
 	},
 	CodeKindSMS: {
 		category: providerpkg.CategorySMS, signinMethod: repository.SigninMethodSMSCode,
-		scene:    repository.TemplateSceneLoginCode,
-		validate: func(string) error { return nil },
-		ttl:      func(app *repository.Application) time.Duration { return durationFromSeconds(app.SMSCodeTTLSeconds) },
+		scene:     repository.TemplateSceneLoginCode,
+		normalize: normalizePhone,
+		ttl:       func(app *repository.Application) time.Duration { return durationFromSeconds(app.SMSCodeTTLSeconds) },
 		findUser: func(ctx context.Context, s *AuthService, institutionID int64, target string) (*repository.User, error) {
 			return s.findUserByPhone(ctx, institutionID, target)
 		},
@@ -122,12 +121,13 @@ func (s *AuthService) Captcha(ctx context.Context, institution string) (*Captcha
 
 // SendLoginCode 发送登录验证码
 func (s *AuthService) SendLoginCode(ctx context.Context, req CodeSendRequest, host, remoteIP string) error {
-	resolvedOrg, err := s.resolveLoginInstitution(ctx, req.InstitutionID, req.Institution, host, strings.TrimSpace(req.Target))
+	rawTarget := strings.TrimSpace(req.Target)
+	resolvedOrg, err := s.resolveLoginInstitution(ctx, req.InstitutionID, req.Institution, host, rawTarget)
 	if err != nil {
 		return err
 	}
 	req.Institution = resolvedOrg
-	app, err := s.resolveApplication(ctx, req.Institution, req.Application)
+	app, err := s.resolveCodeSendApp(ctx, req)
 	if err != nil {
 		return err
 	}
@@ -143,11 +143,8 @@ func (s *AuthService) SendLoginCode(ctx context.Context, req CodeSendRequest, ho
 	if !app.HasSigninMethod(channel.signinMethod) {
 		return bizerrors.New(bizerrors.CodeForbidden, "code sign-in is disabled for this application")
 	}
-	target := strings.TrimSpace(req.Target)
-	if target == "" {
-		return bizerrors.New(bizerrors.CodeInvalidParams, "target is required")
-	}
-	if err := channel.validate(target); err != nil {
+	target, err := channel.normalize(rawTarget)
+	if err != nil {
 		return err
 	}
 
@@ -155,23 +152,6 @@ func (s *AuthService) SendLoginCode(ctx context.Context, req CodeSendRequest, ho
 	if s.captcha != nil {
 		if err := s.captcha.Verify(ctx, req.Institution, req.CaptchaID, req.CaptchaCode, req.CaptchaToken, remoteIP); err != nil {
 			return err
-		}
-	}
-	// 发送频率限制：同目标 60 秒一次
-	if s.rateLimiter != nil {
-		key := codeSendRateScope + string(kind) + ":" + req.Institution + ":" + target
-		if n, _ := s.rateLimiter.Get(ctx, key); n > 0 {
-			return bizerrors.ErrVerifyCodeTooMany.WithDetail("retry_after_seconds", int(codeSendMinGap.Seconds()))
-		}
-		if _, incrErr := s.rateLimiter.Incr(ctx, key, codeSendMinGap); incrErr != nil {
-			return incrErr
-		}
-		hourKey := key + ":hour"
-		if n, _ := s.rateLimiter.Get(ctx, hourKey); n >= codeSendHourlyMax {
-			return bizerrors.ErrVerifyCodeTooMany.WithDetail("window", "hourly")
-		}
-		if _, incrErr := s.rateLimiter.Incr(ctx, hourKey, time.Hour); incrErr != nil {
-			return incrErr
 		}
 	}
 
@@ -182,6 +162,9 @@ func (s *AuthService) SendLoginCode(ctx context.Context, req CodeSendRequest, ho
 	provider, tpl, err := s.templates.ResolveNotification(ctx, app.InstitutionID, method.ProviderID, method.TemplateID,
 		channel.scene, channel.category)
 	if err != nil {
+		return err
+	}
+	if err := s.enforceCodeSendLimits(ctx, kind, req.Institution, target, remoteIP, provider.ID); err != nil {
 		return err
 	}
 	sender, err := notificationSender(provider, tpl)
@@ -204,12 +187,18 @@ func (s *AuthService) SendLoginCode(ctx context.Context, req CodeSendRequest, ho
 	if ttlMinutes == "0" {
 		ttlMinutes = "1"
 	}
+	deliveryTarget := target
+	if kind == CodeKindSMS {
+		// Preserve the operator-facing spelling for custom SMS gateways; the
+		// canonical value is still used for storage keys and rate limits.
+		deliveryTarget = rawTarget
+	}
 	msg := notify.Message{
-		To: target, Code: code,
+		To: deliveryTarget, Code: code,
 		Vars: map[string]string{
 			providerpkg.TemplateVarCode:        code,
 			providerpkg.TemplateVarMinutes:     ttlMinutes,
-			providerpkg.TemplateVarPhone:       target,
+			providerpkg.TemplateVarPhone:       deliveryTarget,
 			providerpkg.TemplateVarInstitution: req.Institution,
 			providerpkg.TemplateVarApplication: orDefault(app.Name, app.Code),
 		},
@@ -221,6 +210,110 @@ func (s *AuthService) SendLoginCode(ctx context.Context, req CodeSendRequest, ho
 	return nil
 }
 
+// resolveCodeSendApp mirrors the application-context rules used by CodeLogin.
+// A client_id-driven login page must resolve the same application when sending a code;
+// otherwise the code is stored under a different provider and cannot be verified.
+func (s *AuthService) resolveCodeSendApp(ctx context.Context, req CodeSendRequest) (*repository.Application, error) {
+	app, err := s.resolveAppContext(ctx, req.InstitutionID, req.Institution, req.Application, req.ClientID)
+	if err != nil {
+		return nil, err
+	}
+	if app != nil {
+		return app, nil
+	}
+	return s.resolveApplication(ctx, req.Institution, "")
+}
+
+func (s *AuthService) enforceCodeSendLimits(
+	ctx context.Context,
+	kind CodeKind,
+	institution, target, ip string,
+	providerID int64,
+) error {
+	limits := s.codeLimits.withDefaults()
+	minGapSeconds := int(limits.SendMinGap.Seconds())
+	if minGapSeconds < 1 {
+		minGapSeconds = 1
+	}
+	return enforceRateLimitRules(ctx, s.rateLimiter,
+		rateLimitRule{
+			key:    codeSendLimitKey(kind, institution, "ip", ip),
+			window: time.Minute,
+			max:    limits.SendIPMinuteMax,
+			scope:  "ip",
+			details: map[string]interface{}{
+				"retry_after_seconds": 60,
+			},
+		},
+		rateLimitRule{
+			key:    codeSendLimitKey(kind, institution, "ip", ip) + ":hour",
+			window: time.Hour,
+			max:    limits.SendIPHourlyMax,
+			scope:  "ip",
+			details: map[string]interface{}{
+				"window": "hourly",
+			},
+		},
+		rateLimitRule{
+			key:    codeSendLimitKey(kind, institution, "organization", "all"),
+			window: time.Hour,
+			max:    limits.SendOrgHourlyMax,
+			scope:  "organization",
+			details: map[string]interface{}{
+				"window": "hourly",
+			},
+		},
+		rateLimitRule{
+			key:    codeSendLimitKey(kind, institution, "provider", strconv.FormatInt(providerID, 10)),
+			window: time.Hour,
+			max:    limits.SendProviderHourlyMax,
+			scope:  "provider",
+			details: map[string]interface{}{
+				"window": "hourly",
+			},
+		},
+		rateLimitRule{
+			key:    codeSendLimitKey(kind, institution, "target", target),
+			window: limits.SendMinGap,
+			max:    1,
+			scope:  "target",
+			details: map[string]interface{}{
+				"retry_after_seconds": minGapSeconds,
+			},
+		},
+		rateLimitRule{
+			key:    codeSendLimitKey(kind, institution, "target", target) + ":hour",
+			window: time.Hour,
+			max:    limits.SendHourlyMax,
+			scope:  "target",
+			details: map[string]interface{}{
+				"window": "hourly",
+			},
+		},
+		rateLimitRule{
+			key:    codeSendLimitKey(kind, institution, "target", target) + ":day",
+			window: 24 * time.Hour,
+			max:    limits.SendDailyMax,
+			scope:  "target",
+			details: map[string]interface{}{
+				"window": "daily",
+			},
+		},
+	)
+}
+
+func codeSendLimitKey(kind CodeKind, institution, dimension, value string) string {
+	return codeSendRateScope + string(kind) + ":" + institution + ":" + dimension + ":" + value
+}
+
+func codeVerifyRateKey(kind CodeKind, institution, ip string) string {
+	return codeVerifyRateScope + string(kind) + ":" + institution + ":ip:" + ip
+}
+
+func codeJITSignupRateKey(institutionID, ip string) string {
+	return codeJITSignupRateScope + institutionID + ":ip:" + ip
+}
+
 // CodeLogin 校验验证码并登录
 func (s *AuthService) CodeLogin(ctx context.Context, req CodeLoginRequest, host, ip, userAgent string) (*auth.LoginResponse, string, error) {
 	kind, err := normalizeCodeKind(req.Kind)
@@ -228,12 +321,16 @@ func (s *AuthService) CodeLogin(ctx context.Context, req CodeLoginRequest, host,
 		return nil, "", err
 	}
 	channel := codeChannelStrategies[kind]
-	target := strings.TrimSpace(req.Target)
-	resolvedOrg, err := s.resolveLoginInstitution(ctx, req.InstitutionID, req.Institution, host, target)
+	rawTarget := strings.TrimSpace(req.Target)
+	resolvedOrg, err := s.resolveLoginInstitution(ctx, req.InstitutionID, req.Institution, host, rawTarget)
 	if err != nil {
 		return nil, "", err
 	}
 	req.Institution = resolvedOrg
+	target, err := channel.normalize(rawTarget)
+	if err != nil {
+		return nil, "", err
+	}
 	// 应用上下文：显式携带时以它为准（准入判定据此生效）；未携带时按既有语义回退默认应用，
 	// 但**不做准入判定**（Spec FR-3 作用域：平台登录不判定）。
 	appCtx, err := s.resolveAppContext(ctx, req.InstitutionID, req.Institution, req.Application, req.ClientID)
@@ -263,6 +360,18 @@ func (s *AuthService) CodeLogin(ctx context.Context, req CodeLoginRequest, host,
 	if s.codes == nil {
 		return nil, "", bizerrors.ErrProviderUnavailable.WithDetail("reason", "code store not configured")
 	}
+	limits := s.codeLimits.withDefaults()
+	if err := enforceRateLimitRules(ctx, s.rateLimiter, rateLimitRule{
+		key:    codeVerifyRateKey(kind, req.Institution, ip),
+		window: time.Hour,
+		max:    limits.VerifyIPHourlyMax,
+		scope:  "verification",
+		details: map[string]interface{}{
+			"window": "hourly",
+		},
+	}); err != nil {
+		return nil, "", err
+	}
 	stored, err := s.codes.Take(ctx, verifyCodeKey(req.Institution, kind, provider.ID, target))
 	if err != nil {
 		return nil, "", err
@@ -271,7 +380,7 @@ func (s *AuthService) CodeLogin(ctx context.Context, req CodeLoginRequest, host,
 		return nil, "", bizerrors.ErrVerifyCodeInvalid
 	}
 
-	user, err := s.findUserByCodeTarget(ctx, app, kind, target)
+	user, err := s.findUserByCodeTarget(ctx, app, kind, target, ip)
 	if err != nil {
 		return nil, "", err
 	}
@@ -306,17 +415,37 @@ func (s *AuthService) CodeLogin(ctx context.Context, req CodeLoginRequest, host,
 }
 
 // findUserByCodeTarget 按邮箱/手机号定位用户，必要时 JIT 建号。
-func (s *AuthService) findUserByCodeTarget(ctx context.Context, app *repository.Application, kind CodeKind, target string) (*repository.User, error) {
+func (s *AuthService) findUserByCodeTarget(
+	ctx context.Context,
+	app *repository.Application,
+	kind CodeKind,
+	target, ip string,
+) (*repository.User, error) {
 	channel := codeChannelStrategies[kind]
-	if user, err := channel.findUser(ctx, s, app.InstitutionID, target); err == nil {
+	user, lookupErr := channel.findUser(ctx, s, app.InstitutionID, target)
+	if lookupErr == nil {
 		return user, nil
+	}
+	if !bizerrors.Is(lookupErr, bizerrors.CodeUserNotFound) && !bizerrors.Is(lookupErr, bizerrors.CodeDBNotFound) {
+		return nil, lookupErr
 	}
 
 	if !app.SelfSignupEnabled {
 		return nil, bizerrors.ErrIdentityNotBound.WithDetail("target", target)
 	}
+	if err := enforceRateLimitRules(ctx, s.rateLimiter, rateLimitRule{
+		key:    codeJITSignupRateKey(strconv.FormatInt(app.InstitutionID, 10), ip),
+		window: time.Hour,
+		max:    s.codeLimits.withDefaults().JITSignupIPHourlyMax,
+		scope:  "signup",
+		details: map[string]interface{}{
+			"window": "hourly",
+		},
+	}); err != nil {
+		return nil, err
+	}
 	name := s.derivedUserName(ctx, app.InstitutionID, target)
-	user := &repository.User{
+	user = &repository.User{
 		UID:            uuid.NewString(),
 		InstitutionID:  app.InstitutionID,
 		Name:           name,
@@ -331,7 +460,9 @@ func (s *AuthService) findUserByCodeTarget(ctx context.Context, app *repository.
 	if _, err := s.users.Create(ctx, user); err != nil {
 		return nil, err
 	}
-	s.addDefaultJobTitle(ctx, app.InstitutionID, *app.DefaultJobTitleID, user.Name)
+	if app.DefaultJobTitleID != nil {
+		s.addDefaultJobTitle(ctx, app.InstitutionID, *app.DefaultJobTitleID, user.Name)
+	}
 	s.audits.Record(ctx, name, app.InstitutionID, "user.provision_code", name, map[string]interface{}{"kind": kind})
 	// 新建用户：触发"创建即建号"的账号策略（与管理员建号一致）
 	if s.provisioning != nil {
@@ -342,13 +473,18 @@ func (s *AuthService) findUserByCodeTarget(ctx context.Context, app *repository.
 
 // findUserByPhone 按手机号查找用户（同组织内）
 func (s *AuthService) findUserByPhone(ctx context.Context, institutionID int64, phone string) (*repository.User, error) {
-	users, err := s.users.List(ctx, repository.ListQuery{
-		InstitutionID: institutionID, Field: "phone", Value: phone, Limit: 1,
-	})
-	if err != nil || len(users) == 0 {
-		return nil, bizerrors.New(bizerrors.CodeUserNotFound, "user not found")
+	for _, candidate := range phoneLookupCandidates(phone) {
+		users, err := s.users.List(ctx, repository.ListQuery{
+			InstitutionID: institutionID, Field: "phone", Value: candidate, Limit: 1,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if len(users) > 0 {
+			return users[0], nil
+		}
 	}
-	return users[0], nil
+	return nil, bizerrors.New(bizerrors.CodeUserNotFound, "user not found")
 }
 
 func normalizeCodeKind(kind string) (CodeKind, error) {

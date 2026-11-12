@@ -24,6 +24,8 @@ const InstitutionOverviewPage = lazy(() => import('@/pages/institution-detail-pa
 const UsersPage = lazy(() => import('@/features/iam/pages/users-page'))
 const UserDetailPage = lazy(() => import('@/features/iam/pages/user-detail-page'))
 const UserEditPage = lazy(() => import('@/features/iam/pages/user-edit-page'))
+const UserImportPage = lazy(() => import('@/features/iam/pages/user-import-page'))
+const UserImportHistoryPage = lazy(() => import('@/features/iam/pages/user-import-history-page'))
 const JobTitlesPage = lazy(() => import('@/features/iam/pages/job-titles-page'))
 const JobLevelsPage = lazy(() => import('@/features/iam/pages/job-levels-page'))
 const JobTitleDetailPage = lazy(() => import('@/features/iam/pages/job-title-detail-page'))
@@ -141,6 +143,8 @@ export function Router() {
                 <Route path="departments" element={<DepartmentsPage />} />
                 <Route path="users" element={<UsersPage />} />
                 <Route path="users/new" element={<UserEditPage />} />
+                <Route path="users/import" element={<UserImportPage />} />
+                <Route path="users/imports" element={<UserImportHistoryPage />} />
                 <Route path="users/:id" element={<UserDetailPage />} />
                 <Route path="users/:id/edit" element={<UserEditPage />} />
                 <Route path="job-titles" element={<JobTitlesPage />} />

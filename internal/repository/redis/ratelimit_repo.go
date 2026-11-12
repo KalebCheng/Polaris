@@ -5,9 +5,23 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	bizerrors "polaris/internal/errors"
 	"polaris/pkg/redisclient"
 )
+
+// incrWithExpiryScript makes the counter and its expiry one atomic unit.
+// The TTL guard also repairs keys created by older versions without an expiry.
+const incrWithExpiryScript = `
+local count = redis.call('INCR', KEYS[1])
+if count == 1 or redis.call('TTL', KEYS[1]) < 0 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return count
+`
+
+var incrWithExpiry = redis.NewScript(incrWithExpiryScript)
 
 // RateLimitRepository 限流仓库（Redis 实现；失败计数 + 窗口 TTL）
 type RateLimitRepository struct{ client *redisclient.Client }
@@ -17,16 +31,15 @@ func NewRateLimitRepository(client *redisclient.Client) *RateLimitRepository {
 	return &RateLimitRepository{client: client}
 }
 
-// Incr 自增计数；首次写入时设置窗口 TTL。
+// Incr atomically increments the counter and ensures the window TTL is set.
 func (r *RateLimitRepository) Incr(ctx context.Context, key string, ttl time.Duration) (int64, error) {
-	n, err := r.client.Incr(ctx, key)
+	seconds := int64(ttl / time.Second)
+	if seconds < 1 {
+		seconds = 1
+	}
+	n, err := incrWithExpiry.Run(ctx, r.client.Client(), []string{key}, seconds).Int64()
 	if err != nil {
 		return 0, bizerrors.New(bizerrors.CodeRedisError, "redis error").WithError(err)
-	}
-	if n == 1 {
-		if _, err := r.client.Expire(ctx, key, ttl); err != nil {
-			return n, bizerrors.New(bizerrors.CodeRedisError, "redis error").WithError(err)
-		}
 	}
 	return n, nil
 }

@@ -42,6 +42,16 @@ auth:
   rate_limit:
     login_max_attempts: 5
     login_window_seconds: 300
+    verification_code:
+      send_min_interval_seconds: 60
+      send_hourly_max: 10
+      send_daily_max: 20
+      send_ip_minute_max: 20
+      send_ip_hourly_max: 300
+      send_org_hourly_max: 5000
+      send_provider_hourly_max: 10000
+      verify_ip_hourly_max: 300
+      jit_signup_ip_hourly_max: 20
   # OIDC Provider behavior.
   oidc:
     issuer: ""               # Falls back to oauth.base_url.
@@ -54,7 +64,7 @@ auth:
   # SP-side external provider settings.
   oauth:
     # Override public URLs in production.
-    base_url: http://127.0.0.1:8100
+    base_url: http://127.0.0.1:5173
     success_redirect: http://127.0.0.1:5173/
     # Must exactly match the callback registered with the external IdP.
     redirect_uri: http://127.0.0.1:5173/sso/callback
@@ -113,6 +123,11 @@ cors:
 security:
   # Empty disables origin checks; this is development-only.
   csrf_allowed_origins: []
+  # Reverse proxies allowed to supply X-Forwarded-For / X-Real-IP.
+  # Keep this list as narrow as possible; an empty list disables forwarded IP headers.
+  trusted_proxies:
+    - 127.0.0.1
+    - ::1
   # Base64-encoded 32-byte key for sensitive fields.
   credential_enc_key: ""
   access_key_rate_limit_max: 10
