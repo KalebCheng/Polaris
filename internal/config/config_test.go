@@ -12,7 +12,7 @@ func TestLoadAppliesEnvOverrides(t *testing.T) {
 	content := `
 app:
   name: polaris
-  env: development
+  debug: true
   port: 8100
 database:
   host: yaml-db
@@ -42,7 +42,7 @@ security:
 		t.Fatalf("写入配置失败: %v", err)
 	}
 
-	t.Setenv(EnvAppEnv, "production")
+	t.Setenv(EnvAppDebug, "false")
 	t.Setenv(EnvAppPort, "9100")
 	t.Setenv(EnvJWTSecret, "injected-secret")
 	t.Setenv(EnvDBSSLMode, "require")
@@ -62,8 +62,8 @@ security:
 	if err != nil {
 		t.Fatalf("Load 失败: %v", err)
 	}
-	if cfg.App.Env != "production" {
-		t.Errorf("app.env = %q, 期望 production", cfg.App.Env)
+	if cfg.App.DebugEnabled() {
+		t.Error("app.debug 应为 false")
 	}
 	if cfg.App.Port != 9100 {
 		t.Errorf("app.port = %d, 期望 9100", cfg.App.Port)
@@ -104,6 +104,57 @@ security:
 	}
 	if prov.ClientID != "from-yaml" {
 		t.Errorf("provider client_id 不应被覆盖: %q", prov.ClientID)
+	}
+}
+
+// Compatibility: existing deployments may still start with
+// POLARIS_ENV=production. Without the new POLARIS_DEBUG, this must map to
+// release mode instead of silently falling back to debug.
+func TestLoadMapsLegacyEnvToDebug(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.yaml")
+	content := `
+app:
+  name: polaris
+  env: production
+  port: 8100
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("写入配置失败: %v", err)
+	}
+	t.Setenv(EnvLegacyAppEnv, "production")
+	t.Setenv(EnvAppDebug, "")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	if cfg.App.DebugEnabled() {
+		t.Error("POLARIS_ENV=production 应映射为 debug=false")
+	}
+}
+
+func TestLoadMapsLegacyDevelopmentToDebug(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.yaml")
+	content := `
+app:
+  name: polaris
+  env: development
+  port: 8100
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("写入配置失败: %v", err)
+	}
+	t.Setenv(EnvLegacyAppEnv, "")
+	t.Setenv(EnvAppDebug, "")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	if !cfg.App.DebugEnabled() {
+		t.Error("旧 env=development 应映射为 debug=true")
 	}
 }
 

@@ -548,6 +548,16 @@ func (a *Application) initServices() {
 		a.userRepo, a.orgRepo, a.roleRepo, a.jobTitleRepo, a.deptRepo, a.userDeptRepo, a.jobLevelRepo,
 		a.linkRepo, a.sessionManager, a.audits, a.secretCipher, a.provisionSvc, a.mfaSvc,
 	)
+	a.userImportSvc = service.NewUserImportService(
+		a.userSvc, a.userRepo, a.deptRepo, a.departmentSvc, a.roleRepo, a.jobTitleRepo, a.jobLevelRepo,
+		a.userImportRepo, a.audits,
+		service.UserImportConfig{
+			MaxRows:      a.cfg.Import.MaxRows,
+			BatchSize:    a.cfg.Import.BatchSize,
+			MaxFileBytes: a.cfg.Import.MaxFileBytes,
+			RunsPerHour:  a.cfg.Import.RunsPerHour,
+		},
+	)
 	a.roleSvc = service.NewRoleService(a.roleRepo, a.orgRepo, a.sessionManager, a.audits, a.provisionSvc)
 	a.permissionSvc = service.NewPermissionService(a.permRepo, a.orgRepo, a.roleRepo, a.sessionManager, a.audits)
 	a.jobTitleSvc = service.NewJobTitleService(
@@ -604,6 +614,7 @@ func (a *Application) initServer() {
 		Syncer:      handler.NewSyncerHandler(a.syncerSvc),
 		Provision:   handler.NewProvisioningHandler(a.provisionSvc),
 		Connection:  handler.NewConnectionHandler(),
+		UserImport:  handler.NewUserImportHandler(a.userImportSvc, a.rateLimitRepo),
 		Asyncd: handler.NewAsyncdHandler(a.asyncdSvc, &jobOwnerResolver{
 			syncers: a.syncerRepo, connectors: a.connRepo,
 		}),
@@ -618,6 +629,21 @@ func (a *Application) initServer() {
 	}, asyncd.HandlerMaxAttempts(3))
 	registry.Register("maintenance.record_cleanup", func(ctx context.Context, _ *repository.AsyncdJobRun, _ map[string]any) error {
 		return a.cleanupRecords(ctx)
+	}, asyncd.HandlerMaxAttempts(3))
+	registry.Register("maintenance.user_import_cleanup", func(ctx context.Context, _ *repository.AsyncdJobRun, payload map[string]any) error {
+		staleMinutes := int(payloadNumber(payload, "stale_minutes"))
+		if staleMinutes <= 0 {
+			staleMinutes = 60
+		}
+		retentionDays := int(payloadNumber(payload, "retention_days"))
+		if retentionDays <= 0 {
+			retentionDays = 90
+		}
+		if _, err := a.userImportSvc.MarkStaleFailed(ctx, time.Duration(staleMinutes)*time.Minute); err != nil {
+			return err
+		}
+		_, err := a.userImportSvc.PurgeBefore(ctx, time.Now().AddDate(0, 0, -retentionDays))
+		return err
 	}, asyncd.HandlerMaxAttempts(3))
 	// 执行实例/执行记录/执行器实例的保留期清理（配置来自任务定义的 payload，运行时读取）
 	registry.Register("maintenance.asyncd_cleanup", func(ctx context.Context, _ *repository.AsyncdJobRun, payload map[string]any) error {
@@ -680,6 +706,12 @@ func (a *Application) initServer() {
 			Name: "maintenance.record_cleanup", TaskType: "maintenance.record_cleanup",
 			Kind: repository.AsyncdJobKindScheduled, Enabled: true,
 			Schedule: asyncd.Schedule{Kind: repository.ScheduleKindInterval, IntervalSeconds: 6 * 3600},
+		},
+		{
+			Name: "maintenance.user_import_cleanup", TaskType: "maintenance.user_import_cleanup",
+			Kind: repository.AsyncdJobKindScheduled, Enabled: true,
+			Payload:  map[string]any{"stale_minutes": 60, "retention_days": 90},
+			Schedule: asyncd.Schedule{Kind: repository.ScheduleKindInterval, IntervalSeconds: 3600},
 		},
 		{
 			// 保留期清理：执行实例/尝试记录留 14 天，失联执行器留 3 天（payload 由处理器读取）
@@ -803,10 +835,10 @@ func resolveEncKey(cfg *config.Config) ([]byte, error) {
 		}
 		return key, nil
 	}
-	if cfg.App.Env == "production" {
-		return nil, fmt.Errorf("生产环境必须配置 POLARIS_CREDENTIAL_ENC_KEY")
+	if !cfg.App.DebugEnabled() {
+		return nil, fmt.Errorf("release 模式必须配置 POLARIS_CREDENTIAL_ENC_KEY")
 	}
-	logger.Warn("POLARIS_CREDENTIAL_ENC_KEY 未配置，使用 jwt_secret 派生加密密钥（仅限开发）")
+	logger.Warn("POLARIS_CREDENTIAL_ENC_KEY 未配置，使用 jwt_secret 派生加密密钥（仅限 debug 模式）")
 	sum := sha256.Sum256([]byte(cfg.Auth.JWTSecret))
 	return sum[:], nil
 }

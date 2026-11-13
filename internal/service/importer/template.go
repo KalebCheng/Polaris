@@ -10,8 +10,9 @@ import (
 const templateSheet = "users"
 const guideSheet = "guide"
 
-// BuildTemplate 生成导入模板（第一个工作表为数据表头 + 示例行，第二个工作表为列说明）。
-// 解析器只读第一个工作表，因此示例行不会被误当成数据（上传前应删除示例行）。
+// BuildTemplate 生成导入模板（第一个工作表只放表头，第二个工作表放列说明与示例）。
+// The data sheet must not contain a sample row: parsers treat every non-blank
+// data-sheet row as a real import and would create a known sample account.
 func BuildTemplate(lang string) ([]byte, error) {
 	f := excelize.NewFile()
 	defer func() { _ = f.Close() }()
@@ -27,9 +28,6 @@ func BuildTemplate(lang string) ([]byte, error) {
 			return nil, err
 		}
 		if err := f.SetCellStr(templateSheet, col+"1", c.columnHeader(lang)); err != nil {
-			return nil, err
-		}
-		if err := f.SetCellStr(templateSheet, col+"2", c.Example); err != nil {
 			return nil, err
 		}
 		if err := f.SetCellStr(guideSheet, fmt.Sprintf("A%d", i+1), c.columnHeader(lang)); err != nil {

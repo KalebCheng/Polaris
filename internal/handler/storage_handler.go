@@ -70,21 +70,8 @@ func (h *StorageHandler) TestSettings(c *gin.Context) {
 	bizerrors.RenderSuccess(c, gin.H{"status": "ok"})
 }
 
-// uploadInstitution 解析并校验上传目标组织：
-// 组织内资源一律以"请求所属组织"为准（instID 优先取 ?institution=，回落会话组织）——
-// 管理员在组织 B 的工作区里上传 Logo 时，必须落到组织 B 的存储提供商；
-// 同时守住租户隔离：非平台管理员不得把文件写进别的组织。
-func uploadInstitution(c *gin.Context) (int64, error) {
-	authCtx := auth.GetAuthContext(c)
-	institutionID := instID(c)
-	if institutionID == 0 {
-		return 0, bizerrors.ErrInvalidParams.WithDetail("institution", "required")
-	}
-	if authCtx != nil && institutionID != authCtx.InstitutionID && !authCtx.IsAdmin {
-		return 0, bizerrors.ErrForbidden.WithDetail("institution_id", institutionID)
-	}
-	return institutionID, nil
-}
+// uploadInstitution 上传目标组织与用户导入共用同一套租户校验。
+func uploadInstitution(c *gin.Context) (int64, error) { return tenantInstitution(c) }
 
 // Upload 通用上传（multipart/form-data，字段名 file，可选 category）：写入组织存储并返回 URL。
 func (h *StorageHandler) Upload(c *gin.Context) {

@@ -18,14 +18,27 @@ type importUserRepo struct {
 	existing    []*repository.User
 	created     []repository.UserBatchItem
 	failForName map[string]bool
+	listErr     error
+	emailErr    error
+	phones      []*repository.User
 }
 
 func (r *importUserRepo) ListByNames(context.Context, int64, []string) ([]*repository.User, error) {
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
 	return r.existing, nil
 }
 
 func (r *importUserRepo) GetByEmail(context.Context, int64, string) (*repository.User, error) {
+	if r.emailErr != nil {
+		return nil, r.emailErr
+	}
 	return nil, bizerrors.ErrNotFound
+}
+
+func (r *importUserRepo) ListByPhones(context.Context, int64, []string) ([]*repository.User, error) {
+	return r.phones, nil
 }
 
 func (r *importUserRepo) CreateManyWithRelations(_ context.Context, items []repository.UserBatchItem) error {
@@ -58,7 +71,7 @@ func (r *importDeptRepo) GetByName(_ context.Context, _ int64, name string) (*re
 	if d, ok := r.depts[name]; ok {
 		return d, nil
 	}
-	return nil, bizerrors.New(bizerrors.CodeInternalError, "not found")
+	return nil, bizerrors.New(bizerrors.CodeDBNotFound, "department not found")
 }
 
 // importDeptSvc 自动建部门：在父部门路径下追加一级（与 DepartmentService 的回填语义一致）。
@@ -114,8 +127,9 @@ func (r *importLevelRepo) GetByName(context.Context, int64, string) (*repository
 
 type importRecordRepo struct {
 	repository.UserImportRepository
-	record *repository.UserImport
-	rows   map[int]*repository.UserImportRow
+	record        *repository.UserImport
+	rows          map[int]*repository.UserImportRow
+	createRowsErr error
 }
 
 func (r *importRecordRepo) Create(_ context.Context, item *repository.UserImport) error {
@@ -131,6 +145,9 @@ func (r *importRecordRepo) Update(_ context.Context, item *repository.UserImport
 }
 
 func (r *importRecordRepo) CreateRows(_ context.Context, rows []*repository.UserImportRow) error {
+	if r.createRowsErr != nil {
+		return r.createRowsErr
+	}
 	for _, row := range rows {
 		r.rows[row.RowNumber] = row
 	}
@@ -321,5 +338,75 @@ func TestImportAutoCreateDepartments(t *testing.T) {
 	report := f.run(t, buildCSV(t, row), func(o *UserImportOptions) { o.AutoCreateDepts = true })
 	if report.Summary.Created != 1 {
 		t.Fatalf("开启自动建部门后应成功: %+v", report.Rows[0])
+	}
+}
+
+func TestImportNormalizesPhone(t *testing.T) {
+	f := newImportFixture()
+	row := importRowNamed("phone-user")
+	row["phone"] = "138 0000 0000"
+	row["country_code"] = "+86"
+	f.run(t, buildCSV(t, row), nil)
+	if len(f.users.created) != 1 {
+		t.Fatalf("应创建 1 个用户，实际 %d", len(f.users.created))
+	}
+	if got := f.users.created[0].User.Phone; got != "+8613800000000" {
+		t.Fatalf("phone = %q, want canonical E.164", got)
+	}
+}
+
+func TestImportSkipsExistingPhoneAcrossFormats(t *testing.T) {
+	f := newImportFixture()
+	f.users.phones = []*repository.User{{ID: 9, Phone: "13800000000"}}
+	row := importRowNamed("phone-conflict")
+	row["phone"] = "+8613800000000"
+	row["country_code"] = "+86"
+	report := f.run(t, buildCSV(t, row), nil)
+	if report.Summary.Skipped != 1 || report.Rows[0].Warnings[0].Column != "phone" {
+		t.Fatalf("existing phone should skip the row: %+v", report.Rows[0])
+	}
+}
+
+func TestImportSkipsDuplicatePhonesInFile(t *testing.T) {
+	f := newImportFixture()
+	first := importRowNamed("phone-one")
+	first["phone"] = "13800000000"
+	second := importRowNamed("phone-two")
+	second["phone"] = "+8613800000000"
+	report := f.run(t, buildCSV(t, first, second), nil)
+	if report.Summary.Created != 1 || report.Summary.Skipped != 1 {
+		t.Fatalf("duplicate phone should skip the later row: %+v", report.Summary)
+	}
+}
+
+func TestImportPropagatesLookupErrors(t *testing.T) {
+	f := newImportFixture()
+	f.users.listErr = bizerrors.New(bizerrors.CodeDBError, "database error")
+	_, err := f.svc.Import(context.Background(), UserImportOptions{InstitutionID: 7, Operator: "admin"},
+		"batch.csv", buildCSV(t, importRowNamed("lookup-fail")))
+	if !bizerrors.Is(err, bizerrors.CodeDBError) {
+		t.Fatalf("lookup error should propagate, got %v", err)
+	}
+}
+
+func TestImportPropagatesEmailLookupErrors(t *testing.T) {
+	f := newImportFixture()
+	f.users.emailErr = bizerrors.New(bizerrors.CodeDBError, "database error")
+	row := importRowNamed("email-fail")
+	row["email"] = "email-fail@example.com"
+	_, err := f.svc.Import(context.Background(), UserImportOptions{InstitutionID: 7, Operator: "admin"},
+		"batch.csv", buildCSV(t, row))
+	if !bizerrors.Is(err, bizerrors.CodeDBError) {
+		t.Fatalf("email lookup error should propagate, got %v", err)
+	}
+}
+
+func TestImportPropagatesProgressPersistenceErrors(t *testing.T) {
+	f := newImportFixture()
+	f.records.createRowsErr = bizerrors.New(bizerrors.CodeDBError, "database error")
+	_, err := f.svc.Import(context.Background(), UserImportOptions{InstitutionID: 7, Operator: "admin"},
+		"batch.csv", buildCSV(t, importRowNamed("progress-fail")))
+	if !bizerrors.Is(err, bizerrors.CodeDBError) {
+		t.Fatalf("row persistence error should propagate, got %v", err)
 	}
 }

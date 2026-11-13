@@ -121,14 +121,18 @@ type UserRepository interface {
 	Count(ctx context.Context, q ListQuery) (int64, error)
 	// ListByNames 按账号名批量取用户（用户组详情、部门成员校验用；只返回本组织内的）
 	ListByNames(ctx context.Context, institutionID int64, names []string) ([]*User, error)
+	// ListByPhones returns users by phone within the institution (bulk import conflict check).
+	ListByPhones(ctx context.Context, institutionID int64, phones []string) ([]*User, error)
 	// ListByIDs returns users by primary key within the institution.
 	ListByIDs(ctx context.Context, institutionID int64, ids []int64) ([]*User, error)
 	// ExistingIDs returns active user IDs that belong to the institution.
 	ExistingIDs(ctx context.Context, institutionID int64, ids []int64) (map[int64]bool, error)
 	UpdateLastSignin(ctx context.Context, id int64, at time.Time, ip string) error
-	SetOnline(ctx context.Context, id int64, online bool) error
-	// PasswordHistory 读取最近 N 条密码哈希（用于组织密码策略校验）
-	PasswordHistory(ctx context.Context, institutionID int64, user string, limit int) ([]string, error)
+	// ListByRegistrationSyncer returns users created by the given inbound syncer.
+	ListByRegistrationSyncer(ctx context.Context, institutionID, syncerID int64, limit int) ([]*User, error)
+	// PasswordHistory returns recent passwords with the algorithm and salt used
+	// when each entry was written (for organization password-reuse checks).
+	PasswordHistory(ctx context.Context, institutionID int64, user string, limit int) ([]PasswordHistoryEntry, error)
 	// CountAdmins 统计组织内**仍可登录**的管理员数量（"最后一个管理员"防呆用：排除已删除/已禁用）
 	CountAdmins(ctx context.Context, institutionID int64) (int64, error)
 

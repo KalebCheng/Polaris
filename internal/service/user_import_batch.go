@@ -23,7 +23,8 @@ type CreateUserBatchInput struct {
 	RoleIDs     []int64
 	// RoleNames 仅用于审计可读性（如 ["开发者","运维"]）
 	RoleNames []string
-	// RegisterSource 写入 users.register_source（导入的文件名），标识账号来源
+	// RegisterSource is stored in user_registrations.register_source (the import
+	// file name) to identify where the account came from.
 	RegisterSource string
 }
 

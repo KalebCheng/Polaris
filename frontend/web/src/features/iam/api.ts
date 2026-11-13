@@ -730,8 +730,6 @@ export interface UserImportUploadOptions {
   defaultJobLevelId?: number
   /** 请求体上传进度（0–1） */
   onUploadProgress?: (ratio: number) => void
-  /** 服务端开始处理（响应已到达、解析前）：此时可开始按 import_id 轮询进度 */
-  onResponse?: (response: globalThis.Response) => void
 }
 
 /**
@@ -747,7 +745,15 @@ export const userImportApi = {
       `${API_BASE}/users/import/template?${new URLSearchParams({ lang, institution: institution ?? '' })}`,
       { credentials: 'include' },
     )
-    if (!response.ok) throw new ApiError('INTERNAL_ERROR', 'download failed', response.status)
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null)
+      throw new ApiError(
+        payload?.code ?? 'INTERNAL_ERROR',
+        payload?.message ?? 'download failed',
+        response.status,
+        payload?.details,
+      )
+    }
     return response.blob()
   },
   upload: (file: File, options: UserImportUploadOptions = {}) => {
@@ -759,7 +765,6 @@ export const userImportApi = {
     return api.upload<UserImportReport>('/users/import', form, {
       query: orgQ({ institution: options.institution }),
       onUploadProgress: options.onUploadProgress,
-      onResponse: options.onResponse,
     })
   },
   list: (params?: { institution?: string; page?: number; size?: number }) =>
@@ -769,7 +774,7 @@ export const userImportApi = {
       `/users/imports/${id}`,
       orgQ({ institution }),
     ),
-  /** 失败 / 跳过行的报告 CSV（可修改后重导） */
+  /** 失败 / 跳过行的问题汇总 CSV（不含密码与完整模板字段，不能直接重导） */
   reportUrl: (id: number) => {
     const qs = new URLSearchParams(orgQ({}) as Record<string, string>).toString()
     return `${API_BASE}/users/imports/${id}/report.csv${qs ? `?${qs}` : ''}`

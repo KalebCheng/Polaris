@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
@@ -85,9 +86,9 @@ func Parse(in ParseInput) (*ParseResult, error) {
 	}
 	var raw [][]string
 	if format == FormatXLSX {
-		raw, err = readSheet(in.Content)
+		raw, err = readSheet(in.Content, in.MaxRows)
 	} else {
-		raw, err = readCSV(in.Content)
+		raw, err = readCSV(in.Content, in.MaxRows)
 	}
 	if err != nil {
 		return nil, err
@@ -222,8 +223,9 @@ func indexOf(items []string, target string) (int, bool) {
 	return -1, false
 }
 
-// readSheet 读取第一个工作表的全部单元格（稀疏行补齐为空串，保证列下标与表头一致）。
-func readSheet(content []byte) ([][]string, error) {
+// readSheet streams the first worksheet and stops once MaxRows data rows are
+// exceeded, so a small compressed XLSX cannot force a full unbounded load.
+func readSheet(content []byte, maxRows int) ([][]string, error) {
 	f, err := excelize.OpenReader(bytes.NewReader(content))
 	if err != nil {
 		return nil, ErrFileMismatch
@@ -233,14 +235,42 @@ func readSheet(content []byte) ([][]string, error) {
 	if len(sheets) == 0 {
 		return nil, ErrEmptyFile
 	}
-	raw, err := f.GetRows(sheets[0])
+	rows, err := f.Rows(sheets[0])
 	if err != nil {
+		return nil, fmt.Errorf("read sheet: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	capacity := maxRows + 2
+	if capacity < 2 {
+		capacity = 2
+	}
+	raw := make([][]string, 0, capacity)
+	headerSeen := false
+	dataRows := 0
+	for rows.Next() {
+		cells, err := rows.Columns()
+		if err != nil {
+			return nil, fmt.Errorf("read sheet row: %w", err)
+		}
+		if !isBlank(cells) {
+			if headerSeen {
+				dataRows++
+				if maxRows > 0 && dataRows > maxRows {
+					return nil, ErrTooManyRows{Max: maxRows}
+				}
+			} else {
+				headerSeen = true
+			}
+		}
+		raw = append(raw, cells)
+	}
+	if err := rows.Error(); err != nil {
 		return nil, fmt.Errorf("read sheet: %w", err)
 	}
 	return raw, nil
 }
 
-func readCSV(content []byte) ([][]string, error) {
+func readCSV(content []byte, maxRows int) ([][]string, error) {
 	content = bytes.TrimPrefix(content, []byte("\uFEFF"))
 	if !utf8.Valid(content) {
 		return nil, fmt.Errorf("%w: csv must be UTF-8 encoded", ErrFileMismatch)
@@ -248,9 +278,32 @@ func readCSV(content []byte) ([][]string, error) {
 	reader := csv.NewReader(bytes.NewReader(content))
 	// 列数不固定（尾部空列可能被省略），按表头自行定宽
 	reader.FieldsPerRecord = -1
-	records, err := reader.ReadAll()
-	if err != nil {
-		return nil, fmt.Errorf("parse csv: %w", err)
+	capacity := maxRows + 2
+	if capacity < 2 {
+		capacity = 2
+	}
+	records := make([][]string, 0, capacity)
+	headerSeen := false
+	dataRows := 0
+	for {
+		record, err := reader.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("parse csv: %w", err)
+		}
+		if !isBlank(record) {
+			if headerSeen {
+				dataRows++
+				if maxRows > 0 && dataRows > maxRows {
+					return nil, ErrTooManyRows{Max: maxRows}
+				}
+			} else {
+				headerSeen = true
+			}
+		}
+		records = append(records, record)
 	}
 	return records, nil
 }
@@ -275,6 +328,12 @@ func rowFromCells(number int, cells []string, delimiter string) Row {
 	split := func(key string) []string {
 		return splitMulti(at(key), delimiter)
 	}
+	// Passwords are credentials, not display text: trimming would silently
+	// change a password that intentionally starts or ends with whitespace.
+	password := ""
+	if idx := indexOfColumns("password"); idx >= 0 && idx < len(cells) {
+		password = cells[idx]
+	}
 	return Row{
 		Number:      number,
 		Name:        at("name"),
@@ -289,7 +348,7 @@ func rowFromCells(number int, cells []string, delimiter string) Row {
 		JobLevel:    at("job_level"),
 		JobTitles:   split("job_titles"),
 		Roles:       split("roles"),
-		Password:    at("password"),
+		Password:    password,
 	}
 }
 

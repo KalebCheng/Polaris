@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, Download, FileUp, Upload } from 'lucide-react'
@@ -29,7 +29,9 @@ function downloadBlob(blob: Blob, fileName: string) {
   const link = document.createElement('a')
   link.href = url
   link.download = fileName
+  document.body.appendChild(link)
   link.click()
+  link.remove()
   URL.revokeObjectURL(url)
 }
 
@@ -59,7 +61,6 @@ export default function UserImportPage() {
   const [autoCreateDepartments, setAutoCreateDepartments] = useState(false)
   const [phase, setPhase] = useState<Phase>('idle')
   const [uploadRatio, setUploadRatio] = useState(0)
-  const [progress, setProgress] = useState<{ created: number; total: number } | null>(null)
   const [report, setReport] = useState<UserImportReport | null>(null)
 
   const backToUsers = () => navigate(`/institutions/${institutionId}/users`)
@@ -84,35 +85,14 @@ export default function UserImportPage() {
     setFile(null)
     setPhase('idle')
     setUploadRatio(0)
-    setProgress(null)
     setReport(null)
     if (fileInput.current) fileInput.current.value = ''
   }
-
-  /** 服务端处理期间按导入记录轮询汇总（上传完成后、响应返回前） */
-  const pollProgress = useCallback(
-    async (importId: number) => {
-      try {
-        const { import: record } = await userImportApi.detail(importId, institution || undefined)
-        setProgress({
-          created: record.created_count + record.skipped_count + record.failed_count,
-          total: record.total_rows,
-        })
-        return record.status === 'running' || record.status === 'queued'
-      } catch {
-        return true
-      }
-    },
-    [institution],
-  )
 
   const upload = async () => {
     if (!file) return
     setPhase('uploading')
     setUploadRatio(0)
-    setProgress(null)
-    setImportId(undefined)
-    let timer: ReturnType<typeof setInterval> | undefined
     try {
       const result = await userImportApi.upload(file, {
         institution: institution || undefined,
@@ -121,28 +101,15 @@ export default function UserImportPage() {
           setUploadRatio(ratio)
           if (ratio >= 1) setPhase('processing')
         },
-        onResponse: (response) => {
-          setPhase('processing')
-          const id = Number(response.headers.get('X-Polaris-Import-Id'))
-          if (!Number.isFinite(id) || id <= 0) return
-          setImportId(id)
-          timer = setInterval(async () => {
-            const stillRunning = await pollProgress(id)
-            if (!stillRunning && timer) clearInterval(timer)
-          }, 800)
-        },
       })
       setReport(result)
       setPhase('done')
     } catch (error) {
       toast.error(describeError(error, t))
       setPhase('idle')
-    } finally {
-      if (timer) clearInterval(timer)
     }
   }
 
-  const [lastImportId, setImportId] = useState<number | undefined>()
   const openHistory = () => navigate(`/institutions/${institutionId}/users/imports`)
 
   return (
@@ -216,9 +183,7 @@ export default function UserImportPage() {
             )}
             {phase === 'processing' && (
               <div className="text-muted-foreground text-xs" aria-live="polite">
-                {progress
-                  ? t('users.import.processing', { processed: progress.created, total: progress.total })
-                  : t('users.import.processingUnknown')}
+                {t('users.import.processingUnknown')}
               </div>
             )}
 
@@ -226,9 +191,6 @@ export default function UserImportPage() {
               <Button onClick={upload} disabled={!file || phase === 'uploading' || phase === 'processing'}>
                 <Upload className="size-4" /> {t('users.import.start')}
               </Button>
-              {lastImportId !== undefined && (
-                <span className="text-muted-foreground text-xs">#{lastImportId}</span>
-              )}
             </div>
           </CardContent>
         </Card>

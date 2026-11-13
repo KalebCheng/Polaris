@@ -96,7 +96,8 @@ func NewAuthService(
 // addDefaultJobTitle 把新注册/验证码 JIT 建号的用户加入应用配置的默认职务。
 //
 // 应用向导里的「默认职务」字段（applications.default_group）此前只写进了
-// users.signup_application，职务关系从未建立——典型的"配了不生效"。
+// user_registrations.signup_application_code; the job-title relation was never
+// created, a typical "configured but ineffective" defect.
 // 这里在用户落库后调用 AddMembers（幂等，只增不删），失败只记日志，不回滚已创建的用户。
 func (s *AuthService) addDefaultJobTitle(ctx context.Context, institutionID, jobTitleID int64, user string) {
 	if s.jobTitles == nil || jobTitleID == 0 || user == "" {
@@ -218,7 +219,6 @@ func (s *AuthService) Login(ctx context.Context, req auth.LoginRequest, host, ip
 	s.enforceSessionPolicy(ctx, app, user, session.ID)
 	if !session.MfaPending {
 		_ = s.users.UpdateLastSignin(ctx, user.ID, time.Now(), ip)
-		_ = s.users.SetOnline(ctx, user.ID, true)
 		s.audits.Record(ctx, user.Name, user.InstitutionID, "auth.login", user.Name, nil)
 		// 登录成功：触发 JIT 建号（仅针对账号策略 createWhen=jit 的应用）
 		if s.provisioning != nil && appName != "" {
@@ -520,7 +520,6 @@ func (s *AuthService) Logout(ctx context.Context, sessionID string) error {
 			logger.Warn("failed to revoke session tokens", "session_id", session.ID, "error", err)
 		}
 	}
-	_ = s.users.SetOnline(ctx, session.UserID, false)
 	s.audits.Record(ctx, session.Name, session.InstitutionID, "auth.logout", session.Name, nil)
 	// 后端登出：通知配置了 backchannel_logout_uri 的下游应用注销会话（异步、失败不阻断）
 	if s.backchannel != nil {

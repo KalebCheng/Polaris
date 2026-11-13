@@ -50,7 +50,7 @@ services:
       redis:
         condition: service_healthy
     environment:
-      POLARIS_ENV: production
+      POLARIS_DEBUG: ${POLARIS_DEBUG:-false}
       POLARIS_DB_HOST: postgres
       POLARIS_DB_PORT: "5432"
       POLARIS_DB_USER: ${POLARIS_DB_USER:-polaris}

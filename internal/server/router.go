@@ -28,6 +28,7 @@ type Handlers struct {
 	Provision   *handler.ProvisioningHandler
 	Connection  *handler.ConnectionHandler
 	Asyncd      *handler.AsyncdHandler
+	UserImport  *handler.UserImportHandler
 	Storage     *handler.StorageHandler
 }
 
@@ -122,6 +123,12 @@ func RegisterRoutes(engine *gin.Engine, mw *Middleware, h *Handlers) {
 	users := authGroup.Group("/users")
 	users.GET("", mw.RequirePermission("user", "read"), h.User.List)
 	users.POST("", mw.RequirePermission("user", "create"), h.User.Create)
+	// 导入路由必须挂在 /:id 之前：template 是静态段，不能被用户详情吞掉。
+	users.GET("/import/template", mw.RequirePermission("user", "create"), h.UserImport.Template)
+	users.POST("/import", mw.RequirePermission("user", "create"), h.UserImport.Upload)
+	users.GET("/imports", mw.RequirePermission("user", "read"), h.UserImport.List)
+	users.GET("/imports/:id", mw.RequirePermission("user", "read"), h.UserImport.Detail)
+	users.GET("/imports/:id/report.csv", mw.RequirePermission("user", "read"), h.UserImport.Report)
 	users.GET("/:id", mw.RequirePermission("user", "read"), h.User.Get)
 	// 资料部分更新（只改提交的字段；凭证与状态字段各有专用端点）
 	users.PUT("/:id", mw.RequirePermission("user", "update"), h.User.UpdateProfile)

@@ -101,11 +101,9 @@ export interface User {
   gender?: string
   birthday?: string
   education?: string
-  score: number
   is_admin: boolean
   is_forbidden: boolean
   is_deleted: boolean
-  is_online: boolean
   mfa_enabled: boolean
   has_password: boolean
   register_type?: string

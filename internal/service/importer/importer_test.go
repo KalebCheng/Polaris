@@ -68,12 +68,8 @@ func TestTemplateRoundTripsThroughParser(t *testing.T) {
 		if err != nil {
 			t.Fatalf("生成模板失败: %v", err)
 		}
-		result, err := Parse(ParseInput{FileName: "tpl.xlsx", Content: data, Lang: lang, MaxRows: 10})
-		if err != nil {
-			t.Fatalf("模板应能回读（lang=%s）: %v", lang, err)
-		}
-		if len(result.Rows) != 1 || result.Rows[0].Name != "zhangsan" {
-			t.Fatalf("模板示例行解析结果不符: %+v", result.Rows)
+		if _, err := Parse(ParseInput{FileName: "tpl.xlsx", Content: data, Lang: lang, MaxRows: 10}); !errors.Is(err, ErrEmptyFile) {
+			t.Fatalf("空模板应被识别为无数据行（lang=%s），实际 %v", lang, err)
 		}
 	}
 }
@@ -162,5 +158,21 @@ func TestDetectFormatRejectsRenamedFiles(t *testing.T) {
 	}
 	if _, err := DetectFormat("a.csv", []byte("PK\x03\x04rest")); !errors.Is(err, ErrFileMismatch) {
 		t.Fatalf("xlsx 改名为 .csv 应拒绝")
+	}
+}
+
+func TestParsePreservesPasswordWhitespace(t *testing.T) {
+	var buf strings.Builder
+	writer := csv.NewWriter(&buf)
+	_ = writer.Write(headerLine("en"))
+	_ = writer.Write(fullRow(map[string]string{"password": "  Passw0rd!  "}))
+	writer.Flush()
+
+	result, err := Parse(ParseInput{FileName: "a.csv", Content: []byte(buf.String()), Lang: "en", MaxRows: 10})
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if got := result.Rows[0].Password; got != "  Passw0rd!  " {
+		t.Fatalf("password whitespace was changed: %q", got)
 	}
 }

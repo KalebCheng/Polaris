@@ -400,7 +400,6 @@ func (s *AuthService) CodeLogin(ctx context.Context, req CodeLoginRequest, host,
 	s.enforceSessionPolicy(ctx, app, user, session.ID)
 	if !session.MfaPending {
 		_ = s.users.UpdateLastSignin(ctx, user.ID, time.Now(), ip)
-		_ = s.users.SetOnline(ctx, user.ID, true)
 		s.audits.Record(ctx, user.Name, user.InstitutionID, "auth.code_login", user.Name, map[string]interface{}{"kind": kind})
 		// 登录成功：触发 JIT 建号（与密码登录一致）
 		if s.provisioning != nil {
@@ -456,6 +455,7 @@ func (s *AuthService) findUserByCodeTarget(
 	channel.setIdentity(user, target)
 	if app.DefaultJobTitleID != nil {
 		user.SignupApplication = app.Code
+		user.SignupApplicationID = app.ID
 	}
 	if _, err := s.users.Create(ctx, user); err != nil {
 		return nil, err

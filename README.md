@@ -66,8 +66,8 @@ export POLARIS_JWT_SECRET='replace-with-random-jwt-secret'
 make dev
 ```
 
-The backend listens on `:8100`. On first startup it applies
-`migrations/001_init.up.sql` and, when seeding is enabled, creates the
+The backend listens on `:8100`. On first startup it applies all ordered
+migrations under `migrations/` and, when seeding is enabled, creates the
 `built-in` institution and `admin` user.
 
 ```bash
@@ -94,13 +94,14 @@ The frontend runs at `http://localhost:5173` and proxies `/api`, `/oauth`,
 
 | Variable | Purpose |
 | --- | --- |
+| `POLARIS_DEBUG` | `true` for local debug; production must set `false` (release requires `POLARIS_CREDENTIAL_ENC_KEY`) |
 | `POLARIS_DB_*` | PostgreSQL connection; password is required |
 | `POLARIS_REDIS_*` | Redis connection; password is required when authentication is enabled |
 | `POLARIS_JWT_SECRET` | JWT signing secret; required |
 | `POLARIS_CREDENTIAL_ENC_KEY` | Base64-encoded 32-byte secret used by AES-GCM; required in production |
 | `POLARIS_ADMIN_PASSWORD` | Required when seeding is enabled |
 | `POLARIS_ISSUER` | Public OIDC issuer URL |
-| `POLARIS_OAUTH_*` | SSO callback, base URL, and provider secrets |
+| `POLARIS_OAUTH_*` | SSO callback/base URL; provider secrets only for legacy YAML seeds |
 | `POLARIS_COOKIE_SECURE` | Must be `true` in production |
 | `POLARIS_CSRF_ALLOWED_ORIGINS` | Trusted browser origins for cookie-backed writes |
 | `POLARIS_TRUSTED_PROXIES` | Comma-separated reverse proxies allowed to supply forwarded client IPs |
@@ -115,17 +116,20 @@ The frontend runs at `http://localhost:5173` and proxies `/api`, `/oauth`,
 
 See [deployment documentation](docs/deployment.md) for the complete list.
 
-## Database Baseline
+## Database Migrations
 
-The repository keeps one migration baseline:
+The repository applies migrations in version order:
 
-- `migrations/001_init.up.sql` creates the current schema.
-- `migrations/001_init.down.sql` removes application tables while preserving
-  the migrator-owned `schema_migrations` table.
+- `migrations/001_init.up.sql` creates the baseline schema.
+- `migrations/002_*` through `migrations/004_*` add the user-import ledger and
+  split user credentials, login stats, and registration provenance into
+  dedicated 1:1 tables.
+- Every `NNNN_name.up.sql` has a matching `NNNN_name.down.sql`.
 
-There is no in-place upgrade path for databases created from the removed
-historical migration files. Existing deployments must be reset or migrated
-with an explicit, reviewed data migration before switching to this baseline.
+Existing deployments must apply the new migrations before starting a binary
+that expects the normalized schema. Migration `003` intentionally aborts when
+it finds legacy `users.mfa_*` enrollments that are not present in
+`user_mfa_credentials`; migrate or re-enroll those users first.
 
 ## API and Integration
 
@@ -166,7 +170,7 @@ internal/repository entity models and PostgreSQL/Redis repositories
 internal/server/    routes and middleware
 internal/service/   domain services, syncers, provisioners, providers, asyncd
 pkg/                database, Redis, and migrator clients
-migrations/         current schema baseline
+migrations/         ordered schema migrations
 frontend/web/       React administration console
 docs/               architecture, API, deployment, and design documents
 ```

@@ -37,14 +37,6 @@ func (r *logoutSessionRepo) RemoveUserSession(context.Context, int64, string, st
 
 type logoutUserRepo struct {
 	repository.UserRepository
-	offlineID int64
-}
-
-func (r *logoutUserRepo) SetOnline(_ context.Context, id int64, online bool) error {
-	if !online {
-		r.offlineID = id
-	}
-	return nil
 }
 
 type logoutTokenRepo struct {
@@ -75,8 +67,5 @@ func TestLogoutRevokesSessionTokens(t *testing.T) {
 	}
 	if sessions.deleted != "session-1" {
 		t.Fatalf("deleted session = %q, want session-1", sessions.deleted)
-	}
-	if users.offlineID != 2 {
-		t.Fatalf("offline user = %d, want 2", users.offlineID)
 	}
 }

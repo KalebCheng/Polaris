@@ -244,7 +244,6 @@ func (s *AuthService) VerifyMagicLink(ctx context.Context, req MagicLinkVerifyRe
 	s.enforceSessionPolicy(ctx, app, user, session.ID)
 	if !session.MfaPending {
 		_ = s.users.UpdateLastSignin(ctx, user.ID, time.Now(), ip)
-		_ = s.users.SetOnline(ctx, user.ID, true)
 		s.audits.Record(ctx, user.Name, user.InstitutionID, "auth.magic_link.signin", user.Name,
 			map[string]interface{}{"application": applicationCode(app)})
 		if s.provisioning != nil {

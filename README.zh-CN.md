@@ -122,21 +122,23 @@ git tag 1.2.3 && git push origin 1.2.3
 镜像名可用仓库变量 `DOCKERHUB_IMAGE` 覆盖（默认 `<用户名>/polaris`）。
 完整步骤见 [容器部署手册](docs/deployment.md)。
 
-## 数据库基线
+## 数据库迁移
 
-仓库仅保留一份最新基线：
+仓库按版本顺序执行迁移：
 
-- `migrations/001_init.up.sql`：创建当前完整 schema。
-- `migrations/001_init.down.sql`：删除业务表，但保留迁移器管理的 `schema_migrations`。
+- `migrations/001_init.up.sql`：创建基线 schema。
+- `migrations/002_*` 至 `migrations/004_*`：增加用户导入记录，并把用户密码、登录统计与注册来源拆分到独立 1:1 子表。
+- 每个 `NNNN_name.up.sql` 都有对应的 `NNNN_name.down.sql`。
 
-被移除的历史升级文件不提供原地升级路径。已有数据库必须显式重置，或先执行经过审核的数据迁移，
-再切换到该基线。
+已有数据库必须先应用新增迁移，再启动依赖新结构的二进制。迁移 `003` 在发现
+`users.mfa_*` 中存在未落到 `user_mfa_credentials` 的历史 MFA 绑定时会主动中止；
+需先完成迁移或让用户重新绑定。
 
-已有数据库需要手动订正本次基线涉及的 DDL 与敏感列数据：`tokens` 只保留 hash 列，
+历史库若仍保留早期敏感列，还需单独订正：`tokens` 只保留 hash 列，
 `applications.client_secret` 改为 `client_secret_hash`，`institutions.default_password`
 改为 `default_password_enc`（AES-GCM 密文），`certs.private_key` 内容必须是 AES-GCM 密文。
 可直接执行 `docs/upgrades/sensitive-storage-hardening.up.sql`；该脚本会丢弃旧 token、
-client_secret、default_password 和证书私钥。
+client_secret、default_password 和证书私钥。这与本次 `003`/`004` 是独立的两件事。
 
 ## 对外接口
 
@@ -282,8 +284,8 @@ GET    /readyz                          # 就绪探针（含依赖状态）
   OIDC 走 discovery（或自定义授权/令牌端点）+ 可选 PKCE（S256）。
 - **SSO 信任策略**：`auto_create`、`match_type`、`match_local_field`、`match_syncer_id` + `match_syncer_field`、`match_provider_field`、`allowed_domains`、`redirect_uri`（回调覆盖）；身份链接匹配固定到一条入方向连接，唯一命中才自动绑定；
   落地组织即该提供商所属组织（不再依赖 `auth.oauth.default_institution`）。
-- **迁移期兜底**：`configs/app.yaml` 的 `auth.oauth.providers` 仅作为种子——启动时若目标组织尚无同名提供商，
-  会写入一次并打印日志；此后请改控制台。
+- **迁移期兜底**：旧部署自定义的 `auth.oauth.providers` 仍可作为启动种子——启动时若目标组织尚无同名提供商，
+  会写入一次并打印日志；默认配置不再包含示例，新部署请直接在控制台维护。
 
 ### 外部数据源同步
 
@@ -298,7 +300,7 @@ GET    /readyz                          # 就绪探针（含依赖状态）
 | 变量 | 作用 |
 |------|------|
 | `POLARIS_CONFIG` | 配置文件路径（默认 `configs/app.yaml`） |
-| `POLARIS_ENV` / `POLARIS_PORT` | 运行环境 / HTTP 端口 |
+| `POLARIS_DEBUG` / `POLARIS_PORT` | debug 开关 / HTTP 端口（`false` = release，生产必须为 `false`） |
 | `POLARIS_DB_HOST` `_PORT` `_USER` `_PASSWORD` `_NAME` | PostgreSQL 连接（密码敏感） |
 | `POLARIS_DB_SSLMODE` | PostgreSQL SSL 模式（`disable` / `require` 等） |
 | `POLARIS_REDIS_HOST` `_PORT` `_DB` | Redis 连接地址 / 库号 |
@@ -315,7 +317,7 @@ GET    /readyz                          # 就绪探针（含依赖状态）
 | `POLARIS_OAUTH_SUCCESS_REDIRECT` | 登录成功后的默认前端落地地址 |
 | `POLARIS_DEFAULT_INSTITUTION` | SSO 自动建号/关联的落地租户（默认 `built-in`） |
 | `POLARIS_OIDC_ADDITIONAL_KEY_CERT_NAMES` | 附加校验密钥证书名（JWKS 多密钥轮换，逗号分隔） |
-| `POLARIS_OAUTH_<PROVIDER>_CLIENT_SECRET` | 各外部 Provider 的 client_secret（敏感） |
+| `POLARIS_OAUTH_<PROVIDER>_CLIENT_SECRET` | 旧版 `auth.oauth.providers` 种子的 client_secret（新部署请在控制台维护） |
 | `POLARIS_ADMIN_PASSWORD` | 种子管理员口令（仅开发） |
 
 前端环境变量见 `frontend/web/.env.example`（`VITE_API_BASE_URL`、`VITE_PROXY_TARGET`）。
@@ -342,7 +344,7 @@ Polaris/
 │       ├── notify/          # 通知发送器（SMTP / 阿里云短信 / 通用 HTTP 短信）
 │       └── storage/         # 存储后端（本地磁盘 / S3·MinIO）
 ├── pkg/                     # dbclient / redisclient / migrator
-├── migrations/              # 单一最新基线 001_init.up/down.sql
+├── migrations/              # 按版本顺序执行的 schema 迁移
 ├── configs/                 # 配置占位符
 ├── scripts/
 │   ├── smoke-test.sh        # 端到端冒烟测试

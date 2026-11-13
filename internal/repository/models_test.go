@@ -11,8 +11,8 @@ func TestSensitiveEntityFieldsNeverMarshal(t *testing.T) {
 		value any
 		keys  []string
 	}{
-		{&User{PasswordHash: "hash", PasswordSalt: "salt", MfaSecret: "totp", MfaRecoveryCodes: []string{"code"}},
-			[]string{"password_hash", "password_salt", "mfa_secret", "mfa_recovery_codes"}},
+		{&User{PasswordHash: "hash", PasswordSalt: "salt"},
+			[]string{"password_hash", "password_salt"}},
 		{&Application{ClientSecretHash: "application-secret-hash", ClientSecretPlain: "application-secret"},
 			[]string{"client_secret_hash", "client_secret_plain"}},
 		{&Institution{DefaultPasswordEnc: "default-password-cipher", DefaultPasswordPlain: "default-password"},

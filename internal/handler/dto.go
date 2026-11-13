@@ -44,11 +44,9 @@ type userDTO struct {
 	Gender          string     `json:"gender,omitempty"`
 	Birthday        string     `json:"birthday,omitempty"`
 	Education       string     `json:"education,omitempty"`
-	Score           int        `json:"score"`
 	IsAdmin         bool       `json:"is_admin"`
 	IsForbidden     bool       `json:"is_forbidden"`
 	IsDeleted       bool       `json:"is_deleted"`
-	IsOnline        bool       `json:"is_online"`
 	MfaEnabled      bool       `json:"mfa_enabled"`
 	HasPassword     bool       `json:"has_password"`
 	RegisterType    string     `json:"register_type,omitempty"`
@@ -81,9 +79,9 @@ func toUserDTOFields(u *repository.User) *userDTO {
 		CountryCode: u.CountryCode,
 		Location:    u.Location, Address: u.Address, Affiliation: u.Affiliation, Title: u.Title,
 		Homepage: u.Homepage, Bio: u.Bio, Language: u.Language, Gender: u.Gender, Birthday: u.Birthday,
-		Education: u.Education, Score: u.Score, IsAdmin: u.IsAdmin, IsForbidden: u.IsForbidden,
-		IsDeleted: u.IsDeleted, IsOnline: u.IsOnline, MfaEnabled: u.MfaEnabled,
-		HasPassword:  u.PasswordHash != "",
+		Education: u.Education, IsAdmin: u.IsAdmin, IsForbidden: u.IsForbidden,
+		IsDeleted: u.IsDeleted, MfaEnabled: u.MfaEnabled,
+		HasPassword:  u.HasPassword || u.PasswordHash != "",
 		RegisterType: u.RegisterType, RegisterSource: u.RegisterSource,
 		LastSigninTime: u.LastSigninTime, LastSigninIP: u.LastSigninIP,
 		CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt,

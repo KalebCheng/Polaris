@@ -306,9 +306,7 @@ func (s *UserService) AdminResetMFA(ctx context.Context, actor string, instituti
 			return err
 		}
 	}
-	if err := s.clearMFA(ctx, institutionID, name, actor, "user.mfa_reset"); err != nil {
-		return err
-	}
+	s.audits.Record(ctx, actor, institutionID, "user.mfa_reset", name, nil)
 	return nil
 }
 
@@ -468,10 +466,8 @@ func (s *UserService) SecurityStatus(ctx context.Context, institutionID int64, n
 		return nil, err
 	}
 	status := &UserSecurityStatus{
-		HasPassword:       u.PasswordHash != "",
+		HasPassword:       u.HasPassword || u.PasswordHash != "",
 		PasswordUpdatedAt: u.PasswordUpdatedAt,
-		MfaEnabled:        u.MfaEnabled,
-		MfaType:           u.MfaType,
 	}
 	if s.mfa != nil {
 		enabled, types, recoveryLeft, summaryErr := s.mfa.CredentialSummary(ctx, institutionID, u.ID)
@@ -489,23 +485,6 @@ func (s *UserService) SecurityStatus(ctx context.Context, institutionID int64, n
 		status.PasswordExpireAt = &expireAt
 	}
 	return status, nil
-}
-
-// clearMFA 清空 MFA 绑定（自助关闭与管理员重置共用）。
-func (s *UserService) clearMFA(ctx context.Context, institutionID int64, name, actor, action string) error {
-	u, err := s.users.GetByName(ctx, institutionID, name)
-	if err != nil {
-		return bizerrors.New(bizerrors.CodeUserNotFound, "user not found")
-	}
-	u.MfaEnabled = false
-	u.MfaType = ""
-	u.MfaSecret = ""
-	u.MfaRecoveryCodes = nil
-	if err := s.users.Update(ctx, u); err != nil {
-		return err
-	}
-	s.audits.Record(ctx, actor, institutionID, action, name, nil)
-	return nil
 }
 
 // dedupeStrings 去重并剔除空串（整体替换类入参的前置归一化）。

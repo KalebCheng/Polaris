@@ -57,11 +57,16 @@ func (h *UserImportHandler) Template(c *gin.Context) {
 // Upload 上传即导入（multipart/form-data：file + 选项）。返回完整报告。
 func (h *UserImportHandler) Upload(c *gin.Context) {
 	cfg := h.svc.Config()
-	institutionID := instID(c)
+	institutionID, err := tenantInstitution(c)
+	if err != nil {
+		bizerrors.Fail(c, err)
+		return
+	}
 	if err := h.checkRateLimit(c, institutionID); err != nil {
 		bizerrors.Fail(c, err)
 		return
 	}
+	extendImportDeadlines(c)
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, cfg.MaxFileBytes+64<<10)
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
@@ -130,8 +135,13 @@ func (h *UserImportHandler) checkRateLimit(c *gin.Context, institutionID int64) 
 // List 导入记录分页
 func (h *UserImportHandler) List(c *gin.Context) {
 	offset, limit, page, size := pageParams(c)
+	institutionID, err := tenantInstitution(c)
+	if err != nil {
+		bizerrors.Fail(c, err)
+		return
+	}
 	items, total, err := h.svc.List(c.Request.Context(), repository.UserImportListQuery{
-		InstitutionID: instID(c), Offset: offset, Limit: limit,
+		InstitutionID: institutionID, Offset: offset, Limit: limit,
 	})
 	if err != nil {
 		bizerrors.Fail(c, err)
@@ -147,7 +157,12 @@ func (h *UserImportHandler) Detail(c *gin.Context) {
 		bizerrors.FailInvalidParams(c, err)
 		return
 	}
-	rec, rows, err := h.svc.Detail(c.Request.Context(), instID(c), id)
+	institutionID, err := tenantInstitution(c)
+	if err != nil {
+		bizerrors.Fail(c, err)
+		return
+	}
+	rec, rows, err := h.svc.Detail(c.Request.Context(), institutionID, id)
 	if err != nil {
 		bizerrors.Fail(c, err)
 		return
@@ -162,7 +177,12 @@ func (h *UserImportHandler) Report(c *gin.Context) {
 		bizerrors.FailInvalidParams(c, err)
 		return
 	}
-	rec, rows, err := h.svc.Detail(c.Request.Context(), instID(c), id)
+	institutionID, err := tenantInstitution(c)
+	if err != nil {
+		bizerrors.Fail(c, err)
+		return
+	}
+	rec, rows, err := h.svc.Detail(c.Request.Context(), institutionID, id)
 	if err != nil {
 		bizerrors.Fail(c, err)
 		return
@@ -191,7 +211,8 @@ func (h *UserImportHandler) Report(c *gin.Context) {
 		bizerrors.Fail(c, bizerrors.Wrap(bizerrors.CodeInternalError, "build report failed", err))
 		return
 	}
-	name := fmt.Sprintf("%s-report-%d.csv", strings.TrimSuffix(rec.FileName, ".xlsx"), rec.ID)
+	baseName := strings.TrimSuffix(strings.TrimSuffix(rec.FileName, ".xlsx"), ".csv")
+	name := fmt.Sprintf("%s-report-%d.csv", baseName, rec.ID)
 	writeAttachment(c, name, "text/csv; charset=utf-8", buf.Bytes())
 }
 
@@ -226,4 +247,13 @@ func writeAttachment(c *gin.Context, fileName, contentType string, content []byt
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`,
 		"polaris-export", url.PathEscape(fileName)))
 	c.Data(http.StatusOK, contentType, content)
+}
+
+// extendImportDeadlines keeps the Go HTTP server's 30s read/write deadlines
+// from cutting off a synchronous batch import that is still making progress.
+func extendImportDeadlines(c *gin.Context) {
+	deadline := time.Now().Add(service.UserImportRunTimeout + time.Minute)
+	controller := http.NewResponseController(c.Writer)
+	_ = controller.SetReadDeadline(deadline)
+	_ = controller.SetWriteDeadline(deadline)
 }

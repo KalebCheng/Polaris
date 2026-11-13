@@ -16,6 +16,7 @@ type passwordUserRepo struct {
 	updateCalls  int
 	initialCalls int
 	initialErr   error
+	history      []repository.PasswordHistoryEntry
 }
 
 func (r *passwordUserRepo) GetByName(context.Context, int64, string) (*repository.User, error) {
@@ -39,8 +40,8 @@ func (r *passwordUserRepo) UpdateInitialPassword(_ context.Context, u *repositor
 	return nil
 }
 
-func (r *passwordUserRepo) PasswordHistory(context.Context, int64, string, int) ([]string, error) {
-	return nil, nil
+func (r *passwordUserRepo) PasswordHistory(context.Context, int64, string, int) ([]repository.PasswordHistoryEntry, error) {
+	return r.history, nil
 }
 
 type passwordOrgRepo struct {
@@ -53,10 +54,14 @@ func (r *passwordOrgRepo) GetByID(context.Context, int64) (*repository.Instituti
 }
 
 func newPasswordService(user *repository.User) (*UserService, *passwordUserRepo) {
+	return newPasswordServiceWithOrg(user, &repository.Institution{ID: 7, Name: "acme"})
+}
+
+func newPasswordServiceWithOrg(user *repository.User, org *repository.Institution) (*UserService, *passwordUserRepo) {
 	repo := &passwordUserRepo{user: user}
 	svc := NewUserService(
 		repo,
-		&passwordOrgRepo{org: &repository.Institution{ID: 7, Name: "acme"}},
+		&passwordOrgRepo{org: org},
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 	return svc, repo
@@ -129,5 +134,35 @@ func TestChangePasswordRejectsConcurrentInitialization(t *testing.T) {
 	}
 	if repo.updated != nil {
 		t.Fatal("条件更新失败时不得留下已写入的实体")
+	}
+}
+
+// 回归：历史密码必须按写入时的算法/盐校验。组织后来切换算法或盐时，
+// 不能拿当前配置去验旧 hash，否则复用校验会静默失效。
+func TestValidatePasswordUsesHistoricalAlgorithmAndSalt(t *testing.T) {
+	historyHash, err := auth.HashPasswordWith("ReusedPass123", "salt", "old-pepper")
+	if err != nil {
+		t.Fatalf("生成历史密码失败: %v", err)
+	}
+	currentHash, err := auth.HashPassword("CurrentPass123")
+	if err != nil {
+		t.Fatalf("生成当前密码失败: %v", err)
+	}
+	svc, repo := newPasswordServiceWithOrg(&repository.User{
+		ID: 11, InstitutionID: 7, Name: "local-user", PasswordHash: currentHash,
+	}, &repository.Institution{
+		ID: 7, Name: "acme", PasswordType: "bcrypt", PasswordSalt: "current-pepper",
+		PasswordHistoryCount: 3,
+	})
+	repo.history = []repository.PasswordHistoryEntry{{
+		PasswordHash: historyHash, PasswordType: "salt", PasswordSalt: "old-pepper",
+	}}
+
+	err = svc.ChangePassword(context.Background(), 7, "local-user", "CurrentPass123", "ReusedPass123")
+	if !bizerrors.Is(err, bizerrors.CodeInvalidParams) {
+		t.Fatalf("应拒绝复用历史密码，实际: %v", err)
+	}
+	if repo.updateCalls != 0 || repo.initialCalls != 0 {
+		t.Fatal("复用校验失败时不得写入密码")
 	}
 }

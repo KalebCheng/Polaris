@@ -91,8 +91,8 @@ export const api = {
    * onUploadProgress 报告请求体上传进度（0–1）；响应解析完成后才 resolve。
    */
   upload: <T>(path: string, formData: FormData, opts?: RequestOptions['query'] | UploadOptions) => {
-    const { query, onUploadProgress, onResponse } = normalizeUploadOptions(opts)
-    return uploadWithProgress<T>(buildUrl(path, query), formData, onUploadProgress, onResponse)
+    const { query, onUploadProgress } = normalizeUploadOptions(opts)
+    return uploadWithProgress<T>(buildUrl(path, query), formData, onUploadProgress)
   },
 }
 
@@ -100,13 +100,11 @@ interface UploadOptions {
   query?: RequestOptions['query']
   /** 请求体上传进度（0–1） */
   onUploadProgress?: (ratio: number) => void
-  /** 响应已到达、解析前触发（用于开始轮询服务端进度） */
-  onResponse?: (response: Response) => void
 }
 
 function normalizeUploadOptions(opts?: RequestOptions['query'] | UploadOptions): UploadOptions {
   if (!opts) return {}
-  if ('query' in opts || 'onUploadProgress' in opts || 'onResponse' in opts) return opts as UploadOptions
+  if ('query' in opts || 'onUploadProgress' in opts) return opts as UploadOptions
   return { query: opts as RequestOptions['query'] }
 }
 
@@ -118,7 +116,6 @@ function uploadWithProgress<T>(
   url: string,
   formData: FormData,
   onUploadProgress?: (ratio: number) => void,
-  onResponse?: (response: Response) => void,
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const xhr = new XMLHttpRequest()
@@ -136,7 +133,6 @@ function uploadWithProgress<T>(
           'Content-Type': xhr.getResponseHeader('Content-Type') ?? 'application/json',
         },
       })
-      onResponse?.(response.clone())
       parseResponse<T>(response).then(resolve, reject)
     })
     xhr.addEventListener('error', () => reject(new ApiError('NETWORK_ERROR', '网络错误，请稍后重试', 0)))

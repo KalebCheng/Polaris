@@ -20,8 +20,8 @@ const (
 	DefaultImportBatchSize    = 200
 	DefaultImportMaxFileBytes = 10 << 20
 	DefaultImportRunsPerHour  = 10
-	// importRunTimeout 续跑硬上限：脱离请求上下文后也必须终止
-	importRunTimeout = 30 * time.Minute
+	// UserImportRunTimeout 续跑硬上限：脱离请求上下文后也必须终止
+	UserImportRunTimeout = 30 * time.Minute
 )
 
 // defaultImportDelimiter 多值单元格的默认分隔符
@@ -191,31 +191,50 @@ func (p *importRun) run(rows []importer.Row, fileName, format string) (*UserImpo
 		return nil, err
 	}
 	// 客户端断开不应中断已开始的导入：状态更新与写入都脱离请求取消信号，并受硬上限约束
-	runCtx, cancel := context.WithTimeout(context.WithoutCancel(p.ctx), importRunTimeout)
+	runCtx, cancel := context.WithTimeout(context.WithoutCancel(p.ctx), UserImportRunTimeout)
 	defer cancel()
 	p.ctx = runCtx
 	p.record.Status = repository.UserImportRunning
-	_ = s.imports.Update(p.ctx, p.record)
+	if err := s.imports.Update(p.ctx, p.record); err != nil {
+		return nil, err
+	}
 
-	p.precheck(rows)
+	if err := p.precheck(rows); err != nil {
+		p.markFailed()
+		return nil, err
+	}
 	pending := make([]*rowWork, 0, len(rows))
 	for i := range p.rows {
 		if p.rows[i].input != nil {
 			pending = append(pending, p.rows[i])
 		}
 	}
-	p.persistProgress()
+	if err := p.persistProgress(); err != nil {
+		p.markFailed()
+		return nil, err
+	}
 	for start := 0; start < len(pending); start += s.cfg.BatchSize {
 		end := min(start+s.cfg.BatchSize, len(pending))
 		p.commitBatch(pending[start:end])
-		p.persistProgress()
+		if err := p.persistProgress(); err != nil {
+			p.markFailed()
+			return nil, err
+		}
 	}
-	p.finish()
+	if err := p.finish(); err != nil {
+		p.markFailed()
+		return nil, err
+	}
 	return p.report(), nil
 }
 
+func (p *importRun) markFailed() {
+	p.record.Status = repository.UserImportFailed
+	_ = p.svc.imports.Update(p.ctx, p.record)
+}
+
 // precheck 逐行校验：必填 / 格式 / 密码策略 / 冲突 / 依赖名称解析。
-func (p *importRun) precheck(rows []importer.Row) {
+func (p *importRun) precheck(rows []importer.Row) error {
 	s := p.svc
 	names := make([]string, 0, len(rows))
 	for _, r := range rows {
@@ -224,28 +243,60 @@ func (p *importRun) precheck(rows []importer.Row) {
 		}
 	}
 	existingNames := map[string]bool{}
-	if items, err := s.userRepo.ListByNames(p.ctx, p.opts.InstitutionID, names); err == nil {
+	items, err := s.userRepo.ListByNames(p.ctx, p.opts.InstitutionID, names)
+	if err != nil {
+		return err
+	}
+	for _, u := range items {
+		existingNames[u.Name] = true
+	}
+	phoneCandidates := make([]string, 0, len(rows))
+	seenPhoneCandidate := map[string]bool{}
+	for _, r := range rows {
+		phone, phoneErr := normalizeImportedPhone(r.CountryCode, r.Phone)
+		if phoneErr != nil || phone == "" {
+			continue
+		}
+		for _, candidate := range phoneLookupCandidates(phone) {
+			if seenPhoneCandidate[candidate] {
+				continue
+			}
+			seenPhoneCandidate[candidate] = true
+			phoneCandidates = append(phoneCandidates, candidate)
+		}
+	}
+	existingPhones := map[string]bool{}
+	if len(phoneCandidates) > 0 {
+		items, err := s.userRepo.ListByPhones(p.ctx, p.opts.InstitutionID, phoneCandidates)
+		if err != nil {
+			return err
+		}
 		for _, u := range items {
-			existingNames[u.Name] = true
+			existingPhones[u.Phone] = true
 		}
 	}
 	seenName := make(map[string]int, len(rows))
 	seenEmail := make(map[string]int, len(rows))
+	seenPhone := make(map[string]int, len(rows))
 	p.rows = make([]*rowWork, 0, len(rows))
 	for _, r := range rows {
 		w := &rowWork{raw: r, result: UserImportRowResult{
 			RowNumber: r.Number, UserName: r.Name, Email: r.Email,
 			Errors: []repository.UserImportRowIssue{}, Warnings: []repository.UserImportRowIssue{},
 		}}
-		p.precheckRow(w, existingNames, seenName, seenEmail)
+		if err := p.precheckRow(w, existingNames, existingPhones, seenName, seenEmail, seenPhone); err != nil {
+			return err
+		}
 		w.raw.Password = ""
 		p.rows = append(p.rows, w)
 	}
+	return nil
 }
 
 func (p *importRun) precheckRow(
-	w *rowWork, existingNames map[string]bool, seenName, seenEmail map[string]int,
-) {
+	w *rowWork, existingNames, existingPhones map[string]bool,
+	seenName, seenEmail, seenPhone map[string]int,
+) error {
 	s := p.svc
 	r := w.raw
 	fail := func(column, msg string) {
@@ -272,32 +323,53 @@ func (p *importRun) precheckRow(
 	} else if err := p.validatePassword(r.Password); err != nil {
 		fail("password", err.Error())
 	}
+	phone, phoneErr := normalizeImportedPhone(r.CountryCode, r.Phone)
+	if phoneErr != nil {
+		fail("phone", "invalid phone number")
+	}
 	if len(w.result.Errors) > 0 {
 		w.result.Status = repository.UserImportRowFailed
-		return
+		return nil
 	}
 
 	// 2) 冲突：库内已存在 → 跳过；文件内重复 → 跳过并指向首次出现的行
 	if existingNames[r.Name] {
 		skip("name", "user already exists")
-		return
+		return nil
 	}
 	if first, ok := seenName[r.Name]; ok {
 		skip("name", fmt.Sprintf("duplicate of row %d in this file", first))
-		return
+		return nil
 	}
 	seenName[r.Name] = r.Number
 	if r.Email != "" {
 		key := strings.ToLower(r.Email)
 		if first, ok := seenEmail[key]; ok {
 			skip("email", fmt.Sprintf("duplicate of row %d in this file", first))
-			return
+			return nil
 		}
 		seenEmail[key] = r.Number
-		if u, err := s.userRepo.GetByEmail(p.ctx, p.opts.InstitutionID, r.Email); err == nil && u != nil {
+		u, err := s.userRepo.GetByEmail(p.ctx, p.opts.InstitutionID, r.Email)
+		if err == nil && u != nil {
 			skip("email", "email already used by another user")
-			return
+			return nil
 		}
+		if err != nil && !isLookupMiss(err) {
+			return err
+		}
+	}
+	if phone != "" {
+		for _, candidate := range phoneLookupCandidates(phone) {
+			if existingPhones[candidate] {
+				skip("phone", "phone already used by another user")
+				return nil
+			}
+		}
+		if first, ok := seenPhone[phone]; ok {
+			skip("phone", fmt.Sprintf("duplicate of row %d in this file", first))
+			return nil
+		}
+		seenPhone[phone] = r.Number
 	}
 	if len(r.Roles) > 0 && !p.opts.CanAssignRoles {
 		fail("roles", "assigning roles requires role:update permission")
@@ -312,7 +384,7 @@ func (p *importRun) precheckRow(
 			FirstName:      r.FirstName,
 			LastName:       r.LastName,
 			Email:          r.Email,
-			Phone:          r.Phone,
+			Phone:          phone,
 			CountryCode:    r.CountryCode,
 			Title:          r.Title,
 			RegisterType:   "import",
@@ -321,14 +393,6 @@ func (p *importRun) precheckRow(
 		Password: r.Password,
 		// RegisterSource 在批写入时落到实体（prepareImportUser 统一赋值）
 		RegisterSource: p.record.FileName,
-	}
-	if r.Department != "" {
-		deptID, err := p.resolveDepartment(r.Department)
-		if err != nil {
-			fail("department", err.Error())
-		} else if deptID != nil {
-			input.Departments = []int64{*deptID}
-		}
 	}
 	if r.JobLevel != "" {
 		lv, err := s.levels.GetByName(p.ctx, p.opts.InstitutionID, r.JobLevel)
@@ -360,11 +424,49 @@ func (p *importRun) precheckRow(
 		input.RoleIDs = append(input.RoleIDs, role.ID)
 		input.RoleNames = append(input.RoleNames, role.Name)
 	}
+	// Department auto-creation is a side effect; do it only after every other
+	// row dependency has passed, so failed rows do not leave orphan departments.
+	if r.Department != "" {
+		deptID, err := p.resolveDepartment(r.Department)
+		if err != nil {
+			fail("department", err.Error())
+		} else if deptID != nil {
+			input.Departments = []int64{*deptID}
+		}
+	}
 	if len(w.result.Errors) > 0 {
 		w.result.Status = repository.UserImportRowFailed
-		return
+		return nil
 	}
 	w.input = input
+	return nil
+}
+
+func isLookupMiss(err error) bool {
+	return bizerrors.Is(err, bizerrors.CodeNotFound) ||
+		bizerrors.Is(err, bizerrors.CodeDBNotFound) ||
+		bizerrors.Is(err, bizerrors.CodeUserNotFound)
+}
+
+func normalizeImportedPhone(countryCode, phone string) (string, error) {
+	phone = strings.TrimSpace(phone)
+	if phone == "" {
+		return "", nil
+	}
+	countryCode = strings.TrimSpace(countryCode)
+	if countryCode != "" && !strings.HasPrefix(phone, "+") {
+		countryCode = strings.TrimPrefix(strings.TrimPrefix(countryCode, "00"), "+")
+		for _, r := range countryCode {
+			if r < '0' || r > '9' {
+				return "", fmt.Errorf("invalid country code")
+			}
+		}
+		if countryCode == "" {
+			return "", fmt.Errorf("invalid country code")
+		}
+		phone = "+" + countryCode + phone
+	}
+	return normalizePhone(phone)
 }
 
 // validatePassword 按组织密码策略校验（与手工建号同一规则；新用户没有密码历史故不查重）。
@@ -392,38 +494,67 @@ func (p *importRun) resolveDepartment(path string) (*int64, error) {
 		}
 	}
 	var parent *repository.Department
-	for _, name := range segments {
+	missingAt := len(segments)
+	for i, name := range segments {
 		d, err := s.depts.GetByName(p.ctx, p.opts.InstitutionID, name)
+		if err != nil && !isLookupMiss(err) {
+			return nil, err
+		}
 		if err != nil || d == nil {
-			if !p.opts.AutoCreateDepts {
-				return nil, fmt.Errorf("department not found: %s", clean)
-			}
-			var parentID *int64
-			if parent != nil {
-				id := parent.ID
-				parentID = &id
-			}
-			created, cerr := s.deptSvc.Create(p.ctx, p.opts.Operator, &repository.Department{
-				InstitutionID: p.opts.InstitutionID, Name: name, DisplayName: name, ParentID: parentID,
-			})
-			if cerr != nil {
-				return nil, fmt.Errorf("create department %s failed", name)
-			}
-			path := clean
-			if created.NamePath != "" {
-				path = created.NamePath
-			}
-			if !containsString(p.autoCreated, path) {
-				p.autoCreated = append(p.autoCreated, path)
-			}
-			parent = created
-			continue
+			missingAt = i
+			break
 		}
 		// 同名部门在路径中间出现时，必须真的挂在上一级之下（同组织内部门名允许重复）
 		if parent != nil && !inAncestorChain(d, parent.ID) {
 			return nil, fmt.Errorf("department path mismatch: %s is not under %s", name, parent.NamePath)
 		}
 		parent = d
+	}
+	if missingAt == len(segments) {
+		if parent == nil {
+			return nil, nil
+		}
+		id := parent.ID
+		return &id, nil
+	}
+	if !p.opts.AutoCreateDepts {
+		return nil, fmt.Errorf("department not found: %s", clean)
+	}
+	// Validate the existing suffix before creating anything: a later name that
+	// already sits elsewhere makes this path ambiguous and must not leave a
+	// partially-created prefix behind.
+	for _, name := range segments[missingAt+1:] {
+		d, err := s.depts.GetByName(p.ctx, p.opts.InstitutionID, name)
+		if err != nil {
+			if !isLookupMiss(err) {
+				return nil, err
+			}
+			continue
+		}
+		if d != nil {
+			return nil, fmt.Errorf("department path mismatch: %s already exists outside the requested path", name)
+		}
+	}
+	for _, name := range segments[missingAt:] {
+		var parentID *int64
+		if parent != nil {
+			id := parent.ID
+			parentID = &id
+		}
+		created, cerr := s.deptSvc.Create(p.ctx, p.opts.Operator, &repository.Department{
+			InstitutionID: p.opts.InstitutionID, Name: name, DisplayName: name, ParentID: parentID,
+		})
+		if cerr != nil {
+			return nil, fmt.Errorf("create department %s failed", name)
+		}
+		path := clean
+		if created.NamePath != "" {
+			path = created.NamePath
+		}
+		if !containsString(p.autoCreated, path) {
+			p.autoCreated = append(p.autoCreated, path)
+		}
+		parent = created
 	}
 	if parent == nil {
 		return nil, nil
@@ -494,14 +625,14 @@ func (p *importRun) markCreated(w *rowWork, id int64) {
 }
 
 // persistProgress 落定尚未写库的行并刷新汇总（进度轮询读的就是这份）。
-func (p *importRun) persistProgress() {
+func (p *importRun) persistProgress() error {
 	s := p.svc
 	dirty := make([]*repository.UserImportRow, 0, len(p.rows))
+	persistedWork := make([]*rowWork, 0, len(p.rows))
 	for _, w := range p.rows {
 		if w.result.Status == "" || w.persisted {
 			continue
 		}
-		w.persisted = true
 		row := &repository.UserImportRow{
 			ImportID: p.record.ID, RowNumber: w.result.RowNumber, UserName: w.result.UserName,
 			Email: w.result.Email, Status: w.result.Status,
@@ -512,14 +643,23 @@ func (p *importRun) persistProgress() {
 			row.CreatedUserID = &v
 		}
 		dirty = append(dirty, row)
+		persistedWork = append(persistedWork, w)
 	}
 	if len(dirty) > 0 {
-		_ = s.imports.CreateRows(p.ctx, dirty)
+		if err := s.imports.CreateRows(p.ctx, dirty); err != nil {
+			return err
+		}
+		for _, w := range persistedWork {
+			w.persisted = true
+		}
 	}
 	p.recount()
 	p.record.CreatedDepartments = emptyStrings(p.autoCreated)
 	p.record.Status = repository.UserImportRunning
-	_ = s.imports.Update(p.ctx, p.record)
+	if err := s.imports.Update(p.ctx, p.record); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (p *importRun) recount() {
@@ -537,9 +677,11 @@ func (p *importRun) recount() {
 }
 
 // finish 汇总终态并刷新仍未落库的行，随后审计一条 user.import。
-func (p *importRun) finish() {
+func (p *importRun) finish() error {
 	s := p.svc
-	p.persistProgress()
+	if err := p.persistProgress(); err != nil {
+		return err
+	}
 	switch {
 	case p.record.CreatedCount == len(p.rows):
 		p.record.Status = repository.UserImportSucceeded
@@ -548,12 +690,15 @@ func (p *importRun) finish() {
 	default:
 		p.record.Status = repository.UserImportPartial
 	}
-	_ = s.imports.Update(p.ctx, p.record)
+	if err := s.imports.Update(p.ctx, p.record); err != nil {
+		return err
+	}
 	s.audits.Record(p.ctx, p.opts.Operator, p.opts.InstitutionID, "user.import", p.record.FileName,
 		map[string]interface{}{
 			"import_id": p.record.ID, "total": p.record.TotalRows, "created": p.record.CreatedCount,
 			"skipped": p.record.SkippedCount, "failed": p.record.FailedCount,
 		})
+	return nil
 }
 
 func (p *importRun) report() *UserImportReport {
@@ -576,6 +721,11 @@ func (p *importRun) report() *UserImportReport {
 // （处理请求的实例在续跑前崩溃时；见 Spec R6）。
 func (s *UserImportService) MarkStaleFailed(ctx context.Context, olderThan time.Duration) (int64, error) {
 	return s.imports.MarkStaleFailed(ctx, time.Now().Add(-olderThan))
+}
+
+// PurgeBefore deletes old import records; rows are removed by the FK cascade.
+func (s *UserImportService) PurgeBefore(ctx context.Context, before time.Time) (int64, error) {
+	return s.imports.PurgeBefore(ctx, before)
 }
 
 // List 导入记录分页

@@ -174,7 +174,6 @@ export default function UserDetailPage() {
         {user.is_admin ? <Badge variant="info">{t('users.isAdmin')}</Badge> : null}
         {user.is_forbidden ? <Badge variant="destructive">{t('users.isForbidden')}</Badge> : null}
         {user.is_deleted ? <Badge variant="destructive">{t('users.isDeleted')}</Badge> : null}
-        {user.is_online ? <Badge variant="success">{t('users.isOnline')}</Badge> : null}
         {/* 多部门挂职（Spec Q2 = A）：全部展示，主部门在前；只有主部门时退化为单项 */}
         {(user.department_paths?.length
           ? user.department_paths

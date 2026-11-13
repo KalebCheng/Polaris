@@ -1,10 +1,10 @@
 # 数据库表结构与 ER 图
 
-> **适用版本**：迁移 `001`–`047`（整理日期：2026-10-18）
+> **适用版本**：迁移 `001`–`004`（整理日期：2026-11-13）
 >
 > **事实来源**：在空 PostgreSQL 库中顺序执行 `migrations/*.up.sql` 后，从 `information_schema` / `pg_catalog` 读取的实际结构。本文只描述 PostgreSQL 业务库；Redis 中的会话、OAuth state 与限流计数不在本文范围内。
 >
-> **覆盖范围**：`public` 架构下 40 张表、511 个字段、138 个索引，包含迁移 `027` 产生的 `provider_dropped_columns_backup` 备份表；迁移器内部元数据表 `schema_migrations` 不属于业务数据模型，不在本文列出。
+> **覆盖范围**：`public` 架构下的业务表，包括用户凭证、登录统计与注册来源拆分后的 `user_passwords` / `user_login_stats` / `user_registrations`；迁移器内部元数据表 `schema_migrations` 不属于业务数据模型，不在本文列出。
 >
 > **维护规则**：新增迁移后同步更新本文件；迁移文件一旦发布不可修改，表结构以最新迁移执行结果为准。
 
@@ -578,7 +578,7 @@ erDiagram
 - 主键：`id`
 - 外键：`institution_id` → `institutions(id)` ON DELETE CASCADE；`job_level_id` → `job_levels(id)` ON DELETE SET NULL
 - 唯一约束：`UNIQUE (institution_id, name)`
-- 索引：`users_email_idx` (email)；`users_inst_email_key` UNIQUE (institution_id, lower(email)) WHERE (email <> ''::text)；`users_inst_name_key` UNIQUE (institution_id, name)；`users_inst_phone_key` UNIQUE (institution_id, phone) WHERE (phone <> ''::text)；`users_institution_flags_idx` (institution_id, is_deleted, is_forbidden)；`users_institution_id_idx` (institution_id)；`users_job_level_idx` (institution_id, job_level_id)；`users_pkey` UNIQUE (id)；`users_uid_key` UNIQUE (uid) WHERE (uid <> ''::text)
+- 索引：`users_inst_email_key` UNIQUE (institution_id, lower(email)) WHERE (email <> ''::text)；`users_inst_name_key` UNIQUE (institution_id, name)；`users_inst_phone_key` UNIQUE (institution_id, phone) WHERE (phone <> ''::text)；`users_institution_flags_idx` (institution_id, is_deleted, is_forbidden)；`users_job_level_idx` (institution_id, job_level_id) WHERE job_level_id IS NOT NULL；`users_pkey` UNIQUE (id)；`users_uid_key` UNIQUE (uid) WHERE (uid <> ''::text)
 
 | 字段 | 类型 | 可空 | 默认 | 说明 |
 |---|---|---|---|---|
@@ -586,9 +586,6 @@ erDiagram
 | `uid` | TEXT | 否 | '' | 稳定 UID（非空时全局唯一） |
 | `name` | TEXT | 否 | — | 名称 / 标识 |
 | `type` | TEXT | 否 | 'normal' | 用户类型（normal / admin） |
-| `password_hash` | TEXT | 否 | '' | 密码哈希（敏感） |
-| `password_salt` | TEXT | 否 | '' | 单用户密码盐（敏感） |
-| `password_type` | TEXT | 否 | 'bcrypt' | 密码算法 |
 | `display_name` | TEXT | 否 | '' | 展示名称 |
 | `first_name` | TEXT | 否 | '' | 名 |
 | `last_name` | TEXT | 否 | '' | 姓 |
@@ -607,27 +604,81 @@ erDiagram
 | `gender` | TEXT | 否 | '' | 性别 |
 | `birthday` | TEXT | 否 | '' | 生日 |
 | `education` | TEXT | 否 | '' | 教育经历 |
-| `score` | INTEGER | 否 | 0 | 积分 / 评分 |
 | `is_admin` | BOOLEAN | 否 | false | 是否管理员 |
 | `is_forbidden` | BOOLEAN | 否 | false | 是否被禁用 |
 | `is_deleted` | BOOLEAN | 否 | false | 是否软删除 |
-| `is_online` | BOOLEAN | 否 | false | 是否在线（派生快照） |
-| `signup_application` | TEXT | 否 | '' | 注册来源应用 |
-| `register_type` | TEXT | 否 | '' | 注册类型 |
-| `register_source` | TEXT | 否 | '' | 注册来源 |
-| `created_ip` | TEXT | 否 | '' | 注册来源 IP |
-| `last_signin_time` | TIMESTAMPTZ | 是 | — | 最后登录时间 |
-| `last_signin_ip` | TEXT | 否 | '' | 最后登录 IP |
-| `password_updated_at` | TIMESTAMPTZ | 是 | — | 密码最后更新时间 |
-| `mfa_enabled` | BOOLEAN | 否 | false | 是否启用 MFA |
-| `mfa_type` | TEXT | 否 | '' | MFA 类型 |
-| `mfa_secret` | TEXT | 否 | '' | MFA 密钥（敏感） |
-| `mfa_recovery_codes` | TEXT[] | 否 | '{}' | MFA 恢复码（敏感） |
 | `created_at` | TIMESTAMPTZ | 否 | NOW() | 创建时间 |
 | `updated_at` | TIMESTAMPTZ | 否 | NOW() | 更新时间 |
 | `phone_verified` | BOOLEAN | 否 | false | 手机号是否已验证 |
 | `institution_id` **FK** | BIGINT | 否 | — | 所属组织（租户隔离键） |
 | `job_level_id` **FK** | BIGINT | 是 | — | 职级 |
+
+密码、MFA、最近登录与注册来源分别由 `user_passwords`、`user_mfa_credentials`、`user_login_stats`、`user_registrations` 承载；`users` 只保留身份、资料与生命周期字段。
+
+---
+
+#### `user_passwords`
+
+用户密码凭证（1:1）。无行即表示该用户尚未设置密码（如纯 SSO / 导入账号）。
+
+**键、约束与索引**
+
+- 主键：`user_id`
+- 外键：`(user_id, institution_id)` → `users(id, institution_id)` ON DELETE CASCADE
+
+| 字段 | 类型 | 可空 | 默认 | 说明 |
+|---|---|---|---|---|
+| `user_id` **PK/FK** | BIGINT | 否 | — | 用户 |
+| `institution_id` **FK** | BIGINT | 否 | — | 所属组织（租户隔离键） |
+| `password_hash` | TEXT | 否 | — | 密码哈希（敏感） |
+| `password_type` | TEXT | 否 | 'bcrypt' | 写入时的密码算法 |
+| `password_salt` | TEXT | 否 | '' | 写入时的组织级盐/胡椒快照 |
+| `password_updated_at` | TIMESTAMPTZ | 是 | — | 密码最后更新时间 |
+| `created_at` / `updated_at` | TIMESTAMPTZ | 否 | NOW() | 时间戳 |
+
+---
+
+#### `user_login_stats`
+
+用户最近登录/活跃统计（1:1）。在线状态不落库，仍以 Redis 会话为准。
+
+**键、约束与索引**
+
+- 主键：`user_id`
+- 外键：`(user_id, institution_id)` → `users(id, institution_id)` ON DELETE CASCADE
+
+| 字段 | 类型 | 可空 | 默认 | 说明 |
+|---|---|---|---|---|
+| `user_id` **PK/FK** | BIGINT | 否 | — | 用户 |
+| `institution_id` **FK** | BIGINT | 否 | — | 所属组织（租户隔离键） |
+| `last_signin_at` | TIMESTAMPTZ | 是 | — | 最后登录时间 |
+| `last_signin_ip` | TEXT | 否 | '' | 最后登录 IP |
+| `last_seen_at` | TIMESTAMPTZ | 是 | — | 最后活跃时间（可选，写入需节流） |
+| `updated_at` | TIMESTAMPTZ | 否 | NOW() | 更新时间 |
+
+---
+
+#### `user_registrations`
+
+用户注册来源（1:1）。实时关联使用主键，text 字段只作为历史快照（应用/连接删除后仍可展示）。
+
+**键、约束与索引**
+
+- 主键：`user_id`
+- 外键：`(user_id, institution_id)` → `users(id, institution_id)` ON DELETE CASCADE；`signup_application_id` → `applications(id)` ON DELETE SET NULL；`registration_syncer_id` → `syncers(id)` ON DELETE SET NULL
+- 索引：`user_registrations_inst_application_idx` (institution_id, signup_application_id) WHERE signup_application_id IS NOT NULL；`user_registrations_inst_syncer_idx` (institution_id, registration_syncer_id) WHERE registration_syncer_id IS NOT NULL
+
+| 字段 | 类型 | 可空 | 默认 | 说明 |
+|---|---|---|---|---|
+| `user_id` **PK/FK** | BIGINT | 否 | — | 用户 |
+| `institution_id` **FK** | BIGINT | 否 | — | 所属组织（租户隔离键） |
+| `signup_application_id` **FK** | BIGINT | 是 | — | 注册来源应用主键 |
+| `signup_application_code` | TEXT | 否 | '' | 应用 code 快照 |
+| `register_type` | TEXT | 否 | '' | 注册类型（password / oauth / import / syncer …） |
+| `register_source` | TEXT | 否 | '' | 来源名称快照 |
+| `registration_syncer_id` **FK** | BIGINT | 是 | — | 入方向连接主键 |
+| `created_ip` | TEXT | 否 | '' | 注册来源 IP |
+| `created_at` / `updated_at` | TIMESTAMPTZ | 否 | NOW() | 时间戳 |
 
 ---
 
@@ -735,8 +786,10 @@ erDiagram
 |---|---|---|---|---|
 | `id` **PK** | BIGINT | 否 | 自增 | 主键 |
 | `password_hash` | TEXT | 否 | — | 历史密码哈希（敏感） |
+| `password_type` | TEXT | 否 | 'bcrypt' | 写入时的密码算法 |
+| `password_salt` | TEXT | 否 | '' | 写入时的组织级盐/胡椒快照 |
 | `created_at` | TIMESTAMPTZ | 否 | NOW() | 创建时间 |
-| `institution_id` | BIGINT | 是 | — | 所属组织（租户隔离键） |
+| `institution_id` | BIGINT | 否 | — | 所属组织（租户隔离键） |
 | `user_id` **FK** | BIGINT | 否 | — | 用户 |
 
 ---

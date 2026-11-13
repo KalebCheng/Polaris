@@ -194,8 +194,9 @@ func (h *UserHandler) Get(c *gin.Context) {
 // createUserRequest 创建用户请求体。
 //
 // 两个约定：
-//  1. 刻意使用显式 DTO 而非直接绑定实体：实体里带着 password_hash / mfa_secret 等列，
-//     允许客户端直接提交等于把"自选哈希"和"自选 MFA 密钥"写进库（§3.1-7）；
+//  1. Use an explicit DTO instead of binding the entity: credentials live in
+//     child tables, and binding entity fields would let clients write their own
+//     hashes or MFA secrets (§3.1-7).
 //  2. **资料字段集合必须与 service.UpdateUserProfileInput 完全一致**（由
 //     `user_payload_test.go` 反射锁定）——否则会出现"新建表单能填、后端静默丢弃"，
 //     与第四阶段"新增连接器配置被丢弃"是同一类事故。

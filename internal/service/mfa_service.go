@@ -234,7 +234,6 @@ func (s *MFAService) VerifyEnrollment(ctx context.Context, session *auth.Session
 	if err := s.credentials.Update(ctx, cred); err != nil {
 		return nil, err
 	}
-	_ = s.syncLegacyMFA(ctx, session.InstitutionID, session.UserID)
 	if session.MfaPending {
 		if err := s.finishPending(ctx, session); err != nil {
 			return nil, err
@@ -311,42 +310,7 @@ func (s *MFAService) ResetUser(ctx context.Context, institutionID, userID int64)
 			return err
 		}
 	}
-	_ = s.syncLegacyMFA(ctx, institutionID, userID)
 	return nil
-}
-
-// syncLegacyMFA 同步展示用旧列；认证链路不再读取 users.mfa_*。
-func (s *MFAService) syncLegacyMFA(ctx context.Context, institutionID, userID int64) error {
-	user, err := s.users.GetByID(ctx, userID)
-	if err != nil {
-		return err
-	}
-	items, err := s.credentials.ListByUser(ctx, institutionID, userID)
-	if err != nil {
-		return err
-	}
-	enabled := false
-	types := []string{}
-	secret := ""
-	for _, item := range items {
-		if item.Status != repository.MfaCredentialActive {
-			continue
-		}
-		enabled = true
-		if !contains(types, item.Type) {
-			types = append(types, item.Type)
-		}
-		if secret == "" && item.Type == providerpkg.TypeMFATOTP {
-			secret = item.SecretEncrypted
-		}
-	}
-	user.MfaEnabled = enabled
-	user.MfaType = strings.Join(types, ",")
-	user.MfaSecret = secret
-	if !enabled {
-		user.MfaRecoveryCodes = nil
-	}
-	return s.users.Update(ctx, user)
 }
 
 // CredentialSummary 返回用户 MFA 概览（个人资料 / 管理员安全视图）。
@@ -384,7 +348,6 @@ func (s *MFAService) Disable(ctx context.Context, actor string, session *auth.Se
 	if err := s.credentials.Delete(ctx, session.InstitutionID, session.UserID, providerID); err != nil {
 		return err
 	}
-	_ = s.syncLegacyMFA(ctx, session.InstitutionID, session.UserID)
 	s.audits.Record(ctx, actor, session.InstitutionID, "user.mfa_disable", session.Name,
 		map[string]interface{}{"provider": provider.Name})
 	return nil

@@ -4,7 +4,7 @@
 app:
   name: polaris
   version: 0.1.0
-  env: development          # development/staging/production
+  debug: true               # true = local debug; false = release mode.
   port: 8100
 
 log:
@@ -70,39 +70,8 @@ auth:
     redirect_uri: http://127.0.0.1:5173/sso/callback
     state_ttl: 600
     cookie_secure: false    # Must be true in production.
-    # This section only seeds providers; runtime changes belong in the console.
+    # Fallback organization for SSO / sign-up resolution.
     default_institution: built-in
-    providers:
-      # Seed example for the built-in institution.
-      dingtalk:
-        type: dingtalk
-        enabled: false
-        display_name: 钉钉
-        client_id: ""
-        client_secret: ""   # POLARIS_OAUTH_DINGTALK_CLIENT_SECRET
-        provisioning:
-          auto_create: true
-          link_by_email: true
-          allowed_domains: []
-      wechat:
-        type: wechat
-        enabled: false
-        display_name: 微信
-        client_id: ""
-        client_secret: ""   # POLARIS_OAUTH_WECHAT_CLIENT_SECRET
-        provisioning:
-          auto_create: true
-          link_by_email: true
-      feishu:
-        type: feishu
-        enabled: false
-        display_name: 飞书
-        client_id: ""
-        client_secret: ""   # POLARIS_OAUTH_FEISHU_CLIENT_SECRET
-        scopes: []
-        provisioning:
-          auto_create: true
-          link_by_email: true
 
 # CORS controls which origins can read cross-origin responses.
 cors:
@@ -132,3 +101,10 @@ security:
   credential_enc_key: ""
   access_key_rate_limit_max: 10
   access_key_rate_limit_window_seconds: 900
+
+# 用户导入：同步执行，限制行数、批次、文件大小与每组织每小时次数。
+import:
+  max_rows: 2000
+  batch_size: 200
+  max_file_bytes: 10485760
+  runs_per_hour: 10

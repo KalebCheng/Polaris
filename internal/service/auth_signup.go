@@ -123,6 +123,7 @@ func (s *AuthService) Signup(ctx context.Context, req SignupRequest, ip, userAge
 	}
 	if app != nil {
 		user.SignupApplication = app.Code
+		user.SignupApplicationID = app.ID
 	}
 	created, err := s.userService.Create(ctx, name, CreateUserInput{User: user, Password: password})
 	if err != nil {

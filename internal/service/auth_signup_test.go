@@ -90,7 +90,8 @@ func (s *stubDefaultJobTitleRepo) AddMembers(_ context.Context, id int64, users 
 	return nil
 }
 
-// 回归：应用「默认职务」不能只写 users.signup_application，必须真正建立职务关系。
+// Regression: the application's default job title must create a real
+// job-title membership, not just a registration-source snapshot.
 func TestAddDefaultJobTitleAddsMember(t *testing.T) {
 	repo := &stubDefaultJobTitleRepo{item: &repository.JobTitle{ID: 41, InstitutionID: 3, Name: "AI"}}
 	svc := &AuthService{jobTitles: repo}

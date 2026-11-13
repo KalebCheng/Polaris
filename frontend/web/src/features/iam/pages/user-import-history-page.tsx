@@ -5,6 +5,7 @@ import { ArrowLeft, Download } from 'lucide-react'
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/ui'
 import { PageShell } from '@/widgets/layout/page-shell'
 import { formatRelative } from '@/shared/lib/format'
+import { describeError } from '@/shared/lib/errors'
 import type { UserImportRecord } from '../api'
 import { userImportApi } from '../api'
 import { useWorkspaceInstitution, useWorkspaceInstitutionId } from '../institution-context'
@@ -139,11 +140,16 @@ function ImportRowsPanel({
   const { t } = useTranslation()
   const [rows, setRows] = useState<Awaited<ReturnType<typeof userImportApi.detail>>['rows']>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
 
   useOnceKey(`import-rows:${id}`, async () => {
+    setLoading(true)
+    setError('')
     try {
       const result = await userImportApi.detail(id, institution || undefined)
       setRows(result.rows)
+    } catch (loadError) {
+      setError(describeError(loadError, t))
     } finally {
       setLoading(false)
     }
@@ -164,6 +170,7 @@ function ImportRowsPanel({
         </Button>
       </CardHeader>
       <CardContent className="max-h-96 space-y-1 overflow-auto text-sm">
+        {error && <div className="text-destructive">{error}</div>}
         {failures.map((row) => (
           <div key={row.row_number} className="flex gap-3 border-b py-1.5 last:border-0">
             <span className="text-muted-foreground w-10 shrink-0 tabular-nums">{row.row_number}</span>
@@ -176,7 +183,7 @@ function ImportRowsPanel({
             </span>
           </div>
         ))}
-        {!loading && failures.length === 0 && (
+        {!loading && !error && failures.length === 0 && (
           <div className="text-muted-foreground">{t('users.import.allCreated')}</div>
         )}
       </CardContent>

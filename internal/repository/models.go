@@ -137,9 +137,13 @@ type User struct {
 	// JobLevelID 职级（Spec Q4.1 = A：仅作属性用于展示 / 筛选 / 统计，不参与授权判定）
 	JobLevelID *int64 `db:"job_level_id" json:"job_level_id,omitempty"`
 
-	PasswordHash string `db:"password_hash" json:"-"`
-	PasswordSalt string `db:"password_salt" json:"-"`
-	PasswordType string `db:"password_type" json:"password_type"`
+	// Password, login stats, and registration provenance live in 1:1 child
+	// tables. These fields are loaded on demand and never participate in the
+	// users table column plan.
+	PasswordHash string `db:"-" json:"-"`
+	PasswordSalt string `db:"-" json:"-"`
+	PasswordType string `db:"-" json:"-"`
+	HasPassword  bool   `db:"-" json:"has_password"`
 
 	DisplayName   string `db:"display_name" json:"display_name"`
 	FirstName     string `db:"first_name" json:"first_name"`
@@ -160,30 +164,39 @@ type User struct {
 	Gender        string `db:"gender" json:"gender"`
 	Birthday      string `db:"birthday" json:"birthday"`
 	Education     string `db:"education" json:"education"`
-	Score         int    `db:"score" json:"score"`
+	IsAdmin       bool   `db:"is_admin" json:"is_admin"`
+	IsForbidden   bool   `db:"is_forbidden" json:"is_forbidden"`
+	IsDeleted     bool   `db:"is_deleted" json:"is_deleted"`
 
-	IsAdmin     bool `db:"is_admin" json:"is_admin"`
-	IsForbidden bool `db:"is_forbidden" json:"is_forbidden"`
-	IsDeleted   bool `db:"is_deleted" json:"is_deleted"`
-	IsOnline    bool `db:"is_online" json:"is_online"`
+	// Registration provenance snapshot and live foreign keys (user_registrations).
+	SignupApplication    string `db:"-" json:"signup_application"`
+	SignupApplicationID  int64  `db:"-" json:"-"`
+	RegisterType         string `db:"-" json:"register_type"`
+	RegisterSource       string `db:"-" json:"register_source"`
+	RegistrationSyncerID int64  `db:"-" json:"-"`
+	CreatedIP            string `db:"-" json:"created_ip"`
 
-	SignupApplication string `db:"signup_application" json:"signup_application"`
-	RegisterType      string `db:"register_type" json:"register_type"`
-	RegisterSource    string `db:"register_source" json:"register_source"`
+	// Last sign-in stats (user_login_stats).
+	LastSigninTime *time.Time `db:"-" json:"last_signin_time"`
+	LastSigninIP   string     `db:"-" json:"last_signin_ip"`
 
-	CreatedIP      string     `db:"created_ip" json:"created_ip"`
-	LastSigninTime *time.Time `db:"last_signin_time" json:"last_signin_time"`
-	LastSigninIP   string     `db:"last_signin_ip" json:"last_signin_ip"`
+	// Password update time (user_passwords).
+	PasswordUpdatedAt *time.Time `db:"-" json:"password_updated_at"`
 
-	PasswordUpdatedAt *time.Time `db:"password_updated_at" json:"password_updated_at"`
-
-	MfaEnabled       bool     `db:"mfa_enabled" json:"mfa_enabled"`
-	MfaType          string   `db:"mfa_type" json:"mfa_type"` // totp
-	MfaSecret        string   `db:"mfa_secret" json:"-"`
-	MfaRecoveryCodes []string `db:"mfa_recovery_codes" json:"-"`
+	// Whether the user has an active MFA credential (user_mfa_credentials).
+	MfaEnabled bool `db:"-" json:"mfa_enabled"`
 
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
 	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
+}
+
+// PasswordHistoryEntry is one historical password with the algorithm and salt
+// used when it was written. Verification must use the historical parameters,
+// never the organization's current configuration.
+type PasswordHistoryEntry struct {
+	PasswordHash string
+	PasswordType string
+	PasswordSalt string
 }
 
 // ProviderItem 应用启用的身份提供方条目

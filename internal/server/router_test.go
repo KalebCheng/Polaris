@@ -103,3 +103,48 @@ func TestStorageRoutesAreRegistered(t *testing.T) {
 		}
 	}
 }
+
+func TestUserImportRoutesAreRegistered(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	middleware := NewMiddleware(&config.Config{}, auth.NewMiddleware(nil, nil, nil, nil, nil))
+	RegisterRoutes(engine, middleware, &Handlers{
+		Auth:        (*handler.AuthHandler)(nil),
+		OIDC:        (*handler.OIDCHandler)(nil),
+		Health:      (*handler.HealthHandler)(nil),
+		User:        (*handler.UserHandler)(nil),
+		Institution: (*handler.InstitutionHandler)(nil),
+		Department:  (*handler.DepartmentHandler)(nil),
+		Application: (*handler.ApplicationHandler)(nil),
+		Provider:    (*handler.ProviderHandler)(nil),
+		Role:        (*handler.RoleHandler)(nil),
+		Permission:  (*handler.PermissionHandler)(nil),
+		JobTitle:    (*handler.JobTitleHandler)(nil),
+		Cert:        (*handler.CertHandler)(nil),
+		Token:       (*handler.TokenHandler)(nil),
+		Session:     (*handler.SessionHandler)(nil),
+		Record:      (*handler.RecordHandler)(nil),
+		Syncer:      (*handler.SyncerHandler)(nil),
+		Provision:   (*handler.ProvisioningHandler)(nil),
+		Connection:  (*handler.ConnectionHandler)(nil),
+		Asyncd:      (*handler.AsyncdHandler)(nil),
+		UserImport:  (*handler.UserImportHandler)(nil),
+		Storage:     (*handler.StorageHandler)(nil),
+	})
+
+	registered := make(map[string]bool)
+	for _, route := range engine.Routes() {
+		registered[route.Method+" "+route.Path] = true
+	}
+	for _, route := range []string{
+		"GET /api/v1/users/import/template",
+		"POST /api/v1/users/import",
+		"GET /api/v1/users/imports",
+		"GET /api/v1/users/imports/:id",
+		"GET /api/v1/users/imports/:id/report.csv",
+	} {
+		if !registered[route] {
+			t.Errorf("用户导入路由未注册: %s", route)
+		}
+	}
+}

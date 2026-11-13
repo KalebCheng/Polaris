@@ -307,7 +307,7 @@ func (s *UserService) validatePassword(ctx context.Context, org *repository.Inst
 			return err
 		}
 		for _, h := range hashes {
-			if auth.VerifyPasswordWith(password, h, org.PasswordType, org.PasswordSalt) {
+			if auth.VerifyPasswordWith(password, h.PasswordHash, h.PasswordType, h.PasswordSalt) {
 				return bizerrors.New(bizerrors.CodeInvalidParams, "new password must not reuse recent passwords")
 			}
 		}
