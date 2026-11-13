@@ -443,9 +443,7 @@ func (s *SyncerService) planUsers(ctx context.Context, sy *repository.Syncer, pl
 		}
 	}
 	// ② 兜底：还没有映射行的历史同步账号（接入映射表之前同步进来的）
-	localUsers, err := s.users.List(ctx, repository.ListQuery{
-		InstitutionID: sy.InstitutionID, Field: "register_source", Value: sy.Name, Limit: 50000,
-	})
+	localUsers, err := s.users.ListByRegistrationSyncer(ctx, sy.InstitutionID, sy.ID, 50000)
 	if err != nil {
 		return err
 	}

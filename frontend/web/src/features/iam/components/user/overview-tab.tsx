@@ -166,7 +166,6 @@ export function OverviewTab({ user }: OverviewTabProps) {
             <p className="text-muted-foreground text-xs">{t('users.belongingReadonlyHint')}</p>
             {user.is_forbidden ? <Badge variant="destructive">{t('users.isForbidden')}</Badge> : null}
             {user.is_deleted ? <Badge variant="destructive">{t('users.isDeleted')}</Badge> : null}
-            {user.is_online ? <Badge variant="success">{t('users.isOnline')}</Badge> : null}
           </CardContent>
         </Card>
       </div>

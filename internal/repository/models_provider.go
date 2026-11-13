@@ -94,16 +94,23 @@ type ProviderTemplate struct {
 	InstitutionID int64 `db:"institution_id" json:"institution_id"`
 	ProviderID    int64 `db:"provider_id" json:"provider_id"`
 	// Channel 非持久化：email | sms；决定内容来自 provider_email_templates 还是 provider_sms_templates。
-	Channel        string    `db:"-" json:"channel"`
-	Name           string    `db:"name" json:"name"`
-	Scene          string    `db:"scene" json:"scene"`
-	TemplateCode   string    `db:"template_code" json:"template_code"`
-	TemplateParams []string  `db:"template_params" json:"template_params"`
-	Subject        string    `db:"subject" json:"subject"`
-	Content        string    `db:"content" json:"content"`
-	IsDefault      bool      `db:"is_default" json:"is_default"`
-	CreatedAt      time.Time `db:"created_at" json:"created_at"`
-	UpdatedAt      time.Time `db:"updated_at" json:"updated_at"`
+	Channel        string                  `db:"-" json:"channel"`
+	Name           string                  `db:"name" json:"name"`
+	Scene          string                  `db:"scene" json:"scene"`
+	TemplateCode   string                  `db:"template_code" json:"template_code"`
+	TemplateParams []ProviderTemplateParam `db:"template_params" json:"template_params"`
+	Subject        string                  `db:"subject" json:"subject"`
+	Content        string                  `db:"content" json:"content"`
+	IsDefault      bool                    `db:"is_default" json:"is_default"`
+	CreatedAt      time.Time               `db:"created_at" json:"created_at"`
+	UpdatedAt      time.Time               `db:"updated_at" json:"updated_at"`
+}
+
+// ProviderTemplateParam 短信模板参数映射：Key 是厂商模板里的变量名（如 code1），
+// Source 是平台可取值的内置占位符（如 code）。发送时按 Source 取值，再以 Key 组装给厂商。
+type ProviderTemplateParam struct {
+	Key    string `json:"key"`
+	Source string `json:"source"`
 }
 
 // 通知模板场景。
@@ -112,16 +119,6 @@ const (
 	TemplateSceneMfaCode   = "mfa_code"
 	TemplateSceneMagicLink = "magic_link"
 )
-
-// IsTemplateScene 判断模板场景取值是否受支持。
-func IsTemplateScene(scene string) bool {
-	switch scene {
-	case TemplateSceneLoginCode, TemplateSceneMfaCode, TemplateSceneMagicLink:
-		return true
-	default:
-		return false
-	}
-}
 
 // UserMFACredential 用户绑定的 MFA 凭证（一个用户可对多个 MFA 提供商各绑定一条）。
 type UserMFACredential struct {

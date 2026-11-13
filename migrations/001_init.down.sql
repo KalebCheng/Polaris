@@ -1,3 +1,6 @@
+DROP TABLE IF EXISTS public.user_registrations CASCADE;
+DROP TABLE IF EXISTS public.user_login_stats CASCADE;
+DROP TABLE IF EXISTS public.user_passwords CASCADE;
 DROP TABLE IF EXISTS public.users CASCADE;
 DROP TABLE IF EXISTS public.user_mfa_credentials CASCADE;
 DROP TABLE IF EXISTS public.user_identities CASCADE;

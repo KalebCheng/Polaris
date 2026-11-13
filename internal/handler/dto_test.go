@@ -15,16 +15,14 @@ import (
 func TestUserDTONeverExposesSecrets(t *testing.T) {
 	u := &repository.User{
 		ID: 1, InstitutionID: 1, Name: "admin",
-		PasswordHash:     "$2a$10$verysecret",
-		MfaSecret:        "ENCRYPTED-TOTP-SECRET",
-		MfaRecoveryCodes: []string{"abcdef1234"},
+		PasswordHash: "$2a$10$verysecret", HasPassword: true,
 	}
 	b, err := json.Marshal(toUserDTO(u))
 	if err != nil {
 		t.Fatalf("序列化失败: %v", err)
 	}
 	body := string(b)
-	for _, forbidden := range []string{"verysecret", "ENCRYPTED-TOTP-SECRET", "abcdef1234", "password_hash", "mfa_secret", "mfa_recovery_codes"} {
+	for _, forbidden := range []string{"verysecret", "password_hash"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("用户响应泄漏敏感字段 %q: %s", forbidden, body)
 		}
@@ -314,7 +312,6 @@ func TestProvisioningDTOsExposeApplicationID(t *testing.T) {
 func TestJobTitleDetailDTOUsesJobTitleKeyAndHidesUserSecrets(t *testing.T) {
 	u := &repository.User{
 		ID: 1, InstitutionID: 3, Name: "alice", PasswordHash: "$2a$10$secret",
-		MfaSecret: "ENCRYPTED-TOTP",
 	}
 	dto := jobTitleDetailDTO{
 		JobTitle:    &repository.JobTitle{ID: 41, InstitutionID: 3, Name: "AI"},
@@ -333,7 +330,7 @@ func TestJobTitleDetailDTOUsesJobTitleKeyAndHidesUserSecrets(t *testing.T) {
 	if strings.Contains(body, `"group"`) {
 		t.Fatalf("不应再下发历史 group 键: %s", body)
 	}
-	for _, forbidden := range []string{"$2a$10$secret", "ENCRYPTED-TOTP", "password_hash", "mfa_secret"} {
+	for _, forbidden := range []string{"$2a$10$secret", "password_hash"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("职务详情泄漏敏感字段 %q: %s", forbidden, body)
 		}

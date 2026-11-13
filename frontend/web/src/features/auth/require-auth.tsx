@@ -7,7 +7,7 @@ import { useAuth } from './auth-context'
  * 登录守卫：未登录时跳转登录页，并用 ?from= 记录原路径（禁止使用 sessionStorage）。
  */
 export function RequireAuth() {
-  const { authenticated, loading } = useAuth()
+  const { authenticated, loading, passwordChangeRequired } = useAuth()
   const location = useLocation()
   const { t } = useTranslation()
 
@@ -23,6 +23,10 @@ export function RequireAuth() {
   if (!authenticated) {
     const from = `${location.pathname}${location.search}`
     return <Navigate to={`/login?from=${encodeURIComponent(from)}`} replace />
+  }
+
+  if (passwordChangeRequired && location.pathname !== '/portal/security') {
+    return <Navigate to="/portal/security" replace />
   }
 
   return <Outlet />

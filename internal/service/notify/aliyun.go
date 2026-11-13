@@ -71,26 +71,31 @@ func (s *AliyunSMSSender) Send(ctx context.Context, msg Message) error {
 	return nil
 }
 
-// templateParams 按模板声明的变量装配 TemplateParam。
+// templateParams 按"厂商变量 → 平台占位符"的映射装配 TemplateParam。
 //
 // 阿里云要求 key 与模板内容里的 ${变量} 严格一致：多一个、少一个、名字对不上都会被拒。
-// 因此这里只放**声明过的**变量；未声明时退回历史行为（只发 code）。
+// key 是厂商模板变量名（如 code1），value 从平台占位符（如 code）取实际值；
+// 未声明映射时退回历史行为（只发 code）。
 func templateParams(cfg Config, msg Message) map[string]string {
-	names := cfg.TemplateParams
-	if len(names) == 0 {
+	mapping := cfg.TemplateParams
+	if len(mapping) == 0 {
 		return map[string]string{"code": msg.Code}
 	}
-	out := make(map[string]string, len(names))
-	for _, name := range names {
-		switch name {
+	out := make(map[string]string, len(mapping))
+	for name, source := range mapping {
+		var value string
+		switch source {
 		case "code":
-			out[name] = msg.Code
+			value = msg.Code
 		case "phone":
-			out[name] = msg.To
+			value = msg.To
 		default:
-			if value, ok := msg.Vars[name]; ok {
-				out[name] = value
+			if candidate, ok := msg.Vars[source]; ok {
+				value = candidate
 			}
+		}
+		if value != "" {
+			out[name] = value
 		}
 	}
 	return out

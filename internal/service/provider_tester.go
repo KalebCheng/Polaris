@@ -49,8 +49,7 @@ var providerTestStrategies = map[string]providerTestStrategy{
 }
 
 func (s *ProviderService) testEmailProvider(ctx context.Context, provider *repository.Provider) error {
-	tpl := s.defaultMessageTemplate(ctx, provider, repository.TemplateSceneLoginCode)
-	return notify.Test(ctx, "email", notifyConfig(provider, tpl), provider.Receiver)
+	return notify.Test(ctx, "email", notifyConfig(provider, nil), provider.Receiver)
 }
 
 func (s *ProviderService) testSMSProvider(ctx context.Context, provider *repository.Provider) error {
@@ -88,7 +87,7 @@ func notifyConfig(provider *repository.Provider, tpl *repository.ProviderTemplat
 		cfg.Title = tpl.Subject
 		cfg.Content = tpl.Content
 		cfg.TemplateCode = tpl.TemplateCode
-		cfg.TemplateParams = tpl.TemplateParams
+		cfg.TemplateParams = templateParamMap(tpl.TemplateParams)
 	}
 	return cfg
 }
@@ -161,7 +160,7 @@ func (s *ProviderService) testSMSMFAProvider(ctx context.Context, provider *repo
 		SslMode: smsProvider.SslMode, FromAddress: smsProvider.FromAddress, Title: tpl.Subject,
 		Content: tpl.Content, RegionID: smsProvider.RegionID, SignName: smsProvider.SignName,
 		TemplateCode: tpl.TemplateCode, AppID: smsProvider.ClientID, AppSecret: smsProvider.ClientSecret,
-		Endpoint: smsProvider.Endpoint, TemplateParams: tpl.TemplateParams,
+		Endpoint: smsProvider.Endpoint, TemplateParams: templateParamMap(tpl.TemplateParams),
 	}
 	return notify.Test(ctx, "sms", cfg, provider.Receiver)
 }

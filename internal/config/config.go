@@ -24,14 +24,35 @@ type Config struct {
 	Auth     AuthConfig     `yaml:"auth"`
 	Security SecurityConfig `yaml:"security"`
 	CORS     CORSConfig     `yaml:"cors"`
+	Import   ImportConfig   `yaml:"import"`
+}
+
+// ImportConfig bounds synchronous user-import requests.
+type ImportConfig struct {
+	MaxRows      int   `yaml:"max_rows"`
+	BatchSize    int   `yaml:"batch_size"`
+	MaxFileBytes int64 `yaml:"max_file_bytes"`
+	RunsPerHour  int   `yaml:"runs_per_hour"`
 }
 
 // AppConfig 应用配置
 type AppConfig struct {
 	Name    string `yaml:"name"`
 	Version string `yaml:"version"`
-	Env     string `yaml:"env"`
-	Port    int    `yaml:"port"`
+	// Debug enables Gin debug mode and allows deriving the credential key from
+	// jwt_secret. Release mode requires POLARIS_CREDENTIAL_ENC_KEY.
+	Debug *bool `yaml:"debug"`
+	// Env is deprecated: use Debug. It remains readable for one release so
+	// existing app.yaml / POLARIS_ENV=production deployments do not silently
+	// enable debug mode.
+	Env  string `yaml:"env"`
+	Port int    `yaml:"port"`
+}
+
+// DebugEnabled resolves the effective debug flag. A missing explicit flag and
+// no legacy env value falls back to false (release mode).
+func (c AppConfig) DebugEnabled() bool {
+	return c.Debug != nil && *c.Debug
 }
 
 // LogConfig 日志配置
@@ -89,8 +110,24 @@ type AuthConfig struct {
 
 // RateLimitConfig 限流配置
 type RateLimitConfig struct {
-	LoginMaxAttempts   int `yaml:"login_max_attempts"`
-	LoginWindowSeconds int `yaml:"login_window_seconds"`
+	LoginMaxAttempts   int                             `yaml:"login_max_attempts"`
+	LoginWindowSeconds int                             `yaml:"login_window_seconds"`
+	VerificationCode   VerificationCodeRateLimitConfig `yaml:"verification_code"`
+}
+
+// VerificationCodeRateLimitConfig bounds email/SMS verification-code delivery.
+// The per-target limits stop repeated sends to one address; the IP, organization,
+// and provider limits stop attackers from rotating targets to exhaust SMS budget.
+type VerificationCodeRateLimitConfig struct {
+	SendMinIntervalSeconds int `yaml:"send_min_interval_seconds"`
+	SendHourlyMax          int `yaml:"send_hourly_max"`
+	SendDailyMax           int `yaml:"send_daily_max"`
+	SendIPMinuteMax        int `yaml:"send_ip_minute_max"`
+	SendIPHourlyMax        int `yaml:"send_ip_hourly_max"`
+	SendOrgHourlyMax       int `yaml:"send_org_hourly_max"`
+	SendProviderHourlyMax  int `yaml:"send_provider_hourly_max"`
+	VerifyIPHourlyMax      int `yaml:"verify_ip_hourly_max"`
+	JITSignupIPHourlyMax   int `yaml:"jit_signup_ip_hourly_max"`
 }
 
 // OIDCConfig 作为 OIDC Provider 的配置
@@ -174,6 +211,10 @@ type SecurityConfig struct {
 	CredentialEncKey            string   `yaml:"credential_enc_key"`
 	AccessKeyRateLimitMax       int64    `yaml:"access_key_rate_limit_max"`
 	AccessKeyRateLimitWindowSec int64    `yaml:"access_key_rate_limit_window_seconds"`
+	// TrustedProxies controls which reverse proxies may supply X-Forwarded-For.
+	// Empty disables forwarded IP headers; production deployments should list
+	// their local proxies explicitly.
+	TrustedProxies []string `yaml:"trusted_proxies"`
 }
 
 // Manager 配置管理器
@@ -242,31 +283,48 @@ func (m *Manager) Watch(fn func(*Config)) {
 
 // ── POLARIS_* 环境变量常量 ────────────────────────────────────
 const (
-	EnvConfigPath         = "POLARIS_CONFIG"
-	EnvAppEnv             = "POLARIS_ENV"
-	EnvAppPort            = "POLARIS_PORT"
-	EnvDBHost             = "POLARIS_DB_HOST"
-	EnvDBPort             = "POLARIS_DB_PORT"
-	EnvDBUser             = "POLARIS_DB_USER"
-	EnvDBPassword         = "POLARIS_DB_PASSWORD"
-	EnvDBName             = "POLARIS_DB_NAME"
-	EnvDBSSLMode          = "POLARIS_DB_SSLMODE"
-	EnvRedisHost          = "POLARIS_REDIS_HOST"
-	EnvRedisPort          = "POLARIS_REDIS_PORT"
-	EnvRedisDB            = "POLARIS_REDIS_DB"
-	EnvRedisPassword      = "POLARIS_REDIS_PASSWORD"
-	EnvJWTSecret          = "POLARIS_JWT_SECRET"
-	EnvCookieSecure       = "POLARIS_COOKIE_SECURE"
-	EnvLoginMaxAttempts   = "POLARIS_LOGIN_MAX_ATTEMPTS"
-	EnvLoginWindow        = "POLARIS_LOGIN_WINDOW_SECONDS"
-	EnvDBAutoMigrate      = "POLARIS_DB_AUTO_MIGRATE"
-	EnvMigrationsDir      = "POLARIS_MIGRATIONS_DIR"
-	EnvSeed               = "POLARIS_DB_SEED"
-	EnvCSRFAllowed        = "POLARIS_CSRF_ALLOWED_ORIGINS"
-	EnvCredentialEncKey   = "POLARIS_CREDENTIAL_ENC_KEY"
-	EnvIssuer             = "POLARIS_ISSUER"
-	EnvDefaultInstitution = "POLARIS_DEFAULT_INSTITUTION"
-	EnvOIDCAdditionalKeys = "POLARIS_OIDC_ADDITIONAL_KEY_CERT_NAMES"
+	EnvConfigPath = "POLARIS_CONFIG"
+	EnvAppDebug   = "POLARIS_DEBUG"
+	// EnvLegacyAppEnv is deprecated; retained for one release as a fallback
+	// mapping to EnvAppDebug.
+	EnvLegacyAppEnv              = "POLARIS_ENV"
+	EnvAppPort                   = "POLARIS_PORT"
+	EnvDBHost                    = "POLARIS_DB_HOST"
+	EnvDBPort                    = "POLARIS_DB_PORT"
+	EnvDBUser                    = "POLARIS_DB_USER"
+	EnvDBPassword                = "POLARIS_DB_PASSWORD"
+	EnvDBName                    = "POLARIS_DB_NAME"
+	EnvDBSSLMode                 = "POLARIS_DB_SSLMODE"
+	EnvRedisHost                 = "POLARIS_REDIS_HOST"
+	EnvRedisPort                 = "POLARIS_REDIS_PORT"
+	EnvRedisDB                   = "POLARIS_REDIS_DB"
+	EnvRedisPassword             = "POLARIS_REDIS_PASSWORD"
+	EnvJWTSecret                 = "POLARIS_JWT_SECRET"
+	EnvCookieSecure              = "POLARIS_COOKIE_SECURE"
+	EnvLoginMaxAttempts          = "POLARIS_LOGIN_MAX_ATTEMPTS"
+	EnvLoginWindow               = "POLARIS_LOGIN_WINDOW_SECONDS"
+	EnvCodeSendMinSeconds        = "POLARIS_CODE_SEND_MIN_INTERVAL_SECONDS"
+	EnvCodeSendHourlyMax         = "POLARIS_CODE_SEND_HOURLY_MAX"
+	EnvCodeSendDailyMax          = "POLARIS_CODE_SEND_DAILY_MAX"
+	EnvCodeSendIPMinuteMax       = "POLARIS_CODE_SEND_IP_MINUTE_MAX"
+	EnvCodeSendIPHourlyMax       = "POLARIS_CODE_SEND_IP_HOURLY_MAX"
+	EnvCodeSendOrgHourlyMax      = "POLARIS_CODE_SEND_ORG_HOURLY_MAX"
+	EnvCodeSendProviderHourlyMax = "POLARIS_CODE_SEND_PROVIDER_HOURLY_MAX"
+	EnvCodeVerifyIPHourlyMax     = "POLARIS_CODE_VERIFY_IP_HOURLY_MAX"
+	EnvCodeJITSignupIPHourlyMax  = "POLARIS_CODE_JIT_SIGNUP_IP_HOURLY_MAX"
+	EnvDBAutoMigrate             = "POLARIS_DB_AUTO_MIGRATE"
+	EnvMigrationsDir             = "POLARIS_MIGRATIONS_DIR"
+	EnvSeed                      = "POLARIS_DB_SEED"
+	EnvCSRFAllowed               = "POLARIS_CSRF_ALLOWED_ORIGINS"
+	EnvCredentialEncKey          = "POLARIS_CREDENTIAL_ENC_KEY"
+	EnvTrustedProxies            = "POLARIS_TRUSTED_PROXIES"
+	EnvIssuer                    = "POLARIS_ISSUER"
+	EnvDefaultInstitution        = "POLARIS_DEFAULT_INSTITUTION"
+	EnvOIDCAdditionalKeys        = "POLARIS_OIDC_ADDITIONAL_KEY_CERT_NAMES"
+	EnvImportMaxRows             = "POLARIS_IMPORT_MAX_ROWS"
+	EnvImportBatchSize           = "POLARIS_IMPORT_BATCH_SIZE"
+	EnvImportMaxFileBytes        = "POLARIS_IMPORT_MAX_FILE_BYTES"
+	EnvImportRunsPerHour         = "POLARIS_IMPORT_RUNS_PER_HOUR"
 
 	// OAuth（作为 SP 接入外部 IdP）的对外地址。生产环境必须覆盖为公网地址；
 	// 只改 issuer 不够：开发信息里的回调地址读取的是 redirect_uri。
@@ -279,7 +337,15 @@ const (
 )
 
 func applyEnvOverrides(cfg *Config) {
-	cfg.App.Env = envOr(EnvAppEnv, cfg.App.Env)
+	cfg.App.Env = envOr(EnvLegacyAppEnv, cfg.App.Env)
+	if v := os.Getenv(EnvAppDebug); v != "" {
+		debug := v == "true" || v == "1"
+		cfg.App.Debug = &debug
+	} else if os.Getenv(EnvLegacyAppEnv) != "" || cfg.App.Debug == nil {
+		// Environment variables override the file. The legacy env value is
+		// still honored when POLARIS_DEBUG is absent.
+		applyLegacyDebug(cfg)
+	}
 	cfg.App.Port = envIntOr(EnvAppPort, cfg.App.Port)
 
 	cfg.Database.Host = envOr(EnvDBHost, cfg.Database.Host)
@@ -365,6 +431,38 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	cfg.Auth.RateLimit.LoginMaxAttempts = envIntOr(EnvLoginMaxAttempts, cfg.Auth.RateLimit.LoginMaxAttempts)
 	cfg.Auth.RateLimit.LoginWindowSeconds = envIntOr(EnvLoginWindow, cfg.Auth.RateLimit.LoginWindowSeconds)
+	cfg.Auth.RateLimit.VerificationCode.SendMinIntervalSeconds = envIntOr(
+		EnvCodeSendMinSeconds, cfg.Auth.RateLimit.VerificationCode.SendMinIntervalSeconds)
+	cfg.Auth.RateLimit.VerificationCode.SendHourlyMax = envIntOr(
+		EnvCodeSendHourlyMax, cfg.Auth.RateLimit.VerificationCode.SendHourlyMax)
+	cfg.Auth.RateLimit.VerificationCode.SendDailyMax = envIntOr(
+		EnvCodeSendDailyMax, cfg.Auth.RateLimit.VerificationCode.SendDailyMax)
+	cfg.Auth.RateLimit.VerificationCode.SendIPMinuteMax = envIntOr(
+		EnvCodeSendIPMinuteMax, cfg.Auth.RateLimit.VerificationCode.SendIPMinuteMax)
+	cfg.Auth.RateLimit.VerificationCode.SendIPHourlyMax = envIntOr(
+		EnvCodeSendIPHourlyMax, cfg.Auth.RateLimit.VerificationCode.SendIPHourlyMax)
+	cfg.Auth.RateLimit.VerificationCode.SendOrgHourlyMax = envIntOr(
+		EnvCodeSendOrgHourlyMax, cfg.Auth.RateLimit.VerificationCode.SendOrgHourlyMax)
+	cfg.Auth.RateLimit.VerificationCode.SendProviderHourlyMax = envIntOr(
+		EnvCodeSendProviderHourlyMax, cfg.Auth.RateLimit.VerificationCode.SendProviderHourlyMax)
+	cfg.Auth.RateLimit.VerificationCode.VerifyIPHourlyMax = envIntOr(
+		EnvCodeVerifyIPHourlyMax, cfg.Auth.RateLimit.VerificationCode.VerifyIPHourlyMax)
+	cfg.Auth.RateLimit.VerificationCode.JITSignupIPHourlyMax = envIntOr(
+		EnvCodeJITSignupIPHourlyMax, cfg.Auth.RateLimit.VerificationCode.JITSignupIPHourlyMax)
+	if v, ok := os.LookupEnv(EnvTrustedProxies); ok {
+		cfg.Security.TrustedProxies = splitCSV(v)
+	}
+	if cfg.Security.TrustedProxies == nil {
+		cfg.Security.TrustedProxies = []string{"127.0.0.1", "::1"}
+	}
+	cfg.Import.MaxRows = envIntOr(EnvImportMaxRows, cfg.Import.MaxRows)
+	cfg.Import.BatchSize = envIntOr(EnvImportBatchSize, cfg.Import.BatchSize)
+	if v := os.Getenv(EnvImportMaxFileBytes); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			cfg.Import.MaxFileBytes = n
+		}
+	}
+	cfg.Import.RunsPerHour = envIntOr(EnvImportRunsPerHour, cfg.Import.RunsPerHour)
 
 	for name, prov := range cfg.Auth.OAuth.Providers {
 		key := EnvOAuthSecretPrefix + normalizeEnvName(name) + EnvOAuthSecretSuffix
@@ -372,6 +470,17 @@ func applyEnvOverrides(cfg *Config) {
 			prov.ClientSecret = v
 			cfg.Auth.OAuth.Providers[name] = prov
 		}
+	}
+}
+
+func applyLegacyDebug(cfg *Config) {
+	switch strings.ToLower(strings.TrimSpace(cfg.App.Env)) {
+	case "development", "dev":
+		debug := true
+		cfg.App.Debug = &debug
+	case "production", "staging", "prod":
+		debug := false
+		cfg.App.Debug = &debug
 	}
 }
 
@@ -445,10 +554,21 @@ func envBoolOr(key string, current bool) bool {
 	return current
 }
 
+func splitCSV(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if value := strings.TrimSpace(part); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
 // DefaultConfig 返回默认配置
 func DefaultConfig() *Config {
 	return &Config{
-		App: AppConfig{Name: "polaris", Version: "0.1.0", Env: "development", Port: 8100},
+		App: AppConfig{Name: "polaris", Version: "0.1.0", Debug: boolPtr(true), Port: 8100},
 		Log: LogConfig{Level: "info", Format: "json", Output: "stdout"},
 		Database: DatabaseConfig{
 			Host: "localhost", Port: 5432, User: "polaris", Password: "",
@@ -461,7 +581,21 @@ func DefaultConfig() *Config {
 			SessionTTL: 3600,
 			RefreshTTL: 7200,
 			Issuer:     "polaris",
-			RateLimit:  RateLimitConfig{LoginMaxAttempts: 5, LoginWindowSeconds: 300},
+			RateLimit: RateLimitConfig{
+				LoginMaxAttempts:   5,
+				LoginWindowSeconds: 300,
+				VerificationCode: VerificationCodeRateLimitConfig{
+					SendMinIntervalSeconds: 60,
+					SendHourlyMax:          10,
+					SendDailyMax:           20,
+					SendIPMinuteMax:        20,
+					SendIPHourlyMax:        300,
+					SendOrgHourlyMax:       5000,
+					SendProviderHourlyMax:  10000,
+					VerifyIPHourlyMax:      300,
+					JITSignupIPHourlyMax:   20,
+				},
+			},
 			OIDC: OIDCConfig{
 				AccessTokenExpireHours:         1,
 				RefreshTokenExpireHours:        24,
@@ -474,9 +608,19 @@ func DefaultConfig() *Config {
 			AllowMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 			AllowHeaders: []string{"Authorization", "Content-Type", "X-Request-ID"},
 		},
-		Security: SecurityConfig{CSRFAllowedOrigins: []string{}, AccessKeyRateLimitMax: 10, AccessKeyRateLimitWindowSec: 900},
+		Security: SecurityConfig{
+			CSRFAllowedOrigins:          []string{},
+			AccessKeyRateLimitMax:       10,
+			AccessKeyRateLimitWindowSec: 900,
+			TrustedProxies:              []string{"127.0.0.1", "::1"},
+		},
+		Import: ImportConfig{
+			MaxRows: 2000, BatchSize: 200, MaxFileBytes: 10 << 20, RunsPerHour: 10,
+		},
 	}
 }
+
+func boolPtr(v bool) *bool { return &v }
 
 // IssuerURL 返回当前服务作为 IdP 的 issuer 地址。
 func (c *Config) IssuerURL() string {

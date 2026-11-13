@@ -25,6 +25,10 @@ type Session struct {
 	Application   string           `json:"application,omitempty"`
 	// MfaPending 主认证已通过但 MFA 尚未完成：会话受限，只可访问 MFA 必要接口。
 	MfaPending bool `json:"mfa_pending,omitempty"`
+	// PasswordChangeRequired 登录成功但必须先修改密码：会话只可访问改密必要接口。
+	PasswordChangeRequired bool `json:"password_change_required,omitempty"`
+	// PasswordVerified 主认证来自当前密码校验；只有该标记才允许强制改密跳过旧密码。
+	PasswordVerified bool `json:"password_verified,omitempty"`
 	// MfaProviderIDs 本次登录方式允许的 MFA 提供商集合。
 	MfaProviderIDs []int64 `json:"mfa_provider_ids,omitempty"`
 	// MfaRequired 本次挑战是否强制完成（false 时未绑定用户可跳过绑定提示）。
@@ -56,13 +60,15 @@ type AuthContext struct {
 	Permissions   []PermissionRule
 	ExpiresAt     int64
 	// MfaPending 见 Session.MfaPending
-	MfaPending         bool
-	MfaProviderIDs     []int64
-	MfaRequired        bool
-	MfaCanSkip         bool
-	MfaMethod          string
-	MfaRemember        bool
-	MfaTrustProviderID int64
+	MfaPending             bool
+	PasswordChangeRequired bool
+	PasswordVerified       bool
+	MfaProviderIDs         []int64
+	MfaRequired            bool
+	MfaCanSkip             bool
+	MfaMethod              string
+	MfaRemember            bool
+	MfaTrustProviderID     int64
 }
 
 // IsAuthenticated 是否已认证
@@ -139,11 +145,13 @@ type LoginSession struct {
 
 // LoginResponse 登录响应（Cookie 模式，data 不含 token 明文）
 type LoginResponse struct {
-	Session        *LoginSession `json:"session"`
-	User           *UserView     `json:"user"`
-	Roles          []string      `json:"roles,omitempty"`
-	Mfa            *MfaChallenge `json:"mfa,omitempty"`
-	IdentityLinked bool          `json:"identity_linked,omitempty"`
+	Session                           *LoginSession `json:"session"`
+	User                              *UserView     `json:"user"`
+	Roles                             []string      `json:"roles,omitempty"`
+	Mfa                               *MfaChallenge `json:"mfa,omitempty"`
+	IdentityLinked                    bool          `json:"identity_linked,omitempty"`
+	PasswordChangeRequired            bool          `json:"password_change_required,omitempty"`
+	PasswordChangeRequiresOldPassword bool          `json:"password_change_requires_old_password,omitempty"`
 
 	// MfaTrustToken / MfaTrustMaxAge：内部字段——登录通过且需「记住此设备」时，
 	// 由 handler 读取并下发可信 Cookie，不进入响应体。
@@ -178,16 +186,18 @@ type UserView struct {
 
 // AuthStatus 认证状态响应
 type AuthStatus struct {
-	Authenticated bool             `json:"authenticated"`
-	MfaPending    bool             `json:"mfa_pending,omitempty"`
-	InstitutionID int64            `json:"institution_id,omitempty"`
-	Name          string           `json:"name,omitempty"`
-	DisplayName   string           `json:"display_name,omitempty"`
-	Email         string           `json:"email,omitempty"`
-	IsAdmin       bool             `json:"is_admin"`
-	Roles         []string         `json:"roles,omitempty"`
-	Permissions   []PermissionRule `json:"permissions,omitempty"`
-	ExpiresAt     int64            `json:"expires_at,omitempty"`
+	Authenticated                     bool             `json:"authenticated"`
+	MfaPending                        bool             `json:"mfa_pending,omitempty"`
+	PasswordChangeRequired            bool             `json:"password_change_required,omitempty"`
+	PasswordChangeRequiresOldPassword bool             `json:"password_change_requires_old_password,omitempty"`
+	InstitutionID                     int64            `json:"institution_id,omitempty"`
+	Name                              string           `json:"name,omitempty"`
+	DisplayName                       string           `json:"display_name,omitempty"`
+	Email                             string           `json:"email,omitempty"`
+	IsAdmin                           bool             `json:"is_admin"`
+	Roles                             []string         `json:"roles,omitempty"`
+	Permissions                       []PermissionRule `json:"permissions,omitempty"`
+	ExpiresAt                         int64            `json:"expires_at,omitempty"`
 	// InstitutionName 组织展示名（顶栏账号菜单与个人资料页展示用；不直接用组织主键）
 	InstitutionName    string `json:"institution_name,omitempty"`
 	InstitutionLogo    string `json:"institution_logo,omitempty"`

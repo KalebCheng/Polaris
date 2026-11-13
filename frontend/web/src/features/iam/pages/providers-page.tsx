@@ -52,6 +52,8 @@ export default function ProvidersPage() {
 
   const openNew = () => navigate(`/institutions/${institution}/providers/new?category=${category}`)
   const openEdit = (provider: Provider) => navigate(`/institutions/${institution}/providers/${provider.id}`)
+  const openTemplates = (provider: Provider) =>
+    navigate(`/institutions/${institution}/providers/${provider.id}/templates`)
 
   const items = list.items.filter((item) => item.category === category)
   // 单例类别（邮件/短信/人机校验/存储）运行时只取"启用中的那一个"，故在卡片上显式标出"当前生效"，
@@ -100,6 +102,14 @@ export default function ProvidersPage() {
               label: testingID === provider.id && pending ? t('providers.testing') : t('providers.test'),
               onClick: () => void checkNow(provider),
             },
+            ...(provider.category === 'email' || provider.category === 'sms'
+              ? [
+                  {
+                    label: t('providers.templates.manage'),
+                    onClick: () => openTemplates(provider),
+                  },
+                ]
+              : []),
             ...(singleton
               ? [
                   {

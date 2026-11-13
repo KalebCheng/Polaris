@@ -70,9 +70,10 @@ type UserSecurityStatus struct {
 	HasPassword       bool       `json:"has_password"`
 	PasswordUpdatedAt *time.Time `json:"password_updated_at,omitempty"`
 	// PasswordExpireAt 依据组织密码有效期策略推算（策略为 0 时不下发）
-	PasswordExpireAt *time.Time `json:"password_expire_at,omitempty"`
-	MfaEnabled       bool       `json:"mfa_enabled"`
-	MfaType          string     `json:"mfa_type,omitempty"`
+	PasswordExpireAt   *time.Time `json:"password_expire_at,omitempty"`
+	MustChangePassword bool       `json:"must_change_password"`
+	MfaEnabled         bool       `json:"mfa_enabled"`
+	MfaType            string     `json:"mfa_type,omitempty"`
 	// MfaRecoveryCodesLeft 恢复码剩余数量（只回数量，绝不回码本身）
 	MfaRecoveryCodesLeft int `json:"mfa_recovery_codes_left"`
 }
@@ -306,9 +307,7 @@ func (s *UserService) AdminResetMFA(ctx context.Context, actor string, instituti
 			return err
 		}
 	}
-	if err := s.clearMFA(ctx, institutionID, name, actor, "user.mfa_reset"); err != nil {
-		return err
-	}
+	s.audits.Record(ctx, actor, institutionID, "user.mfa_reset", name, nil)
 	return nil
 }
 
@@ -468,10 +467,9 @@ func (s *UserService) SecurityStatus(ctx context.Context, institutionID int64, n
 		return nil, err
 	}
 	status := &UserSecurityStatus{
-		HasPassword:       u.PasswordHash != "",
-		PasswordUpdatedAt: u.PasswordUpdatedAt,
-		MfaEnabled:        u.MfaEnabled,
-		MfaType:           u.MfaType,
+		HasPassword:        u.HasPassword || u.PasswordHash != "",
+		PasswordUpdatedAt:  u.PasswordUpdatedAt,
+		MustChangePassword: u.MustChangePassword,
 	}
 	if s.mfa != nil {
 		enabled, types, recoveryLeft, summaryErr := s.mfa.CredentialSummary(ctx, institutionID, u.ID)
@@ -487,25 +485,11 @@ func (s *UserService) SecurityStatus(ctx context.Context, institutionID int64, n
 	if u.PasswordUpdatedAt != nil && org.PasswordExpireDays > 0 {
 		expireAt := u.PasswordUpdatedAt.Add(time.Duration(org.PasswordExpireDays) * 24 * time.Hour)
 		status.PasswordExpireAt = &expireAt
+		if expireAt.Before(time.Now()) {
+			status.MustChangePassword = true
+		}
 	}
 	return status, nil
-}
-
-// clearMFA 清空 MFA 绑定（自助关闭与管理员重置共用）。
-func (s *UserService) clearMFA(ctx context.Context, institutionID int64, name, actor, action string) error {
-	u, err := s.users.GetByName(ctx, institutionID, name)
-	if err != nil {
-		return bizerrors.New(bizerrors.CodeUserNotFound, "user not found")
-	}
-	u.MfaEnabled = false
-	u.MfaType = ""
-	u.MfaSecret = ""
-	u.MfaRecoveryCodes = nil
-	if err := s.users.Update(ctx, u); err != nil {
-		return err
-	}
-	s.audits.Record(ctx, actor, institutionID, action, name, nil)
-	return nil
 }
 
 // dedupeStrings 去重并剔除空串（整体替换类入参的前置归一化）。

@@ -86,11 +86,58 @@ export const api = {
   put: <T>(path: string, body?: unknown, query?: RequestOptions['query']) =>
     request<T>(path, { method: 'PUT', body, query }),
   del: <T>(path: string, query?: RequestOptions['query']) => request<T>(path, { method: 'DELETE', query }),
-  /** 上传文件（multipart/form-data）：不走 JSON 序列化，直接提交 FormData；query 用于携带组织 */
-  upload: <T>(path: string, formData: FormData, query?: RequestOptions['query']) =>
-    fetch(buildUrl(path, query), { method: 'POST', credentials: 'include', body: formData }).then((res) =>
-      parseResponse<T>(res),
-    ),
+  /**
+   * 上传文件（multipart/form-data）：不走 JSON 序列化，直接提交 FormData；query 用于携带组织。
+   * onUploadProgress 报告请求体上传进度（0–1）；响应解析完成后才 resolve。
+   */
+  upload: <T>(path: string, formData: FormData, opts?: RequestOptions['query'] | UploadOptions) => {
+    const { query, onUploadProgress } = normalizeUploadOptions(opts)
+    return uploadWithProgress<T>(buildUrl(path, query), formData, onUploadProgress)
+  },
+}
+
+interface UploadOptions {
+  query?: RequestOptions['query']
+  /** 请求体上传进度（0–1） */
+  onUploadProgress?: (ratio: number) => void
+}
+
+function normalizeUploadOptions(opts?: RequestOptions['query'] | UploadOptions): UploadOptions {
+  if (!opts) return {}
+  if ('query' in opts || 'onUploadProgress' in opts) return opts as UploadOptions
+  return { query: opts as RequestOptions['query'] }
+}
+
+/**
+ * XHR 上传：fetch 无法报告上传进度，而导入的文件可能数 MB、服务端解析还要十几秒，
+ * 用户需要看到"正在上传 → 正在导入"两个阶段。
+ */
+function uploadWithProgress<T>(
+  url: string,
+  formData: FormData,
+  onUploadProgress?: (ratio: number) => void,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', url)
+    xhr.withCredentials = true
+    if (onUploadProgress) {
+      xhr.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable && event.total > 0) onUploadProgress(event.loaded / event.total)
+      })
+    }
+    xhr.addEventListener('load', () => {
+      const response = new Response(xhr.responseText, {
+        status: xhr.status,
+        headers: {
+          'Content-Type': xhr.getResponseHeader('Content-Type') ?? 'application/json',
+        },
+      })
+      parseResponse<T>(response).then(resolve, reject)
+    })
+    xhr.addEventListener('error', () => reject(new ApiError('NETWORK_ERROR', '网络错误，请稍后重试', 0)))
+    xhr.send(formData)
+  })
 }
 
 export { API_BASE }

@@ -351,6 +351,7 @@ func (s *AuthService) Callback(ctx context.Context, code, state, ip, userAgent s
 	if err := s.enforceAppAccess(ctx, ssoApp, user); err != nil {
 		return nil, "", err
 	}
+	s.applyPasswordChangeRequirement(ctx, st.InstitutionID, user)
 	session, err := s.sessions.Create(ctx, user, applicationCode(ssoApp), ip, userAgent)
 	if err != nil {
 		return nil, "", err
@@ -362,7 +363,6 @@ func (s *AuthService) Callback(ctx context.Context, code, state, ip, userAgent s
 	}
 	if !session.MfaPending {
 		_ = s.users.UpdateLastSignin(ctx, user.ID, time.Now(), ip)
-		_ = s.users.SetOnline(ctx, user.ID, true)
 		s.audits.Record(ctx, user.Name, user.InstitutionID, "auth.sso_login", user.Name, map[string]interface{}{"provider": st.Provider})
 		// 新建用户：触发"创建即建号"的账号策略（与管理员建号一致）
 		if created && s.provisioning != nil {

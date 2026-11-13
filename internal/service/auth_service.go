@@ -38,6 +38,7 @@ type AuthService struct {
 	loginMax        int64
 	loginWindow     time.Duration
 	sessionTTL      time.Duration
+	codeLimits      VerificationCodeLimitConfig
 	// provision 供给事件挂钩（可选；登录成功时触发 JIT 建号）。
 	provisioning *ProvisioningService
 	// backchannel 后端登出通知（可选；会话结束时通知下游 RP）。
@@ -52,6 +53,7 @@ type AuthServiceConfig struct {
 	LoginMax    int64
 	LoginWindow time.Duration
 	SessionTTL  time.Duration
+	CodeLimits  VerificationCodeLimitConfig
 }
 
 // NewAuthService 创建认证服务
@@ -87,13 +89,15 @@ func NewAuthService(
 		states: states, rateLimiter: rateLimiter, audits: audits,
 		provisioning: provisioning, backchannel: backchannel, access: access,
 		oauthCfg: cfg.OAuth, loginMax: cfg.LoginMax, loginWindow: cfg.LoginWindow, sessionTTL: cfg.SessionTTL,
+		codeLimits: cfg.CodeLimits.withDefaults(),
 	}
 }
 
 // addDefaultJobTitle 把新注册/验证码 JIT 建号的用户加入应用配置的默认职务。
 //
 // 应用向导里的「默认职务」字段（applications.default_group）此前只写进了
-// users.signup_application，职务关系从未建立——典型的"配了不生效"。
+// user_registrations.signup_application_code; the job-title relation was never
+// created, a typical "configured but ineffective" defect.
 // 这里在用户落库后调用 AddMembers（幂等，只增不删），失败只记日志，不回滚已创建的用户。
 func (s *AuthService) addDefaultJobTitle(ctx context.Context, institutionID, jobTitleID int64, user string) {
 	if s.jobTitles == nil || jobTitleID == 0 || user == "" {
@@ -190,8 +194,10 @@ func (s *AuthService) Login(ctx context.Context, req auth.LoginRequest, host, ip
 	mfaChallenge := (*auth.MfaChallenge)(nil)
 	mfaTrustToken, mfaTrustMaxAge := "", 0
 
-	if err := s.checkPasswordExpiry(org, user); err != nil {
-		return nil, "", err
+	if passwordExpired(org, user) {
+		// Do not lock the user out: create a restricted session and force a
+		// password update after login.
+		user.MustChangePassword = true
 	}
 
 	// 应用名可空（组织未配置应用时）：会话与 JIT 仅在确有应用时关联
@@ -199,7 +205,7 @@ func (s *AuthService) Login(ctx context.Context, req auth.LoginRequest, host, ip
 	if app != nil {
 		appName = app.Code
 	}
-	session, err := s.sessions.Create(ctx, user, appName, ip, userAgent)
+	session, err := s.sessions.CreateWithPasswordProof(ctx, user, appName, ip, userAgent)
 	if err != nil {
 		return nil, "", err
 	}
@@ -215,7 +221,6 @@ func (s *AuthService) Login(ctx context.Context, req auth.LoginRequest, host, ip
 	s.enforceSessionPolicy(ctx, app, user, session.ID)
 	if !session.MfaPending {
 		_ = s.users.UpdateLastSignin(ctx, user.ID, time.Now(), ip)
-		_ = s.users.SetOnline(ctx, user.ID, true)
 		s.audits.Record(ctx, user.Name, user.InstitutionID, "auth.login", user.Name, nil)
 		// 登录成功：触发 JIT 建号（仅针对账号策略 createWhen=jit 的应用）
 		if s.provisioning != nil && appName != "" {
@@ -232,6 +237,39 @@ func (s *AuthService) Login(ctx context.Context, req auth.LoginRequest, host, ip
 // LoadSession 读取原始会话（handler 将 MFA 端点交给 MFAService 时使用）。
 func (s *AuthService) LoadSession(ctx context.Context, sessionID string) (*auth.Session, error) {
 	return s.sessions.Load(ctx, sessionID)
+}
+
+// ChangePasswordAndRenewSession completes the forced password-change flow.
+// UserService.ChangePassword invalidates every session for the user; this
+// method then creates a fresh full session so the login page can continue the
+// original login flow without asking the user to sign in again.
+func (s *AuthService) ChangePasswordAndRenewSession(
+	ctx context.Context, sessionID, oldPassword, newPassword string,
+) (string, error) {
+	session, err := s.sessions.Load(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	if !session.PasswordChangeRequired {
+		return "", bizerrors.ErrPasswordChangeRequired
+	}
+	if session.PasswordVerified {
+		if err := s.userService.ForceChangePassword(ctx, session.InstitutionID, session.Name, newPassword); err != nil {
+			return "", err
+		}
+	} else if err := s.userService.ChangePassword(ctx, session.InstitutionID, session.Name, oldPassword, newPassword); err != nil {
+		return "", err
+	}
+	user, err := s.users.GetByName(ctx, session.InstitutionID, session.Name)
+	if err != nil {
+		return "", err
+	}
+	renewed, err := s.sessions.Create(ctx, user, session.Application, session.IP, session.UserAgent)
+	if err != nil {
+		return "", err
+	}
+	_ = s.users.UpdateLastSignin(ctx, user.ID, time.Now(), session.IP)
+	return renewed.ID, nil
 }
 
 // MFA 返回 MFA 运行时（handler 唯一入口）。
@@ -253,9 +291,11 @@ func (s *AuthService) PasswordIdentifiers(app *repository.Application) []string 
 
 func (s *AuthService) loginResponse(user *repository.User, session *auth.Session, from string) *auth.LoginResponse {
 	return &auth.LoginResponse{
-		Session: &auth.LoginSession{ExpiresAt: session.ExpiresAt, From: from},
-		User:    toUserView(user),
-		Roles:   session.Roles,
+		Session:                           &auth.LoginSession{ExpiresAt: session.ExpiresAt, From: from},
+		User:                              toUserView(user),
+		Roles:                             session.Roles,
+		PasswordChangeRequired:            session.PasswordChangeRequired,
+		PasswordChangeRequiresOldPassword: session.PasswordChangeRequired && !session.PasswordVerified,
 	}
 }
 
@@ -454,14 +494,26 @@ func dedupeInt64(values []int64) []int64 {
 	return out
 }
 
-func (s *AuthService) checkPasswordExpiry(org *repository.Institution, user *repository.User) error {
-	if org.PasswordExpireDays <= 0 || user.PasswordUpdatedAt == nil {
-		return nil
+func passwordExpired(org *repository.Institution, user *repository.User) bool {
+	if org == nil || user == nil || org.PasswordExpireDays <= 0 || user.PasswordUpdatedAt == nil {
+		return false
 	}
-	if time.Since(*user.PasswordUpdatedAt) > time.Duration(org.PasswordExpireDays)*24*time.Hour {
-		return bizerrors.New(bizerrors.CodePasswordExpired, "password expired, please change it")
+	return time.Since(*user.PasswordUpdatedAt) > time.Duration(org.PasswordExpireDays)*24*time.Hour
+}
+
+// applyPasswordChangeRequirement marks non-password login paths (SSO, code,
+// magic link) as password-change-required when the password policy applies.
+func (s *AuthService) applyPasswordChangeRequirement(ctx context.Context, institutionID int64, user *repository.User) {
+	if user == nil || user.MustChangePassword || s.orgs == nil {
+		return
 	}
-	return nil
+	org, err := s.orgs.GetByID(ctx, institutionID)
+	if err != nil {
+		return
+	}
+	if passwordExpired(org, user) {
+		user.MustChangePassword = true
+	}
 }
 
 // signinFailurePolicy 解析登录失败限制：应用级字段优先（0 = 沿用平台默认）。
@@ -517,7 +569,6 @@ func (s *AuthService) Logout(ctx context.Context, sessionID string) error {
 			logger.Warn("failed to revoke session tokens", "session_id", session.ID, "error", err)
 		}
 	}
-	_ = s.users.SetOnline(ctx, session.UserID, false)
 	s.audits.Record(ctx, session.Name, session.InstitutionID, "auth.logout", session.Name, nil)
 	// 后端登出：通知配置了 backchannel_logout_uri 的下游应用注销会话（异步、失败不阻断）
 	if s.backchannel != nil {
@@ -548,16 +599,18 @@ func (s *AuthService) Status(ctx context.Context, sessionID string) *auth.AuthSt
 		return &auth.AuthStatus{Authenticated: false}
 	}
 	status := &auth.AuthStatus{
-		Authenticated: true,
-		MfaPending:    session.MfaPending,
-		InstitutionID: session.InstitutionID,
-		Name:          session.Name,
-		DisplayName:   session.DisplayName,
-		Email:         session.Email,
-		IsAdmin:       session.IsAdmin,
-		Roles:         session.Roles,
-		Permissions:   session.Permissions,
-		ExpiresAt:     session.ExpiresAt,
+		Authenticated:                     true,
+		MfaPending:                        session.MfaPending,
+		PasswordChangeRequired:            session.PasswordChangeRequired,
+		PasswordChangeRequiresOldPassword: session.PasswordChangeRequired && !session.PasswordVerified,
+		InstitutionID:                     session.InstitutionID,
+		Name:                              session.Name,
+		DisplayName:                       session.DisplayName,
+		Email:                             session.Email,
+		IsAdmin:                           session.IsAdmin,
+		Roles:                             session.Roles,
+		Permissions:                       session.Permissions,
+		ExpiresAt:                         session.ExpiresAt,
 	}
 	// 顶栏与个人资料需要组织展示名与头像：会话里只存登录快照，头像可能在登录后才上传，
 	// 因此按会话里的组织 + 账号实时回填（/auth/status 只在应用启动与显式 refresh 时调用）。

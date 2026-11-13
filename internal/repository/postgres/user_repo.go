@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -38,6 +39,162 @@ func normalizeUser(u *repository.User) {
 	}
 }
 
+const userDetailFrom = `
+FROM users u
+LEFT JOIN user_passwords p ON p.user_id = u.id
+LEFT JOIN user_registrations r ON r.user_id = u.id
+LEFT JOIN user_login_stats s ON s.user_id = u.id`
+
+const userDetailExtraColumns = `
+COALESCE(p.password_hash, ''),
+COALESCE(p.password_type, 'bcrypt'),
+COALESCE(p.password_salt, ''),
+p.password_updated_at,
+COALESCE(p.must_change_password, false),
+COALESCE(r.signup_application_code, ''),
+COALESCE(r.signup_application_id, 0),
+COALESCE(r.register_type, ''),
+COALESCE(r.register_source, ''),
+COALESCE(r.registration_syncer_id, 0),
+COALESCE(r.created_ip, ''),
+s.last_signin_at,
+COALESCE(s.last_signin_ip, ''),
+EXISTS (
+    SELECT 1 FROM user_mfa_credentials c
+    WHERE c.institution_id = u.institution_id
+      AND c.user_id = u.id
+      AND c.status = 'active'
+)`
+
+// userDetailTargets returns scan targets for users columns plus 1:1 child fields.
+func userDetailTargets(u *repository.User) ([]interface{}, error) {
+	targets, err := scanTargets(u)
+	if err != nil {
+		return nil, err
+	}
+	return append(targets,
+		&u.PasswordHash, &u.PasswordType, &u.PasswordSalt, &u.PasswordUpdatedAt, &u.MustChangePassword,
+		&u.SignupApplication, &u.SignupApplicationID, &u.RegisterType, &u.RegisterSource,
+		&u.RegistrationSyncerID, &u.CreatedIP,
+		&u.LastSigninTime, &u.LastSigninIP, &u.MfaEnabled,
+	), nil
+}
+
+func (r *UserRepository) selectUserWithDetails(ctx context.Context, where string, args ...interface{}) (*repository.User, error) {
+	u := &repository.User{}
+	cols, err := columnList(u)
+	if err != nil {
+		return nil, err
+	}
+	parts := strings.Split(cols, ", ")
+	for i := range parts {
+		parts[i] = "u." + parts[i]
+	}
+	targets, err := userDetailTargets(u)
+	if err != nil {
+		return nil, err
+	}
+	sql := "SELECT " + strings.Join(parts, ", ") + ", " + userDetailExtraColumns + " " + userDetailFrom + " " + where
+	if err := r.db.QueryRow(ctx, sql, args...).Scan(targets...); err != nil {
+		return nil, mapError(err, "user not found")
+	}
+	u.HasPassword = u.PasswordHash != ""
+	return u, nil
+}
+
+// attachUserDetails fills 1:1 child fields in one batch (no per-row N+1).
+func (r *UserRepository) attachUserDetails(ctx context.Context, users []*repository.User) error {
+	if len(users) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(users))
+	byID := make(map[int64]*repository.User, len(users))
+	for _, u := range users {
+		if u == nil {
+			continue
+		}
+		ids = append(ids, u.ID)
+		byID[u.ID] = u
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	rows, err := r.db.Query(ctx, `SELECT u.id, `+userDetailExtraColumns+` `+userDetailFrom+` WHERE u.id = ANY($1)`, ids)
+	if err != nil {
+		return mapError(err, "")
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var passwordHash, passwordType, passwordSalt string
+		var passwordUpdatedAt *time.Time
+		var mustChangePassword bool
+		var signupApplication, registerType, registerSource, createdIP string
+		var signupApplicationID, registrationSyncerID int64
+		var lastSigninTime *time.Time
+		var lastSigninIP string
+		var mfaEnabled bool
+		if err := rows.Scan(
+			&id,
+			&passwordHash, &passwordType, &passwordSalt, &passwordUpdatedAt, &mustChangePassword,
+			&signupApplication, &signupApplicationID, &registerType, &registerSource,
+			&registrationSyncerID, &createdIP,
+			&lastSigninTime, &lastSigninIP, &mfaEnabled,
+		); err != nil {
+			return mapError(err, "")
+		}
+		u := byID[id]
+		if u == nil {
+			continue
+		}
+		u.PasswordHash, u.PasswordType, u.PasswordSalt = passwordHash, passwordType, passwordSalt
+		u.PasswordUpdatedAt = passwordUpdatedAt
+		u.MustChangePassword = mustChangePassword
+		u.HasPassword = passwordHash != ""
+		u.SignupApplication, u.SignupApplicationID = signupApplication, signupApplicationID
+		u.RegisterType, u.RegisterSource = registerType, registerSource
+		u.RegistrationSyncerID, u.CreatedIP = registrationSyncerID, createdIP
+		u.LastSigninTime, u.LastSigninIP = lastSigninTime, lastSigninIP
+		u.MfaEnabled = mfaEnabled
+	}
+	return mapError(rows.Err(), "")
+}
+
+// insertUserRelations writes password and registration rows inside the
+// user-creation transaction.
+func insertUserRelations(ctx context.Context, tx pgx.Tx, u *repository.User) error {
+	if u.PasswordHash != "" {
+		if _, err := tx.Exec(ctx, `INSERT INTO user_passwords
+			(user_id, institution_id, password_hash, password_type, password_salt, must_change_password, password_updated_at, created_at, updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,NOW()),NOW(),NOW())
+			ON CONFLICT (user_id) DO NOTHING`,
+			u.ID, u.InstitutionID, u.PasswordHash, defaultStr(u.PasswordType, "bcrypt"), u.PasswordSalt,
+			u.MustChangePassword, u.PasswordUpdatedAt); err != nil {
+			return mapError(err, "")
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO password_history
+			(institution_id, user_id, password_hash, password_type, password_salt, invalidated_at)
+			VALUES ($1,$2,$3,$4,$5,NULL)`,
+			u.InstitutionID, u.ID, u.PasswordHash, defaultStr(u.PasswordType, "bcrypt"), u.PasswordSalt); err != nil {
+			return mapError(err, "")
+		}
+		u.HasPassword = true
+	}
+	if u.SignupApplication != "" || u.SignupApplicationID != 0 || u.RegisterType != "" ||
+		u.RegisterSource != "" || u.RegistrationSyncerID != 0 || u.CreatedIP != "" {
+		if _, err := tx.Exec(ctx, `INSERT INTO user_registrations
+			(user_id, institution_id, signup_application_id, signup_application_code,
+			 register_type, register_source, registration_syncer_id, created_ip, created_at, updated_at)
+			VALUES ($1,$2,NULLIF($3,0),$4,$5,$6,NULLIF($7,0),$8,NOW(),NOW())
+			ON CONFLICT (user_id) DO NOTHING`,
+			u.ID, u.InstitutionID, u.SignupApplicationID, u.SignupApplication,
+			u.RegisterType, u.RegisterSource, u.RegistrationSyncerID, u.CreatedIP); err != nil {
+			return mapError(err, "")
+		}
+	}
+	return nil
+}
+
 // userQuery 依据通用查询参数拼装条件（组织 / 字段等值 / 关键词 / 附加过滤）。
 func userQuery(q repository.ListQuery) *queryBuilder {
 	b := &queryBuilder{}
@@ -58,6 +215,28 @@ func userQuery(q repository.ListQuery) *queryBuilder {
 		if f.Field == "" {
 			continue
 		}
+		// mfa_enabled is no longer stored on users. Filter through an EXISTS
+		// on active credentials instead of maintaining a boolean cache.
+		if f.Field == "mfa_enabled" {
+			bound := false
+			switch v := f.Value.(type) {
+			case bool:
+				bound = v
+			case string:
+				bound = strings.EqualFold(v, "true")
+			}
+			clause := `EXISTS (
+				SELECT 1 FROM user_mfa_credentials c
+				WHERE c.institution_id = users.institution_id
+				  AND c.user_id = users.id
+				  AND c.status = 'active'
+			)`
+			if !bound {
+				clause = "NOT " + clause
+			}
+			b.add(clause)
+			continue
+		}
 		b.add(columnExpr(f.Field) + ` = ` + b.arg(f.Value))
 	}
 	return b
@@ -66,7 +245,20 @@ func userQuery(q repository.ListQuery) *queryBuilder {
 // Create 创建用户
 func (r *UserRepository) Create(ctx context.Context, u *repository.User) (int64, error) {
 	normalizeUser(u)
-	return insertReturningID(ctx, r.db, userTable, u)
+	var id int64
+	err := r.db.WithTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		id, err = insertReturningID(ctx, tx, userTable, u)
+		if err != nil {
+			return err
+		}
+		u.ID = id
+		return insertUserRelations(ctx, tx, u)
+	})
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
 // CreateWithDepartments 事务内创建用户并写入多值部门归属（主部门用 is_primary 表达）。
@@ -79,6 +271,10 @@ func (r *UserRepository) CreateWithDepartments(
 		var err error
 		id, err = insertReturningID(ctx, tx, userTable, u)
 		if err != nil {
+			return err
+		}
+		u.ID = id
+		if err := insertUserRelations(ctx, tx, u); err != nil {
 			return err
 		}
 		seen := make(map[int64]bool, len(departmentIDs))
@@ -103,38 +299,22 @@ func (r *UserRepository) CreateWithDepartments(
 
 // GetByID 按 ID 查询
 func (r *UserRepository) GetByID(ctx context.Context, id int64) (*repository.User, error) {
-	u := &repository.User{}
-	if err := selectOne(ctx, r.db, userTable, u, "WHERE id = $1", id); err != nil {
-		return nil, err
-	}
-	return u, nil
+	return r.selectUserWithDetails(ctx, "WHERE u.id = $1", id)
 }
 
 // GetByUID 按全局唯一 UID 查询（标准 token 的 sub 即 UID）。
 func (r *UserRepository) GetByUID(ctx context.Context, uid string) (*repository.User, error) {
-	u := &repository.User{}
-	if err := selectOne(ctx, r.db, userTable, u, "WHERE uid = $1", uid); err != nil {
-		return nil, err
-	}
-	return u, nil
+	return r.selectUserWithDetails(ctx, "WHERE u.uid = $1", uid)
 }
 
 // GetByName 按组织+账号名查询
 func (r *UserRepository) GetByName(ctx context.Context, institutionID int64, name string) (*repository.User, error) {
-	u := &repository.User{}
-	if err := selectOne(ctx, r.db, userTable, u, "WHERE institution_id = $1 AND name = $2", institutionID, name); err != nil {
-		return nil, err
-	}
-	return u, nil
+	return r.selectUserWithDetails(ctx, "WHERE u.institution_id = $1 AND u.name = $2", institutionID, name)
 }
 
 // GetByEmail 按组织+邮箱查询（大小写不敏感）
 func (r *UserRepository) GetByEmail(ctx context.Context, institutionID int64, email string) (*repository.User, error) {
-	u := &repository.User{}
-	if err := selectOne(ctx, r.db, userTable, u, "WHERE institution_id = $1 AND lower(email) = lower($2)", institutionID, email); err != nil {
-		return nil, err
-	}
-	return u, nil
+	return r.selectUserWithDetails(ctx, "WHERE u.institution_id = $1 AND lower(u.email) = lower($2)", institutionID, email)
 }
 
 // FindMatchCandidates 按提供商配置的本地字段查候选用户。
@@ -149,8 +329,15 @@ func (r *UserRepository) FindMatchCandidates(
 	if err != nil {
 		return nil, err
 	}
-	return queryEntities[repository.User](ctx, r.db, userTable, "WHERE "+where,
+	items, err := queryEntities[repository.User](ctx, r.db, userTable, "WHERE "+where,
 		[]interface{}{institutionID, value}, "", 0, limit)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.attachUserDetails(ctx, items); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 // FindIdentityLinkMatchCandidates scopes identity matching to one inbound syncer.
@@ -180,8 +367,15 @@ func (r *UserRepository) FindIdentityLinkMatchCandidates(
 		SELECT l.user_id FROM syncer_user_links l
 		WHERE l.institution_id = $1 AND l.syncer_id = $2 AND ` + condition + `
 	)`
-	return queryEntities[repository.User](ctx, r.db, userTable, "WHERE "+where,
+	items, err := queryEntities[repository.User](ctx, r.db, userTable, "WHERE "+where,
 		args, "", 0, limit)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.attachUserDetails(ctx, items); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 // FindUsersByIdentityAttribute 按提供商的原始身份字段查本地用户（反向认领）。
@@ -242,16 +436,11 @@ func (r *UserRepository) FindByPhoneAcrossInstitutions(ctx context.Context, phon
 
 // Update 更新用户。
 //
-// 不可变列（标识、凭证、登录痕迹、注册来源）一律不参与 UPDATE：
-// 标识改名会断掉外部身份绑定；凭证有专用方法（UpdatePassword）以免被"整行写回"覆盖；
-// 历史遗留的审计字段同样只由各自的专用方法写入。
+// Identity columns stay immutable: renaming would break external identity links.
+// Password, login stats, and registration fields are db:"-" child-table fields,
+// so a whole-row update cannot overwrite them.
 func (r *UserRepository) Update(ctx context.Context, u *repository.User) error {
-	return updateEntity(ctx, r.db, userTable, u,
-		"uid", "name",
-		"password_hash", "password_salt", "password_type", "password_updated_at",
-		"last_signin_time", "last_signin_ip", "created_ip",
-		"signup_application", "register_type", "register_source",
-	)
+	return updateEntity(ctx, r.db, userTable, u, "uid", "name")
 }
 
 // UpdatePassword 更新密码并写入密码历史（事务）。
@@ -269,46 +458,94 @@ func (r *UserRepository) UpdateInitialPassword(ctx context.Context, u *repositor
 }
 
 func (r *UserRepository) writePassword(ctx context.Context, u *repository.User, historyLimit int, initialOnly bool) error {
-	return r.db.WithTx(ctx, func(tx pgx.Tx) error {
-		query := `UPDATE users SET password_hash=$2, password_type=$3, password_salt=$4,
-			password_updated_at=NOW(), updated_at=NOW() WHERE id=$1`
+	passwordType := defaultStr(u.PasswordType, "bcrypt")
+	updatedAt := time.Now()
+	keepHistory := historyLimit
+	if keepHistory < 1 {
+		keepHistory = 1
+	}
+	err := r.db.WithTx(ctx, func(tx pgx.Tx) error {
 		if initialOnly {
-			query += ` AND password_hash = ''`
+			tag, err := tx.Exec(ctx, `INSERT INTO user_passwords
+				(user_id, institution_id, password_hash, password_type, password_salt, must_change_password, password_updated_at, created_at, updated_at)
+				SELECT id, institution_id, $2, $3, $4, $5, NOW(), NOW(), NOW()
+				FROM users WHERE id = $1
+				ON CONFLICT (user_id) DO NOTHING`,
+				u.ID, u.PasswordHash, passwordType, u.PasswordSalt, u.MustChangePassword)
+			if err != nil {
+				return mapError(err, "user not found")
+			}
+			if tag.RowsAffected() == 0 {
+				return bizerrors.New(bizerrors.CodeConflict, "password already set")
+			}
+		} else {
+			tag, err := tx.Exec(ctx, `UPDATE user_passwords
+				SET password_hash=$2, password_type=$3, password_salt=$4, must_change_password=$5,
+				    password_updated_at=NOW(), updated_at=NOW()
+				WHERE user_id=$1`,
+				u.ID, u.PasswordHash, passwordType, u.PasswordSalt, u.MustChangePassword)
+			if err != nil {
+				return mapError(err, "user not found")
+			}
+			if tag.RowsAffected() == 0 {
+				tag, err = tx.Exec(ctx, `INSERT INTO user_passwords
+					(user_id, institution_id, password_hash, password_type, password_salt, must_change_password, password_updated_at, created_at, updated_at)
+					SELECT id, institution_id, $2, $3, $4, $5, NOW(), NOW(), NOW()
+					FROM users WHERE id = $1`,
+					u.ID, u.PasswordHash, passwordType, u.PasswordSalt, u.MustChangePassword)
+				if err != nil {
+					return mapError(err, "user not found")
+				}
+				if tag.RowsAffected() == 0 {
+					return bizerrors.New(bizerrors.CodeUserNotFound, "user not found")
+				}
+			}
 		}
-		tag, err := tx.Exec(ctx, query,
-			u.ID, u.PasswordHash, defaultStr(u.PasswordType, "bcrypt"), u.PasswordSalt)
-		if err != nil {
-			return mapError(err, "user not found")
-		}
-		if initialOnly && tag.RowsAffected() == 0 {
-			return bizerrors.New(bizerrors.CodeConflict, "password already set")
-		}
-		if _, err := tx.Exec(ctx, `INSERT INTO password_history (institution_id, user_id, password_hash)
-			VALUES ($1,$2,$3)`, u.InstitutionID, u.ID, u.PasswordHash); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE password_history
+			SET invalidated_at=NOW()
+			WHERE institution_id=$1 AND user_id=$2 AND invalidated_at IS NULL`,
+			u.InstitutionID, u.ID); err != nil {
 			return mapError(err, "")
 		}
-		if historyLimit > 0 {
-			_, err := tx.Exec(ctx, `DELETE FROM password_history WHERE institution_id=$1 AND user_id=$2
-				AND id NOT IN (
-					SELECT id FROM password_history WHERE institution_id=$1 AND user_id=$2
-					ORDER BY created_at DESC LIMIT $3)`, u.InstitutionID, u.ID, historyLimit)
-			if err != nil {
-				return mapError(err, "")
-			}
+		if _, err := tx.Exec(ctx, `INSERT INTO password_history
+			(institution_id, user_id, password_hash, password_type, password_salt, invalidated_at)
+			VALUES ($1,$2,$3,$4,$5,NULL)`,
+			u.InstitutionID, u.ID, u.PasswordHash, passwordType, u.PasswordSalt); err != nil {
+			return mapError(err, "")
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM password_history WHERE institution_id=$1 AND user_id=$2
+			AND id NOT IN (
+				SELECT id FROM password_history WHERE institution_id=$1 AND user_id=$2
+				ORDER BY (invalidated_at IS NULL) DESC, created_at DESC, id DESC LIMIT $3)`,
+			u.InstitutionID, u.ID, keepHistory); err != nil {
+			return mapError(err, "")
 		}
 		return nil
 	})
+	if err == nil {
+		u.PasswordUpdatedAt = &updatedAt
+		u.PasswordType = passwordType
+		u.HasPassword = true
+	}
+	return err
 }
 
 // SoftDelete 软删除用户（保留审计与外部身份绑定）
 func (r *UserRepository) SoftDelete(ctx context.Context, id int64) error {
-	return mapError(r.db.Exec(ctx, `UPDATE users SET is_deleted=TRUE, is_online=FALSE, updated_at=NOW() WHERE id=$1`, id), "user not found")
+	return mapError(r.db.Exec(ctx, `UPDATE users SET is_deleted=TRUE, updated_at=NOW() WHERE id=$1`, id), "user not found")
 }
 
 // List 分页列出用户
 func (r *UserRepository) List(ctx context.Context, q repository.ListQuery) ([]*repository.User, error) {
 	b := userQuery(q)
-	return queryEntities[repository.User](ctx, r.db, userTable, b.where(), b.args, "name ASC", q.Offset, q.Limit)
+	items, err := queryEntities[repository.User](ctx, r.db, userTable, b.where(), b.args, "name ASC", q.Offset, q.Limit)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.attachUserDetails(ctx, items); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 // Count 统计用户数量
@@ -322,8 +559,31 @@ func (r *UserRepository) ListByNames(ctx context.Context, institutionID int64, n
 	if len(names) == 0 {
 		return []*repository.User{}, nil
 	}
-	return queryEntities[repository.User](ctx, r.db, userTable,
+	items, err := queryEntities[repository.User](ctx, r.db, userTable,
 		"WHERE institution_id = $1 AND name = ANY($2)", []interface{}{institutionID, names}, "name ASC", 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.attachUserDetails(ctx, items); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+// ListByPhones returns users matching any of the supplied phone spellings.
+func (r *UserRepository) ListByPhones(ctx context.Context, institutionID int64, phones []string) ([]*repository.User, error) {
+	if len(phones) == 0 {
+		return []*repository.User{}, nil
+	}
+	items, err := queryEntities[repository.User](ctx, r.db, userTable,
+		"WHERE institution_id = $1 AND phone = ANY($2)", []interface{}{institutionID, phones}, "phone ASC", 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.attachUserDetails(ctx, items); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 // ListByIDs returns users by primary key within the institution.
@@ -331,8 +591,15 @@ func (r *UserRepository) ListByIDs(ctx context.Context, institutionID int64, ids
 	if len(ids) == 0 {
 		return []*repository.User{}, nil
 	}
-	return queryEntities[repository.User](ctx, r.db, userTable,
+	items, err := queryEntities[repository.User](ctx, r.db, userTable,
 		"WHERE institution_id = $1 AND id = ANY($2)", []interface{}{institutionID, ids}, "name ASC", 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.attachUserDetails(ctx, items); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 // ExistingIDs returns non-deleted user IDs that belong to the institution.
@@ -366,32 +633,55 @@ func (r *UserRepository) CountAdmins(ctx context.Context, institutionID int64) (
 
 // UpdateLastSignin 更新最近登录时间/IP
 func (r *UserRepository) UpdateLastSignin(ctx context.Context, id int64, at time.Time, ip string) error {
-	return mapError(r.db.Exec(ctx, `UPDATE users SET last_signin_time=$2, last_signin_ip=$3, updated_at=NOW() WHERE id=$1`, id, at, ip), "user not found")
+	tag, err := r.db.ExecTag(ctx, `INSERT INTO user_login_stats
+		(user_id, institution_id, last_signin_at, last_signin_ip, last_seen_at, updated_at)
+		SELECT id, institution_id, $2, $3, $2, NOW()
+		FROM users WHERE id = $1
+		ON CONFLICT (user_id) DO UPDATE SET
+			last_signin_at = EXCLUDED.last_signin_at,
+			last_signin_ip = EXCLUDED.last_signin_ip,
+			last_seen_at = EXCLUDED.last_seen_at,
+			updated_at = NOW()`, id, at, ip)
+	if err != nil {
+		return mapError(err, "user not found")
+	}
+	if tag.RowsAffected() == 0 {
+		return bizerrors.New(bizerrors.CodeUserNotFound, "user not found")
+	}
+	return nil
 }
 
-// SetOnline 设置在线状态
-func (r *UserRepository) SetOnline(ctx context.Context, id int64, online bool) error {
-	return mapError(r.db.Exec(ctx, `UPDATE users SET is_online=$2, updated_at=NOW() WHERE id=$1`, id, online), "user not found")
+// ListByRegistrationSyncer returns users created by an inbound syncer; used as
+// the soft-delete fallback for historical rows.
+func (r *UserRepository) ListByRegistrationSyncer(ctx context.Context, institutionID, syncerID int64, limit int) ([]*repository.User, error) {
+	if syncerID <= 0 {
+		return []*repository.User{}, nil
+	}
+	return queryEntities[repository.User](ctx, r.db, userTable,
+		`WHERE institution_id = $1 AND is_deleted = FALSE AND id IN (
+			SELECT user_id FROM user_registrations
+			WHERE institution_id = $1 AND registration_syncer_id = $2
+		)`, []interface{}{institutionID, syncerID}, "name ASC", 0, limit)
 }
 
-// PasswordHistory 读取最近 N 条密码哈希
-func (r *UserRepository) PasswordHistory(ctx context.Context, institutionID int64, user string, limit int) ([]string, error) {
-	rows, err := r.db.Query(ctx, `SELECT h.password_hash FROM password_history h
+// PasswordHistory returns recent passwords with their historical algorithm and salt.
+func (r *UserRepository) PasswordHistory(ctx context.Context, institutionID int64, user string, limit int) ([]repository.PasswordHistoryEntry, error) {
+	rows, err := r.db.Query(ctx, `SELECT h.password_hash, h.password_type, h.password_salt FROM password_history h
 		JOIN users u ON u.id = h.user_id
-		WHERE h.institution_id=$1 AND u.name=$2 ORDER BY h.created_at DESC LIMIT $3`, institutionID, user, limit)
+		WHERE h.institution_id=$1 AND u.name=$2 ORDER BY h.created_at DESC, h.id DESC LIMIT $3`, institutionID, user, limit)
 	if err != nil {
 		return nil, mapError(err, "")
 	}
 	defer rows.Close()
-	var hashes []string
+	items := make([]repository.PasswordHistoryEntry, 0)
 	for rows.Next() {
-		var h string
-		if err := rows.Scan(&h); err != nil {
+		var item repository.PasswordHistoryEntry
+		if err := rows.Scan(&item.PasswordHash, &item.PasswordType, &item.PasswordSalt); err != nil {
 			return nil, mapError(err, "")
 		}
-		hashes = append(hashes, h)
+		items = append(items, item)
 	}
-	return hashes, mapError(rows.Err(), "")
+	return items, mapError(rows.Err(), "")
 }
 
 const identityColumns = `i.id, i.institution_id, i.user_id, i.provider_id, i.provider_user_id, i.email, i.attributes, i.created_at, i.updated_at,
@@ -447,17 +737,15 @@ func (r *UserRepository) CreateWithIdentity(ctx context.Context, u *repository.U
 	normalizeUser(u)
 	var id int64
 	err := r.db.WithTx(ctx, func(tx pgx.Tx) error {
-		const q = `INSERT INTO users (uid, institution_id, name, type, password_hash, password_type,
-			display_name, avatar, email, email_verified, language, gender, signup_application,
-			register_type, register_source, created_ip)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`
-		if err := tx.QueryRow(ctx, q, u.UID, u.InstitutionID, u.Name, u.Type,
-			u.PasswordHash, u.PasswordType, u.DisplayName, u.Avatar, u.Email,
-			u.EmailVerified, u.Language, u.Gender, u.SignupApplication, u.RegisterType,
-			u.RegisterSource, u.CreatedIP).Scan(&id); err != nil {
-			return mapError(err, "user not found")
+		var err error
+		id, err = insertReturningID(ctx, tx, userTable, u)
+		if err != nil {
+			return err
 		}
 		u.ID = id
+		if err := insertUserRelations(ctx, tx, u); err != nil {
+			return err
+		}
 		identity.InstitutionID = u.InstitutionID
 		identity.User = u.Name
 		if _, err := tx.Exec(ctx, `INSERT INTO user_identities (institution_id, user_id, provider_id, provider_user_id, email, attributes)
@@ -497,3 +785,78 @@ func (r *UserRepository) UnbindIdentity(ctx context.Context, id int64) error {
 }
 
 var _ repository.UserRepository = (*UserRepository)(nil)
+
+// CreateManyWithRelations 事务内批量创建用户并写入部门 / 职务 / 角色关联（导入批次）。
+//
+// 事务内再查一次账号名与邮箱冲突：导入侧的预检与写入之间可能被并发导入插入同名行，
+// 唯一约束虽能兜底，但 23505 无法指出是哪一行，按批重试时往返次数不可控。
+func (r *UserRepository) CreateManyWithRelations(ctx context.Context, items []repository.UserBatchItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	return r.db.WithTx(ctx, func(tx pgx.Tx) error {
+		for i := range items {
+			item := &items[i]
+			u := item.User
+			normalizeUser(u)
+			var clash int64
+			err := tx.QueryRow(ctx, `SELECT 1 FROM users
+				WHERE institution_id=$1
+				  AND (name=$2 OR ($3 <> '' AND lower(email)=lower($3)) OR ($4 <> '' AND phone=$4))
+				LIMIT 1`,
+				u.InstitutionID, u.Name, u.Email, u.Phone).Scan(&clash)
+			if err == nil {
+				return bizerrors.New(bizerrors.CodeConflict, "user already exists").WithDetail("user", u.Name)
+			}
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return mapError(err, "")
+			}
+			id, err := insertReturningID(ctx, tx, userTable, u)
+			if err != nil {
+				return mapError(err, "")
+			}
+			u.ID = id
+			if err := insertUserRelations(ctx, tx, u); err != nil {
+				return err
+			}
+			seenDepts := make(map[int64]bool, len(item.Departments))
+			for _, deptID := range item.Departments {
+				if deptID == 0 || seenDepts[deptID] {
+					continue
+				}
+				seenDepts[deptID] = true
+				if _, err := tx.Exec(ctx, `INSERT INTO user_departments
+					(institution_id, user_id, department_id, is_primary)
+					VALUES ($1,$2,$3,$4)`, u.InstitutionID, id, deptID, deptID == item.PrimaryID); err != nil {
+					return mapError(err, "")
+				}
+			}
+			for _, titleID := range uniqueIDs(item.JobTitleIDs) {
+				if _, err := tx.Exec(ctx, `INSERT INTO job_title_members (job_title_id, user_id)
+					VALUES ($1,$2) ON CONFLICT DO NOTHING`, titleID, id); err != nil {
+					return mapError(err, "")
+				}
+			}
+			for _, roleID := range uniqueIDs(item.RoleIDs) {
+				if _, err := tx.Exec(ctx, `INSERT INTO role_users (role_id, user_id)
+					VALUES ($1,$2) ON CONFLICT DO NOTHING`, roleID, id); err != nil {
+					return mapError(err, "")
+				}
+			}
+		}
+		return nil
+	})
+}
+
+func uniqueIDs(ids []int64) []int64 {
+	out := make([]int64, 0, len(ids))
+	seen := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		if id == 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}

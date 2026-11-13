@@ -121,24 +121,53 @@ type UserRepository interface {
 	Count(ctx context.Context, q ListQuery) (int64, error)
 	// ListByNames 按账号名批量取用户（用户组详情、部门成员校验用；只返回本组织内的）
 	ListByNames(ctx context.Context, institutionID int64, names []string) ([]*User, error)
+	// ListByPhones returns users by phone within the institution (bulk import conflict check).
+	ListByPhones(ctx context.Context, institutionID int64, phones []string) ([]*User, error)
 	// ListByIDs returns users by primary key within the institution.
 	ListByIDs(ctx context.Context, institutionID int64, ids []int64) ([]*User, error)
 	// ExistingIDs returns active user IDs that belong to the institution.
 	ExistingIDs(ctx context.Context, institutionID int64, ids []int64) (map[int64]bool, error)
 	UpdateLastSignin(ctx context.Context, id int64, at time.Time, ip string) error
-	SetOnline(ctx context.Context, id int64, online bool) error
-	// PasswordHistory 读取最近 N 条密码哈希（用于组织密码策略校验）
-	PasswordHistory(ctx context.Context, institutionID int64, user string, limit int) ([]string, error)
+	// ListByRegistrationSyncer returns users created by the given inbound syncer.
+	ListByRegistrationSyncer(ctx context.Context, institutionID, syncerID int64, limit int) ([]*User, error)
+	// PasswordHistory returns recent passwords with the algorithm and salt used
+	// when each entry was written (for organization password-reuse checks).
+	PasswordHistory(ctx context.Context, institutionID int64, user string, limit int) ([]PasswordHistoryEntry, error)
 	// CountAdmins 统计组织内**仍可登录**的管理员数量（"最后一个管理员"防呆用：排除已删除/已禁用）
 	CountAdmins(ctx context.Context, institutionID int64) (int64, error)
 
 	// 外部身份绑定
 	GetIdentity(ctx context.Context, institutionID int64, provider, providerUserID string) (*UserIdentity, error)
 	GetIdentitiesByUser(ctx context.Context, institutionID int64, user string) ([]*UserIdentity, error)
+	// CreateManyWithRelations 在同一事务内创建多条用户并写入部门 / 职务 / 角色关联（导入批次）。
+	// 任一失败整批回滚；事务内会再查一次账号名 / 邮箱冲突，避免预检与写入之间的竞态。
+	// 返回后每个 item.User.ID 已回填。
+	CreateManyWithRelations(ctx context.Context, items []UserBatchItem) error
 	// CreateWithIdentity 事务内创建用户并绑定外部身份（JIT 供给；红线 §3.1-6）
 	CreateWithIdentity(ctx context.Context, u *User, identity *UserIdentity) (int64, error)
 	BindIdentity(ctx context.Context, identity *UserIdentity) (int64, error)
 	UnbindIdentity(ctx context.Context, id int64) error
+}
+
+// UserImportRepository 用户导入记录仓库接口
+// 存储: PostgreSQL（user_imports / user_import_rows）
+type UserImportRepository interface {
+	// Create 写入导入记录（ID 回填）
+	Create(ctx context.Context, item *UserImport) error
+	// Update 刷新汇总计数与状态
+	Update(ctx context.Context, item *UserImport) error
+	// Get 按主键取（校验组织归属）
+	Get(ctx context.Context, institutionID, id int64) (*UserImport, error)
+	List(ctx context.Context, q UserImportListQuery) ([]*UserImport, error)
+	Count(ctx context.Context, institutionID int64) (int64, error)
+	// CreateRows 批量写入逐行结果（(import_id, row_number) 冲突时忽略，续写幂等）
+	CreateRows(ctx context.Context, rows []*UserImportRow) error
+	// ListRows 按行号升序列出逐行结果
+	ListRows(ctx context.Context, importID int64) ([]*UserImportRow, error)
+	// MarkStaleFailed 把 updated_at 早于 before 且仍为 queued/running 的记录标记失败
+	MarkStaleFailed(ctx context.Context, before time.Time) (int64, error)
+	// PurgeBefore 删除创建时间早于 before 的导入记录（级联删行）
+	PurgeBefore(ctx context.Context, before time.Time) (int64, error)
 }
 
 // ApplicationRepository 应用仓库接口
@@ -399,7 +428,7 @@ type SessionRepository interface {
 // RateLimitRepository 限流仓库接口
 // 存储: Redis
 type RateLimitRepository interface {
-	// Incr 自增计数；首次写入时设置窗口 TTL。
+	// Incr atomically increments the counter and ensures the window TTL is set.
 	Incr(ctx context.Context, key string, ttl time.Duration) (int64, error)
 	Get(ctx context.Context, key string) (int64, error)
 	Reset(ctx context.Context, key string) error

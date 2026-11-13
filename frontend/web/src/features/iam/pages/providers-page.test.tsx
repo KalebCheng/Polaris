@@ -24,6 +24,20 @@ vi.mock('../api', () => ({
     }),
     list: async () => ({
       items: [
+        {
+          id: 8,
+          institution_id: 1,
+          name: 'mail-primary',
+          display_name: '主邮件通道',
+          category: 'email',
+          type: 'smtp',
+          state: 'active',
+          config: { host: 'smtp.example.com' },
+          policy: {},
+          has_secret: true,
+          created_at: '',
+          updated_at: '',
+        },
         // 单例类别里启用中的那一个：卡片必须标出「当前生效」，并且能一键停用
         {
           id: 9,
@@ -50,10 +64,10 @@ vi.mock('../api', () => ({
   },
 }))
 
-function renderPage() {
+function renderPage(category = 'storage') {
   return render(
     <I18nextProvider i18n={i18n}>
-      <MemoryRouter initialEntries={['/institutions/1/providers?category=storage']}>
+      <MemoryRouter initialEntries={[`/institutions/1/providers?category=${category}`]}>
         <ProvidersPage />
       </MemoryRouter>
     </I18nextProvider>,
@@ -80,5 +94,12 @@ describe('ProvidersPage', () => {
     // 「当前生效」徽标 + 停用快捷开关（单例类别同一组织只允许一个启用项）
     expect(await screen.findByText(i18n.t('providers.inUse'))).toBeInTheDocument()
     expect(screen.getByRole('button', { name: i18n.t('common.disable') })).toBeInTheDocument()
+  })
+
+  it('邮件 / 短信提供商卡片提供独立的「模板」入口', async () => {
+    renderPage('email')
+    expect(
+      await screen.findByRole('button', { name: i18n.t('providers.templates.manage') }),
+    ).toBeInTheDocument()
   })
 })

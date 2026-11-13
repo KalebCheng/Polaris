@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"polaris/internal/auth"
+	bizerrors "polaris/internal/errors"
 )
 
 // currentUser 返回当前登录用户名（未认证为空）。
@@ -51,6 +52,24 @@ func instID(c *gin.Context) int64 {
 		return authCtx.InstitutionID
 	}
 	return 0
+}
+
+// tenantInstitution resolves the target institution for tenant-scoped writes and
+// rejects a non-platform administrator trying to address another organization.
+// instID deliberately remains permissive for platform-wide read endpoints.
+func tenantInstitution(c *gin.Context) (int64, error) {
+	authCtx := auth.GetAuthContext(c)
+	if authCtx == nil || !authCtx.IsAuthenticated() {
+		return 0, bizerrors.ErrUnauthorized
+	}
+	institutionID := instID(c)
+	if institutionID == 0 {
+		return 0, bizerrors.ErrInvalidParams.WithDetail("institution", "required")
+	}
+	if institutionID != authCtx.InstitutionID && !isPlatformAdmin(c) {
+		return 0, bizerrors.ErrForbidden.WithDetail("institution_id", institutionID)
+	}
+	return institutionID, nil
 }
 
 // fmtSscan 解析字符串为整数（包装 fmt.Sscan）。

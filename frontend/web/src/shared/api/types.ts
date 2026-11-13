@@ -101,13 +101,12 @@ export interface User {
   gender?: string
   birthday?: string
   education?: string
-  score: number
   is_admin: boolean
   is_forbidden: boolean
   is_deleted: boolean
-  is_online: boolean
   mfa_enabled: boolean
   has_password: boolean
+  must_change_password?: boolean
   register_type?: string
   register_source?: string
   last_signin_time?: string | null
@@ -126,6 +125,7 @@ export interface UserSecurityStatus {
   mfa_type?: string
   /** 恢复码剩余数量（只回数量，不回码本身） */
   mfa_recovery_codes_left: number
+  must_change_password?: boolean
 }
 
 /** 一条登录失败计数记录（按应用 + IP 维度） */
@@ -287,14 +287,37 @@ export interface SigninMethod {
 }
 
 /** 通知提供商模板（provider_email_templates / provider_sms_templates） */
+export interface ProviderTemplateParam {
+  /** 厂商模板变量名（如 Alibaba 模板里的 code1） */
+  key: string
+  /** 平台占位符（code / minutes / link …） */
+  source: string
+}
+
+export interface TemplateVariable {
+  key: string
+  label: string
+  hint?: string
+  required?: boolean
+}
+
+/** 通知模板场景：占位符按渠道 + 场景收敛（GET /providers/message-template-scenes） */
+export interface TemplateSceneInfo {
+  channel: 'email' | 'sms'
+  scene: 'login_code' | 'mfa_code' | 'magic_link'
+  label: string
+  variables: TemplateVariable[]
+}
+
 export interface ProviderTemplate {
   id: number
   institution_id: number
   provider_id: number
+  channel: 'email' | 'sms'
   name: string
   scene: 'login_code' | 'mfa_code' | 'magic_link'
   template_code: string
-  template_params: string[]
+  template_params: ProviderTemplateParam[]
   subject: string
   content: string
   is_default: boolean
@@ -306,7 +329,7 @@ export interface ProviderTemplateInput {
   name: string
   scene: 'login_code' | 'mfa_code' | 'magic_link'
   template_code?: string
-  template_params?: string[]
+  template_params?: ProviderTemplateParam[]
   subject?: string
   content?: string
   is_default?: boolean
@@ -947,6 +970,10 @@ export interface AuthStatus {
   authenticated: boolean
   /** 主认证已通过但 MFA 尚未完成；API 只能访问 MFA 必要端点 */
   mfa_pending?: boolean
+  /** 已登录但必须先修改密码；API 只能访问改密必要端点 */
+  password_change_required?: boolean
+  /** 强制改密时是否仍需要旧密码（非密码登录创建的受限会话为 true） */
+  password_change_requires_old_password?: boolean
   institution_id: number
   /** 组织展示名（账号菜单与个人资料展示；不直接用主键） */
   institution_name?: string
@@ -975,6 +1002,8 @@ export interface LoginResponse {
   roles?: string[]
   mfa?: { required: boolean; type: string; enroll?: boolean; remember_hours?: number }
   identity_linked?: boolean
+  password_change_required?: boolean
+  password_change_requires_old_password?: boolean
 }
 
 /** 身份连接：方向（入=从外部拉取；出=推送给下游应用） */

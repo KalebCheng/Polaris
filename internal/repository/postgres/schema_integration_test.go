@@ -62,9 +62,13 @@ func TestMigrationBaselineSupportsDownAndUp(t *testing.T) {
 	_, pool := integrationClient(t)
 	ctx := context.Background()
 	dir := filepath.Join("..", "..", "..", "migrations")
+	migrations, err := migrator.LoadDir(dir)
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
 
-	down, err := migrator.Down(ctx, pool, dir, 1)
-	if err != nil || len(down) != 1 {
+	down, err := migrator.Down(ctx, pool, dir, len(migrations))
+	if err != nil || len(down) != len(migrations) {
 		t.Fatalf("down = %v, err = %v", down, err)
 	}
 	var usersTable *string
@@ -75,7 +79,7 @@ func TestMigrationBaselineSupportsDownAndUp(t *testing.T) {
 		t.Fatalf("users table still exists after down: %s", *usersTable)
 	}
 	up, err := migrator.Up(ctx, pool, dir)
-	if err != nil || len(up) != 1 {
+	if err != nil || len(up) != len(migrations) {
 		t.Fatalf("up = %v, err = %v", up, err)
 	}
 }

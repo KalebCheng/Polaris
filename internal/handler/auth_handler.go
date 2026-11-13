@@ -474,6 +474,20 @@ func (h *AuthHandler) ChangePassword(c *gin.Context) {
 	if !bindJSON(c, &req) {
 		return
 	}
+	if authCtx.PasswordChangeRequired {
+		sessionID, err := h.authService.ChangePasswordAndRenewSession(
+			c.Request.Context(), authCtx.SessionID, req.OldPassword, req.NewPassword)
+		if err != nil {
+			bizerrors.Fail(c, err)
+			return
+		}
+		if err := h.setSessionCookie(c, sessionID); err != nil {
+			bizerrors.Fail(c, err)
+			return
+		}
+		bizerrors.RenderSuccess(c, gin.H{"status": "ok"})
+		return
+	}
 	if err := h.userService.ChangePassword(c.Request.Context(), authCtx.InstitutionID, authCtx.Name, req.OldPassword, req.NewPassword); err != nil {
 		bizerrors.Fail(c, err)
 		return

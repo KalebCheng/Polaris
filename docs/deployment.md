@@ -66,7 +66,7 @@ docker pull kalebcheng/polaris:latest
 
 | 变量 | 必填 | 说明 |
 |---|---|---|
-| `POLARIS_ENV` | 是 | 生产必须设为 `production` |
+| `POLARIS_DEBUG` | 生产必填 | 生产必须显式设为 `false`（release）；`true` 仅用于本地调试 |
 | `POLARIS_DB_HOST` | 是 | PostgreSQL 地址 |
 | `POLARIS_DB_PORT` | 否 | 默认 `5432` |
 | `POLARIS_DB_USER` | 是 | PostgreSQL 用户 |
@@ -88,11 +88,14 @@ docker pull kalebcheng/polaris:latest
 | `POLARIS_MIGRATIONS_DIR` | 否 | 镜像内默认 `/app/migrations` |
 | `POLARIS_CONFIG` | 否 | 镜像内默认 `/app/configs/app.yaml` |
 
+`POLARIS_ENV` 已废弃，仅保留一次版本周期的兼容映射；新部署请使用 `POLARIS_DEBUG`。
+
 > **`POLARIS_CREDENTIAL_ENC_KEY` 必须备份。** 提供商密钥、同步器密钥、存储密钥、TOTP 密钥都依赖它解密；
 > 丢失后这些数据无法恢复。生产环境未配置该变量时应用会拒绝启动。
 
-> 外部身份提供方（钉钉/微信/飞书/OIDC 等）的权威配置在控制台「提供商」页面；`POLARIS_OAUTH_*`
-> 仅用于首次启动的种子写入，修改后请重启或直接以控制台为准。
+> 外部身份提供方（钉钉/微信/飞书/OIDC 等）的权威配置在控制台「提供商」页面。默认
+> `configs/app.yaml` 不再包含 provider 示例；旧部署自定义的 `auth.oauth.providers` 仍可作为
+> 首次启动种子，`POLARIS_OAUTH_*` 也只服务于这条旧链路。新部署请直接在控制台维护。
 
 ---
 
@@ -138,7 +141,7 @@ docker compose down -v         # 停止并删除数据卷（会清空数据）
 ```bash
 sudo install -m 600 /dev/null /etc/polaris/polaris.env
 sudo tee /etc/polaris/polaris.env >/dev/null <<'EOF'
-POLARIS_ENV=production
+POLARIS_DEBUG=false
 POLARIS_DB_HOST=pg.internal
 POLARIS_DB_PORT=5432
 POLARIS_DB_USER=polaris
@@ -225,6 +228,12 @@ docker run --rm \
 `certs.private_key` 与 `institutions.default_password_enc` 保存的是 AES-GCM 密文。
 本次的单向升级脚本见 `docs/upgrades/sensitive-storage-hardening.up.sql`。
 
+迁移 `003_user_auth_normalization` 会拆分密码、登录统计并移除 `users.mfa_*`。执行前会检查
+“只在旧 MFA 列中存在、未落到 `user_mfa_credentials`”的绑定；发现这类数据会主动报错中止，
+需要先迁移或让相关用户重新绑定。`004_user_registration_cleanup` 会把注册来源迁到
+`user_registrations` 并清理冗余索引；`005_password_change_policy` 会为密码历史补上失效时间，
+并把当前密码登记为唯一的 active 历史行，之后导入/管理员重置的用户首次登录会被要求改密。
+
 约束：
 
 - 迁移文件不可变，已发布迁移禁止修改，只能新增。
@@ -247,7 +256,21 @@ server {
     ssl_certificate     /etc/letsencrypt/live/sso.example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/sso.example.com/privkey.pem;
 
-    client_max_body_size 8m;
+    # 用户导入默认允许 10 MiB 文件，额外留出 multipart 开销。
+    client_max_body_size 16m;
+
+    # 用户导入是同步批处理，默认代理超时会切断长导入。
+    location = /api/v1/users/import {
+        proxy_pass http://127.0.0.1:8100;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection        "";
+        proxy_read_timeout 1800s;
+        proxy_send_timeout 1800s;
+    }
 
     location / {
         proxy_pass http://127.0.0.1:8100;
@@ -267,6 +290,9 @@ server {
 POLARIS_ISSUER=https://sso.example.com
 POLARIS_COOKIE_SECURE=true
 POLARIS_CSRF_ALLOWED_ORIGINS=https://sso.example.com
+# Only these reverse proxies may supply X-Forwarded-For / X-Real-IP.
+# Local nginx is the default; add the proxy address if it runs elsewhere.
+POLARIS_TRUSTED_PROXIES=127.0.0.1,::1
 ```
 
 要点：
@@ -378,7 +404,7 @@ kalebcheng/polaris:sha-<短提交>
 ```bash
 docker build -t kalebcheng/polaris:dev .
 docker run --rm -p 8100:80 \
-  -e POLARIS_ENV=production \
+  -e POLARIS_DEBUG=false \
   -e POLARIS_DB_HOST=host.docker.internal \
   -e POLARIS_DB_PASSWORD="$POLARIS_DB_PASSWORD" \
   -e POLARIS_REDIS_HOST=host.docker.internal \

@@ -93,3 +93,36 @@ func TestUploadInstitution(t *testing.T) {
 		})
 	}
 }
+
+func TestTenantInstitutionRejectsCrossTenantAccess(t *testing.T) {
+	tenant := &auth.AuthContext{UserID: 2, InstitutionID: 1, Name: "operator"}
+	admin := &auth.AuthContext{UserID: 1, InstitutionID: 1, Name: "admin", IsAdmin: true}
+
+	tests := []struct {
+		name   string
+		target string
+		ctx    *auth.AuthContext
+		want   int64
+		code   string
+	}{
+		{"tenant own organization", "/api/v1/users/import?institution=1", tenant, 1, ""},
+		{"tenant other organization", "/api/v1/users/import?institution=2", tenant, 0, bizerrors.CodeForbidden.String()},
+		{"platform admin other organization", "/api/v1/users/import?institution=2", admin, 2, ""},
+		{"unauthenticated", "/api/v1/users/import?institution=1", nil, 0, bizerrors.CodeUnauthorized.String()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tenantInstitution(newQueryContext(tt.target, tt.ctx))
+			if tt.code == "" {
+				if err != nil || got != tt.want {
+					t.Fatalf("got (%d, %v), want (%d, nil)", got, err, tt.want)
+				}
+				return
+			}
+			bizErr, ok := err.(*bizerrors.Error)
+			if !ok || bizErr.Code.String() != tt.code {
+				t.Fatalf("error = %v, want code %s", err, tt.code)
+			}
+		})
+	}
+}

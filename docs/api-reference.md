@@ -104,6 +104,11 @@
 | GET | `/users/:name/identities` | `user:read` |
 | DELETE | `/users/:name/identities/:identityID` | `user:update` |
 | POST | `/users/:name/api-keys` | `user:update` |
+| GET | `/users/import/template?lang=zh\|en` | `user:read` | 下载导入模板 xlsx（数据表 + 列说明） |
+| POST | `/users/import` | `user:create` | 上传即导入（multipart：`file` + `delimiter` / `auto_create_departments` / `default_job_level_id`），单请求返回逐行报告；含 `roles` 列需 `role:update` |
+| GET | `/users/imports` | `user:read` | 导入记录分页 |
+| GET | `/users/imports/:id` | `user:read` | 导入记录 + 逐行结果（请求进行中用于轮询进度） |
+| GET | `/users/imports/:id/report.csv` | `user:read` | 下载失败 / 跳过行报告 |
 | GET/POST | `/job-titles` · GET/PUT/DELETE `/job-titles/:id` | `job_title:*` |
 | PUT | `/job-titles/:id/members` | `job_title:update` |
 | GET | `/job-titles/:id/detail` | `job_title:read` |
@@ -129,6 +134,7 @@
 | GET | `/applications/subject-options?type=user\|job_title\|department&keyword=&parent_id=&offset=&limit=` | `application:read` |
 | GET/POST | `/providers` · GET/PUT/DELETE `/providers/:id` | `provider:*` |
 | GET | `/providers/catalog` · POST `/providers/:id/test` | `provider:read/update` |
+| GET | `/providers/message-template-scenes` | `provider:read` |
 | GET/POST | `/providers/:id/message-templates` | `provider:read/update` |
 | GET/PUT/DELETE | `/providers/:id/message-templates/:templateId` | `provider:read/update/delete` |
 | GET/POST | `/certs` · GET/PUT/DELETE `/certs/:name` | `cert:*` |

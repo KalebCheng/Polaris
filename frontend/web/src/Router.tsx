@@ -24,6 +24,8 @@ const InstitutionOverviewPage = lazy(() => import('@/pages/institution-detail-pa
 const UsersPage = lazy(() => import('@/features/iam/pages/users-page'))
 const UserDetailPage = lazy(() => import('@/features/iam/pages/user-detail-page'))
 const UserEditPage = lazy(() => import('@/features/iam/pages/user-edit-page'))
+const UserImportPage = lazy(() => import('@/features/iam/pages/user-import-page'))
+const UserImportHistoryPage = lazy(() => import('@/features/iam/pages/user-import-history-page'))
 const JobTitlesPage = lazy(() => import('@/features/iam/pages/job-titles-page'))
 const JobLevelsPage = lazy(() => import('@/features/iam/pages/job-levels-page'))
 const JobTitleDetailPage = lazy(() => import('@/features/iam/pages/job-title-detail-page'))
@@ -32,6 +34,7 @@ const ApplicationsPage = lazy(() => import('@/features/iam/pages/applications-pa
 const ApplicationEditPage = lazy(() => import('@/features/iam/pages/application-edit-page'))
 const ProvidersPage = lazy(() => import('@/features/iam/pages/providers-page'))
 const ProviderEditPage = lazy(() => import('@/features/iam/pages/provider-edit-page'))
+const ProviderTemplatesPage = lazy(() => import('@/features/iam/pages/provider-templates-page'))
 const ConnectionsPage = lazy(() => import('@/features/iam/pages/connections-page'))
 const AsyncdPage = lazy(() => import('@/features/iam/pages/asyncd-page'))
 const ConnectionEditPage = lazy(() => import('@/features/iam/pages/connection-edit-page'))
@@ -141,6 +144,8 @@ export function Router() {
                 <Route path="departments" element={<DepartmentsPage />} />
                 <Route path="users" element={<UsersPage />} />
                 <Route path="users/new" element={<UserEditPage />} />
+                <Route path="users/import" element={<UserImportPage />} />
+                <Route path="users/imports" element={<UserImportHistoryPage />} />
                 <Route path="users/:id" element={<UserDetailPage />} />
                 <Route path="users/:id/edit" element={<UserEditPage />} />
                 <Route path="job-titles" element={<JobTitlesPage />} />
@@ -152,6 +157,7 @@ export function Router() {
                 <Route path="providers" element={<ProvidersPage />} />
                 <Route path="providers/new" element={<ProviderEditPage />} />
                 <Route path="providers/:id" element={<ProviderEditPage />} />
+                <Route path="providers/:id/templates" element={<ProviderTemplatesPage />} />
                 <Route path="connections" element={<ConnectionsPage />} />
                 <Route path="connections/new" element={<ConnectionEditPage />} />
                 <Route path="connections/:id" element={<ConnectionEditPage />} />

@@ -22,13 +22,10 @@ type Server struct {
 
 // New 创建 HTTP 服务器
 func New(cfg *config.AppConfig) *Server {
-	switch cfg.Env {
-	case "production":
-		gin.SetMode(gin.ReleaseMode)
-	case "test":
-		gin.SetMode(gin.TestMode)
-	default:
+	if cfg.DebugEnabled() {
 		gin.SetMode(gin.DebugMode)
+	} else {
+		gin.SetMode(gin.ReleaseMode)
 	}
 	return &Server{router: gin.New(), cfg: cfg}
 }
@@ -46,7 +43,7 @@ func (s *Server) Start() error {
 		IdleTimeout:    120 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
-	logger.Info("starting http server", "port", s.cfg.Port, "env", s.cfg.Env)
+	logger.Info("starting http server", "port", s.cfg.Port, "debug", s.cfg.DebugEnabled())
 	go func() {
 		if err := s.srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Fatal("http server error", "error", err)

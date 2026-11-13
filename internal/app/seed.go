@@ -107,7 +107,7 @@ func seed(ctx context.Context, db *dbclient.Client, cipher *auth.SecretCipher) e
 		"http://127.0.0.1:5173/sso/callback",
 		"http://localhost:8000/sso/callback",
 	}
-	if _, err := appRepo.Create(ctx, &repository.Application{
+	builtInAppID, err := appRepo.Create(ctx, &repository.Application{
 		InstitutionID: orgID, Code: builtInApp, Name: "内置应用",
 		Category: "default", Type: "oidc", CertID: &builtInCertRecord.ID,
 		// access_mode 从 031 起有 CHECK 约束（all | restricted）；缺省零值空串会直接违反约束
@@ -134,7 +134,8 @@ func seed(ctx context.Context, db *dbclient.Client, cipher *auth.SecretCipher) e
 			{Name: "phone", DisplayName: "Phone"},
 		},
 		State: "active",
-	}); err != nil {
+	})
+	if err != nil {
 		return err
 	}
 
@@ -193,7 +194,7 @@ func seed(ctx context.Context, db *dbclient.Client, cipher *auth.SecretCipher) e
 		PasswordHash: hash, PasswordType: auth.NormalizePasswordType(org.PasswordType),
 		PasswordUpdatedAt: &now,
 		DisplayName:       "管理员", Email: "admin@polaris.local", EmailVerified: true,
-		IsAdmin: true, Language: "zh", SignupApplication: builtInApp,
+		IsAdmin: true, Language: "zh", SignupApplication: builtInApp, SignupApplicationID: builtInAppID,
 	}
 	adminID, err := userRepo.Create(ctx, adminUser)
 	if err != nil {

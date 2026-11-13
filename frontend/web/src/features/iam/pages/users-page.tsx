@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
-import { Plus } from 'lucide-react'
+import { Plus, Upload } from 'lucide-react'
 import { Badge, Button } from '@/shared/ui'
 import { PageShell } from '@/widgets/layout/page-shell'
 import { ListToolbar } from '@/widgets/layout/list-toolbar'
@@ -149,6 +149,9 @@ export default function UsersPage() {
           ) : null}
           {user.mfa_enabled ? <Badge variant="secondary">{t('users.mfa')}</Badge> : null}
           {!user.has_password ? <Badge variant="outline">{t('users.noPassword')}</Badge> : null}
+          {user.must_change_password ? (
+            <Badge variant="warning">{t('users.mustChangePassword')}</Badge>
+          ) : null}
         </div>
       ),
     },
@@ -188,9 +191,14 @@ export default function UsersPage() {
       titleKey="users.title"
       subtitleKey="users.subtitle"
       actions={
-        <Button onClick={() => navigate(`/institutions/${institutionId}/users/new`)}>
-          <Plus className="size-4" /> {t('common.create')}
-        </Button>
+        <>
+          <Button variant="outline" onClick={() => navigate(`/institutions/${institutionId}/users/import`)}>
+            <Upload className="size-4" /> {t('users.import.entry')}
+          </Button>
+          <Button onClick={() => navigate(`/institutions/${institutionId}/users/new`)}>
+            <Plus className="size-4" /> {t('common.create')}
+          </Button>
+        </>
       }
     >
       <ResourceTable

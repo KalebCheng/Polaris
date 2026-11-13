@@ -12,7 +12,7 @@ func TestLoadAppliesEnvOverrides(t *testing.T) {
 	content := `
 app:
   name: polaris
-  env: development
+  debug: true
   port: 8100
 database:
   host: yaml-db
@@ -42,7 +42,7 @@ security:
 		t.Fatalf("写入配置失败: %v", err)
 	}
 
-	t.Setenv(EnvAppEnv, "production")
+	t.Setenv(EnvAppDebug, "false")
 	t.Setenv(EnvAppPort, "9100")
 	t.Setenv(EnvJWTSecret, "injected-secret")
 	t.Setenv(EnvDBSSLMode, "require")
@@ -51,6 +51,10 @@ security:
 	t.Setenv(EnvRedisDB, "3")
 	t.Setenv(EnvRedisPassword, "injected-redis-pass")
 	t.Setenv(EnvCSRFAllowed, "https://a.example.com, https://b.example.com")
+	t.Setenv(EnvTrustedProxies, "10.0.0.10, 10.0.0.11")
+	t.Setenv(EnvCodeSendHourlyMax, "7")
+	t.Setenv(EnvCodeSendDailyMax, "11")
+	t.Setenv(EnvCodeSendIPMinuteMax, "4")
 	// Provider 级密钥：POLARIS_OAUTH_DINGTALK_CLIENT_SECRET
 	t.Setenv(EnvOAuthSecretPrefix+"DINGTALK"+EnvOAuthSecretSuffix, "injected-client-secret")
 
@@ -58,8 +62,8 @@ security:
 	if err != nil {
 		t.Fatalf("Load 失败: %v", err)
 	}
-	if cfg.App.Env != "production" {
-		t.Errorf("app.env = %q, 期望 production", cfg.App.Env)
+	if cfg.App.DebugEnabled() {
+		t.Error("app.debug 应为 false")
 	}
 	if cfg.App.Port != 9100 {
 		t.Errorf("app.port = %d, 期望 9100", cfg.App.Port)
@@ -81,6 +85,16 @@ security:
 		cfg.Security.CSRFAllowedOrigins[1] != "https://b.example.com" {
 		t.Errorf("CSRF 白名单解析错误: %v", cfg.Security.CSRFAllowedOrigins)
 	}
+	if len(cfg.Security.TrustedProxies) != 2 ||
+		cfg.Security.TrustedProxies[0] != "10.0.0.10" ||
+		cfg.Security.TrustedProxies[1] != "10.0.0.11" {
+		t.Errorf("trusted proxies 解析错误: %v", cfg.Security.TrustedProxies)
+	}
+	if cfg.Auth.RateLimit.VerificationCode.SendHourlyMax != 7 ||
+		cfg.Auth.RateLimit.VerificationCode.SendDailyMax != 11 ||
+		cfg.Auth.RateLimit.VerificationCode.SendIPMinuteMax != 4 {
+		t.Errorf("验证码限流环境变量未注入: %+v", cfg.Auth.RateLimit.VerificationCode)
+	}
 	prov, ok := cfg.Auth.OAuth.Providers["dingtalk"]
 	if !ok {
 		t.Fatal("未解析出 dingtalk provider")
@@ -93,9 +107,98 @@ security:
 	}
 }
 
+// Compatibility: existing deployments may still start with
+// POLARIS_ENV=production. Without the new POLARIS_DEBUG, this must map to
+// release mode instead of silently falling back to debug.
+func TestLoadMapsLegacyEnvToDebug(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.yaml")
+	content := `
+app:
+  name: polaris
+  env: production
+  port: 8100
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("写入配置失败: %v", err)
+	}
+	t.Setenv(EnvLegacyAppEnv, "production")
+	t.Setenv(EnvAppDebug, "")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	if cfg.App.DebugEnabled() {
+		t.Error("POLARIS_ENV=production 应映射为 debug=false")
+	}
+}
+
+func TestLoadMapsLegacyDevelopmentToDebug(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.yaml")
+	content := `
+app:
+  name: polaris
+  env: development
+  port: 8100
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("写入配置失败: %v", err)
+	}
+	t.Setenv(EnvLegacyAppEnv, "")
+	t.Setenv(EnvAppDebug, "")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	if !cfg.App.DebugEnabled() {
+		t.Error("旧 env=development 应映射为 debug=true")
+	}
+}
+
 func TestLoadMissingFile(t *testing.T) {
 	if _, err := Load(filepath.Join(t.TempDir(), "nope.yaml")); err == nil {
 		t.Fatal("配置文件不存在应当报错")
+	}
+}
+
+func TestLoadDefaultsTrustedProxiesWhenUnset(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.yaml")
+	if err := os.WriteFile(path, []byte("app:\n  name: polaris\n"), 0o600); err != nil {
+		t.Fatalf("写入配置失败: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	if len(cfg.Security.TrustedProxies) != 2 ||
+		cfg.Security.TrustedProxies[0] != "127.0.0.1" ||
+		cfg.Security.TrustedProxies[1] != "::1" {
+		t.Fatalf("trusted proxies default = %v", cfg.Security.TrustedProxies)
+	}
+}
+
+func TestLoadExplicitlyEmptyTrustedProxies(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.yaml")
+	content := `
+security:
+  trusted_proxies: []
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("写入配置失败: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	if len(cfg.Security.TrustedProxies) != 0 {
+		t.Fatalf("explicit empty trusted proxies should stay empty, got %v", cfg.Security.TrustedProxies)
 	}
 }
 

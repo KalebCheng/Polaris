@@ -121,19 +121,20 @@ func (s *SyncerService) applyPlan(ctx context.Context, sy *repository.Syncer, pl
 		for _, ext := range plan.userCreate {
 			name := sanitizeName(ext.Username)
 			user := &repository.User{
-				UID:            uuid.NewString(),
-				InstitutionID:  sy.InstitutionID,
-				Name:           name,
-				DisplayName:    firstNonEmptyStr(ext.Name, name),
-				Email:          ext.Email,
-				Phone:          ext.Phone,
-				Avatar:         ext.Avatar,
-				Title:          ext.Title,
-				Location:       ext.Location,
-				CountryCode:    ext.CountryCode,
-				EmailVerified:  ext.Email != "",
-				RegisterType:   "syncer",
-				RegisterSource: sy.Name,
+				UID:                  uuid.NewString(),
+				InstitutionID:        sy.InstitutionID,
+				Name:                 name,
+				DisplayName:          firstNonEmptyStr(ext.Name, name),
+				Email:                ext.Email,
+				Phone:                ext.Phone,
+				Avatar:               ext.Avatar,
+				Title:                ext.Title,
+				Location:             ext.Location,
+				CountryCode:          ext.CountryCode,
+				EmailVerified:        ext.Email != "",
+				RegisterType:         "syncer",
+				RegisterSource:       sy.Name,
+				RegistrationSyncerID: sy.ID,
 			}
 			id, err := s.users.Create(ctx, user)
 			if err != nil {

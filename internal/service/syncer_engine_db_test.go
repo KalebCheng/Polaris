@@ -59,7 +59,9 @@ func TestSyncEngineIdempotent_RequiresDB(t *testing.T) {
 		_ = client.Exec(ctx, `DELETE FROM syncer_user_links WHERE syncer_id=$1`, sy.ID)
 		_ = client.Exec(ctx, `DELETE FROM syncer_department_links WHERE syncer_id=$1`, sy.ID)
 		_ = client.Exec(ctx, `DELETE FROM user_departments WHERE syncer_id=$1`, sy.ID)
-		_ = client.Exec(ctx, `DELETE FROM users WHERE register_source=$1`, sy.Name)
+		_ = client.Exec(ctx, `DELETE FROM users WHERE id IN (
+			SELECT user_id FROM user_registrations WHERE registration_syncer_id=$1
+		)`, sy.ID)
 		_ = client.Exec(ctx, `DELETE FROM job_title_members WHERE job_title_id IN (SELECT id FROM job_titles WHERE name LIKE 'db-test-%')`)
 		_ = client.Exec(ctx, `DELETE FROM syncer_job_title_links WHERE syncer_id=$1`, sy.ID)
 		_ = client.Exec(ctx, `DELETE FROM job_titles WHERE name LIKE 'db-test-%'`)

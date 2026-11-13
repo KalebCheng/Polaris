@@ -63,15 +63,20 @@ frontend/web/               # 控制台前端
   `provider_sms` / `provider_captcha` / `provider_storage` / `provider_mfa`，仓库层聚合为 `repository.Provider`。
 - **消息模板按渠道拆表**：`provider_email_templates`（subject/content）与
   `provider_sms_templates`（template_code/template_params）；应用登录方式与短信 MFA 只引用对应渠道的模板主键。
+  模板在**提供商列表的「模板」入口**单独管理（`/providers/:id/templates`），不再放进提供商新增/编辑向导。
 - **MFA 按登录方式配置**：`mfa_enabled` 控制是否进入 MFA，`mfa_required` 控制未绑定用户是否必须完成绑定；
   已绑定用户始终校验，未绑定且非强制时每次登录提示绑定但可跳过。组织级 `mfa_policy` 已移除。
 - 运行时统一经 `provider.Runtime` 取配置（含密钥解密），经 `provider.Resolver` 构造外部 IdP 连接器；
   因此**改配置无需重启**。`configs/app.yaml` 的 `auth.oauth.providers` 仅作启动期种子。
 - 密钥一律 AES-GCM 入库，响应只回 `has_secret`；存量明文用 `polaris -rotate-provider-secrets` 回填。
-- **消息模板变量按声明装配**：短信模板的 `template_params` 声明模板内容用到的 `${变量}`（内置变量集见
-  `internal/service/provider/template.go`：code / minutes / phone / institution / application），
-  发送时**只装配声明过的**——阿里云对 `TemplateParam` 的变量名是严格匹配的（多一个少一个都会拒绝），
-  未知变量名在落库前就被拒绝；邮件模板使用 `subject` / `content`，魔法链接额外支持 `link`。
+- **消息模板占位符按场景收敛**：`internal/service/provider/template.go` 是渠道 / 场景 / 可用占位符的唯一声明处；
+  邮件登录验证码必须有 `{{code}}`，魔法链接必须有 `{{link}}`，短信场景必须有 `code` 映射。
+- **短信参数是显式映射**：`provider_sms_templates.template_params` 为 JSONB 数组
+  `[{ "key": "code1", "source": "code" }]`——`key` 是厂商模板里的变量名，`source` 是平台占位符；
+  发送时按 `source` 取值、以 `key` 组装 `TemplateParam`。阿里云对变量名严格匹配，未知 `source` 与
+  缺少必填占位符在落库前直接拒绝。
+- **邮件正文是富文本 HTML**：编辑器输出经后端标签 / 属性清洗后落库，发送时以
+  `multipart/alternative`（HTML + 纯文本替代）发出；历史纯文本模板会自动转换为段落。
 - **单例类别**：运行时"取一个用"的类别（`captcha` / `storage`）在同一组织内
   **最多一个启用项**（目录 `CategoryInfo.Singleton` 声明 + 服务层校验 + 迁移 028 的部分唯一索引兜底），
   界面上以「当前生效」徽标 + 一键启用/停用表达；`email` / `sms` / `mfa` / `oauth` 都可并存多个，
@@ -224,8 +229,9 @@ state 暂存于 Redis（一次性消费），登录后回跳地址经 `?from=` �
 
 ## 5. 数据库迁移
 
-当前仓库采用单一最新基线：`001_init.up.sql` 与 `001_init.down.sql`；不再保留历史升级脚本。
-迁移由内置 `pkg/migrator` 驱动（advisory lock 防并发，记录写入 `schema_migrations`）。
+迁移按编号顺序执行（当前 `001`–`006`）；**已发布的迁移不得修改**，新增结构/数据变更必须追加
+`00N_xxx.up.sql` / `00N_xxx.down.sql`。迁移由内置 `pkg/migrator` 驱动
+（advisory lock 防并发，记录写入 `schema_migrations`）。
 
 ```bash
 make migrate-up            # 应用全部未执行迁移
@@ -233,7 +239,7 @@ make migrate-down          # 回滚最近 1 步
 # 或用环境变量控制启动时自动迁移：POLARIS_DB_AUTO_MIGRATE=true|false
 ```
 
-- 基线变更必须先在一次性 PostgreSQL 上完成 up/down/up 验证；已有部署升级需单独走数据迁移流程。
+- 新增或变更迁移必须先在一次性 PostgreSQL 上完成 up/down/up 验证，并覆盖存量数据转换。
 - 约束（唯一 / 外键 / 检查）必须在迁移中声明，不依赖应用层兜底。
 - 多租户隔离：业务表以 `institution` 作为归属维度并对租户建立外键（`ON DELETE CASCADE`）。
 - `NOT NULL` 的数组/JSONB 列在仓库层必须用 `orEmpty` / `orEmptyMap` 兜底（历史教训：nil 切片写入触发 `23502`）。

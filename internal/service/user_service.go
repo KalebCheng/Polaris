@@ -75,8 +75,9 @@ func (s *UserService) ExternalIdentities(ctx context.Context, institutionID int6
 
 // CreateUserInput 创建用户入参
 type CreateUserInput struct {
-	User     *repository.User
-	Password string
+	User                  *repository.User
+	Password              string
+	RequirePasswordChange bool
 }
 
 // Create 创建用户
@@ -131,6 +132,7 @@ func (s *UserService) Create(ctx context.Context, actor string, in CreateUserInp
 		u.PasswordType = auth.NormalizePasswordType(org.PasswordType)
 		u.PasswordSalt = org.PasswordSalt
 	}
+	u.MustChangePassword = in.RequirePasswordChange && u.PasswordHash != ""
 	normalizeUserType(u)
 	var id int64
 	if u.DepartmentID != nil {
@@ -240,6 +242,7 @@ func (s *UserService) SetPassword(ctx context.Context, actor string, institution
 	u.PasswordHash = hash
 	u.PasswordType = auth.NormalizePasswordType(org.PasswordType)
 	u.PasswordSalt = org.PasswordSalt
+	u.MustChangePassword = true
 	if err := s.users.UpdatePassword(ctx, u, org.PasswordHistoryCount); err != nil {
 		return err
 	}
@@ -253,6 +256,19 @@ func (s *UserService) SetPassword(ctx context.Context, actor string, institution
 // ChangePassword 用户自助修改密码；账号尚无密码时（如 SSO 自动建号）直接完成首次设密，
 // 因此 oldPassword 只在已有密码时必须校验。
 func (s *UserService) ChangePassword(ctx context.Context, institutionID int64, name, oldPassword, newPassword string) error {
+	return s.changePassword(ctx, institutionID, name, oldPassword, newPassword, true)
+}
+
+// ForceChangePassword completes a password change for an already authenticated
+// restricted session. The session itself proves primary authentication, so the
+// user is not asked for the old password a second time.
+func (s *UserService) ForceChangePassword(ctx context.Context, institutionID int64, name, newPassword string) error {
+	return s.changePassword(ctx, institutionID, name, "", newPassword, false)
+}
+
+func (s *UserService) changePassword(
+	ctx context.Context, institutionID int64, name, oldPassword, newPassword string, verifyOld bool,
+) error {
 	u, err := s.users.GetByName(ctx, institutionID, name)
 	if err != nil {
 		return bizerrors.New(bizerrors.CodeUserNotFound, "user not found")
@@ -262,7 +278,7 @@ func (s *UserService) ChangePassword(ctx context.Context, institutionID int64, n
 		return bizerrors.ErrNotFound.WithDetail("institution_id", institutionID)
 	}
 	initial := u.PasswordHash == ""
-	if !initial && !auth.VerifyPasswordWith(oldPassword, u.PasswordHash, u.PasswordType, u.PasswordSalt) {
+	if verifyOld && !initial && !auth.VerifyPasswordWith(oldPassword, u.PasswordHash, u.PasswordType, u.PasswordSalt) {
 		return bizerrors.ErrInvalidCredentials
 	}
 	if err := s.validatePassword(ctx, org, u, newPassword); err != nil {
@@ -275,6 +291,7 @@ func (s *UserService) ChangePassword(ctx context.Context, institutionID int64, n
 	u.PasswordHash = hash
 	u.PasswordType = auth.NormalizePasswordType(org.PasswordType)
 	u.PasswordSalt = org.PasswordSalt
+	u.MustChangePassword = false
 	if initial {
 		if err := s.users.UpdateInitialPassword(ctx, u, org.PasswordHistoryCount); err != nil {
 			// 读取后密码被并发设置：按凭证错误返回，绝不把它当作"仍然没有密码"覆盖。
@@ -290,7 +307,9 @@ func (s *UserService) ChangePassword(ctx context.Context, institutionID int64, n
 		return err
 	}
 	action := "user.change_password"
-	if initial {
+	if !verifyOld {
+		action = "user.required_password_change"
+	} else if initial {
 		action = "user.set_password"
 	}
 	s.audits.Record(ctx, name, institutionID, action, name, nil)
@@ -301,13 +320,20 @@ func (s *UserService) validatePassword(ctx context.Context, org *repository.Inst
 	if err := auth.FromOptions(org.PasswordOptions).Validate(password); err != nil {
 		return bizerrors.New(bizerrors.CodeInvalidParams, err.Error())
 	}
+	// Even with reuse policy disabled, the new password must differ from the
+	// current one. This also covers legacy users whose current hash predates
+	// password_history.
+	if u.PasswordHash != "" &&
+		auth.VerifyPasswordWith(password, u.PasswordHash, u.PasswordType, u.PasswordSalt) {
+		return bizerrors.New(bizerrors.CodeInvalidParams, "new password must not match current password")
+	}
 	if org.PasswordHistoryCount > 0 {
 		hashes, err := s.users.PasswordHistory(ctx, org.ID, u.Name, org.PasswordHistoryCount)
 		if err != nil {
 			return err
 		}
 		for _, h := range hashes {
-			if auth.VerifyPasswordWith(password, h, org.PasswordType, org.PasswordSalt) {
+			if auth.VerifyPasswordWith(password, h.PasswordHash, h.PasswordType, h.PasswordSalt) {
 				return bizerrors.New(bizerrors.CodeInvalidParams, "new password must not reuse recent passwords")
 			}
 		}
