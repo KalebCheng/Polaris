@@ -34,6 +34,7 @@ const ApplicationsPage = lazy(() => import('@/features/iam/pages/applications-pa
 const ApplicationEditPage = lazy(() => import('@/features/iam/pages/application-edit-page'))
 const ProvidersPage = lazy(() => import('@/features/iam/pages/providers-page'))
 const ProviderEditPage = lazy(() => import('@/features/iam/pages/provider-edit-page'))
+const ProviderTemplatesPage = lazy(() => import('@/features/iam/pages/provider-templates-page'))
 const ConnectionsPage = lazy(() => import('@/features/iam/pages/connections-page'))
 const AsyncdPage = lazy(() => import('@/features/iam/pages/asyncd-page'))
 const ConnectionEditPage = lazy(() => import('@/features/iam/pages/connection-edit-page'))
@@ -156,6 +157,7 @@ export function Router() {
                 <Route path="providers" element={<ProvidersPage />} />
                 <Route path="providers/new" element={<ProviderEditPage />} />
                 <Route path="providers/:id" element={<ProviderEditPage />} />
+                <Route path="providers/:id/templates" element={<ProviderTemplatesPage />} />
                 <Route path="connections" element={<ConnectionsPage />} />
                 <Route path="connections/new" element={<ConnectionEditPage />} />
                 <Route path="connections/:id" element={<ConnectionEditPage />} />

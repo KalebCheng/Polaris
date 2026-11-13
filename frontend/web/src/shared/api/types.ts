@@ -287,14 +287,37 @@ export interface SigninMethod {
 }
 
 /** 通知提供商模板（provider_email_templates / provider_sms_templates） */
+export interface ProviderTemplateParam {
+  /** 厂商模板变量名（如 Alibaba 模板里的 code1） */
+  key: string
+  /** 平台占位符（code / minutes / link …） */
+  source: string
+}
+
+export interface TemplateVariable {
+  key: string
+  label: string
+  hint?: string
+  required?: boolean
+}
+
+/** 通知模板场景：占位符按渠道 + 场景收敛（GET /providers/message-template-scenes） */
+export interface TemplateSceneInfo {
+  channel: 'email' | 'sms'
+  scene: 'login_code' | 'mfa_code' | 'magic_link'
+  label: string
+  variables: TemplateVariable[]
+}
+
 export interface ProviderTemplate {
   id: number
   institution_id: number
   provider_id: number
+  channel: 'email' | 'sms'
   name: string
   scene: 'login_code' | 'mfa_code' | 'magic_link'
   template_code: string
-  template_params: string[]
+  template_params: ProviderTemplateParam[]
   subject: string
   content: string
   is_default: boolean
@@ -306,7 +329,7 @@ export interface ProviderTemplateInput {
   name: string
   scene: 'login_code' | 'mfa_code' | 'magic_link'
   template_code?: string
-  template_params?: string[]
+  template_params?: ProviderTemplateParam[]
   subject?: string
   content?: string
   is_default?: boolean

@@ -1188,8 +1188,26 @@ OAuth2 / OIDC 应用（客户端）及其登录、注册、令牌、会话、访
 
 | 子表 | 说明 |
 |---|---|
-| `provider_email_templates` | `subject` / `content`，scene 仅 login_code / magic_link |
-| `provider_sms_templates` | `template_code` / `template_params`，scene 仅 login_code / mfa_code |
+| `provider_email_templates` | `subject` / `content`（富文本 HTML，服务端清洗），scene 仅 login_code / magic_link |
+| `provider_sms_templates` | `template_code` / `template_params`（JSONB 数组 `[{"key":"code1","source":"code"}]`：厂商变量名 → 平台占位符），scene 仅 login_code / mfa_code |
+
+> 升级说明：`006_provider_template_param_mapping` 会把旧的 `template_params text[]` 转为
+> 同名映射（`key = source = 变量名`）并补数组类型检查。手工等价 SQL 如下：
+>
+> ```sql
+> ALTER TABLE public.provider_sms_templates
+>   ALTER COLUMN template_params TYPE jsonb
+>   USING to_jsonb(template_params);
+> UPDATE public.provider_sms_templates
+>   SET template_params = COALESCE(
+>     (SELECT jsonb_agg(jsonb_build_object('key', v.value, 'source', v.value))
+>      FROM jsonb_array_elements_text(template_params) AS v(value)),
+>     '[]'::jsonb
+>   );
+> ALTER TABLE public.provider_sms_templates
+>   ADD CONSTRAINT provider_sms_templates_params_check
+>   CHECK (jsonb_typeof(template_params) = 'array');
+> ```
 
 #### `user_mfa_credentials`
 

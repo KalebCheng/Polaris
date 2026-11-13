@@ -37,6 +37,7 @@ import type {
   InstitutionStats,
   SyncerPreview,
   ProviderCatalog,
+  TemplateSceneInfo,
   ExternalIdentityRef,
   UserIdentity,
   ConnectionCatalog,
@@ -283,6 +284,7 @@ export const providerApi = {
   setState: (id: number, state: 'active' | 'disabled') =>
     api.post<Provider>(`/providers/${id}/state`, { state }, orgQ()),
   /** 通知模板（邮件 / 短信）：选中提供商后再选择 scene 匹配的模板 */
+  templateScenes: () => api.get<{ scenes: TemplateSceneInfo[] | null }>('/providers/message-template-scenes'),
   templates: (id: number, scene?: string) =>
     api.get<{ items: ProviderTemplate[] | null }>(`/providers/${id}/message-templates`, { ...orgQ(), scene }),
   createTemplate: (id: number, body: ProviderTemplateInput) =>

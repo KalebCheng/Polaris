@@ -33,6 +33,7 @@ func (r *ProviderTemplateRepository) Create(ctx context.Context, t *repository.P
 	var err error
 	switch channel {
 	case "email":
+		t.TemplateParams = []repository.ProviderTemplateParam{}
 		err = r.db.QueryRow(ctx, `INSERT INTO provider_email_templates
 			(institution_id, provider_id, name, scene, subject, content, is_default)
 			VALUES ($1,$2,$3,$4,$5,$6,$7)
@@ -59,7 +60,10 @@ func (r *ProviderTemplateRepository) GetByID(ctx context.Context, channel string
 	if channel == "" {
 		return nil, errInvalidTemplateChannel(channel)
 	}
-	t := &repository.ProviderTemplate{ID: id, Channel: channel}
+	t := &repository.ProviderTemplate{
+		ID: id, Channel: channel,
+		TemplateParams: []repository.ProviderTemplateParam{},
+	}
 	var err error
 	switch channel {
 	case "email":
@@ -106,7 +110,10 @@ func (r *ProviderTemplateRepository) ListByProvider(ctx context.Context, channel
 	defer rows.Close()
 	items := make([]*repository.ProviderTemplate, 0)
 	for rows.Next() {
-		t := &repository.ProviderTemplate{Channel: channel}
+		t := &repository.ProviderTemplate{
+			Channel:        channel,
+			TemplateParams: []repository.ProviderTemplateParam{},
+		}
 		if channel == "email" {
 			err = rows.Scan(&t.ID, &t.InstitutionID, &t.ProviderID, &t.Name, &t.Scene, &t.Subject, &t.Content,
 				&t.IsDefault, &t.CreatedAt, &t.UpdatedAt)

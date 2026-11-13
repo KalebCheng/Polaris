@@ -1,23 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { describeError } from '@/shared/lib/errors'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { toast } from '@/shared/ui/toast'
 import { ArrowLeft, Plug } from 'lucide-react'
-import {
-  Button,
-  Input,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-  Skeleton,
-  Switch,
-  Textarea,
-} from '@/shared/ui'
-import { TagInput } from '@/shared/components/tag-input'
-import { ConfirmDialog } from '@/shared/components/confirm-dialog'
+import { Button, Skeleton } from '@/shared/ui'
 import { PageShell } from '@/widgets/layout/page-shell'
 import { FormWizard, type WizardStep } from '@/shared/components/form-wizard'
 import { SchemaFields, type FieldValueMap } from '@/shared/components/schema-fields'
@@ -497,9 +483,6 @@ export default function ProviderEditPage() {
                   editing={!isCreate}
                   dynamicOptions={dynamicOptions}
                 />
-                {providerID > 0 && (categoryKey === 'email' || categoryKey === 'sms') ? (
-                  <ProviderTemplatesSection providerID={providerID} category={categoryKey} />
-                ) : null}
                 {providerID > 0 ? (
                   <div className="flex items-center gap-2">
                     <Button type="button" variant="outline" size="sm" disabled={testing} onClick={checkNow}>
@@ -514,185 +497,6 @@ export default function ProviderEditPage() {
         </FormWizard>
       )}
     </PageShell>
-  )
-}
-
-function ProviderTemplatesSection({ providerID, category }: { providerID: number; category: string }) {
-  const { t } = useTranslation()
-  const [items, setItems] = useState<ProviderTemplate[]>([])
-  const [loading, setLoading] = useState(true)
-  const [savingID, setSavingID] = useState<number | null>(null)
-  const [deleting, setDeleting] = useState<ProviderTemplate | null>(null)
-
-  const reload = useCallback(async () => {
-    setLoading(true)
-    try {
-      const data = await providerApi.templates(providerID)
-      setItems(data.items ?? [])
-    } finally {
-      setLoading(false)
-    }
-  }, [providerID])
-
-  useEffect(() => {
-    void reload()
-  }, [reload])
-
-  const patch = (id: number, next: Partial<ProviderTemplate>) =>
-    setItems((prev) => prev.map((item) => (item.id === id ? { ...item, ...next } : item)))
-
-  const add = () =>
-    setItems((prev) => [
-      {
-        id: 0,
-        institution_id: 0,
-        provider_id: providerID,
-        name: '',
-        scene: 'login_code',
-        template_code: '',
-        template_params: [],
-        subject: '',
-        content: '',
-        is_default: false,
-        created_at: '',
-        updated_at: '',
-      },
-      ...prev,
-    ])
-
-  const save = async (item: ProviderTemplate) => {
-    setSavingID(item.id)
-    try {
-      const body = {
-        name: item.name,
-        scene: item.scene,
-        template_code: item.template_code,
-        template_params: item.template_params,
-        subject: item.subject,
-        content: item.content,
-        is_default: item.is_default,
-      }
-      if (item.id > 0) await providerApi.updateTemplate(providerID, item.id, body)
-      else await providerApi.createTemplate(providerID, body)
-      toast.success(t('common.saved'))
-      await reload()
-    } catch (error) {
-      toast.error(describeError(error, t))
-    } finally {
-      setSavingID(null)
-    }
-  }
-
-  const confirmDelete = async () => {
-    if (!deleting) return
-    try {
-      await providerApi.removeTemplate(providerID, deleting.id)
-      toast.success(t('providers.templates.deleted'))
-      await reload()
-    } catch (error) {
-      toast.error(describeError(error, t))
-    } finally {
-      setDeleting(null)
-    }
-  }
-
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="text-sm font-medium">{t('providers.templates.title')}</p>
-          <p className="text-muted-foreground text-xs">{t('providers.templates.hint')}</p>
-        </div>
-        <Button type="button" variant="outline" size="sm" onClick={add}>
-          {t('providers.templates.add')}
-        </Button>
-      </div>
-      {loading ? <Skeleton className="h-24 w-full" /> : null}
-      {!loading && items.length === 0 ? (
-        <p className="text-muted-foreground text-xs">{t('providers.templates.empty')}</p>
-      ) : null}
-      {items.map((item) => (
-        <div
-          key={item.id || `new-${item.name}`}
-          className="bg-muted/30 border-border/70 space-y-3 rounded-xl border p-3"
-        >
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Input
-              value={item.name}
-              placeholder={t('providers.templates.name')}
-              onChange={(event) => patch(item.id, { name: event.target.value })}
-            />
-            <Select
-              value={item.scene}
-              onValueChange={(value) => patch(item.id, { scene: value as ProviderTemplate['scene'] })}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="login_code">login_code</SelectItem>
-                {category === 'sms' ? <SelectItem value="mfa_code">mfa_code</SelectItem> : null}
-                {category === 'email' ? <SelectItem value="magic_link">magic_link</SelectItem> : null}
-              </SelectContent>
-            </Select>
-          </div>
-          {category === 'sms' ? (
-            <>
-              <Input
-                value={item.template_code}
-                placeholder={t('providers.templates.code')}
-                onChange={(event) => patch(item.id, { template_code: event.target.value })}
-              />
-              <TagInput
-                value={item.template_params}
-                onChange={(next) => patch(item.id, { template_params: next })}
-                placeholder={t('providers.templates.params')}
-              />
-            </>
-          ) : (
-            <>
-              <Input
-                value={item.subject}
-                placeholder={t('providers.templates.subject')}
-                onChange={(event) => patch(item.id, { subject: event.target.value })}
-              />
-              <Textarea
-                value={item.content}
-                rows={4}
-                placeholder={t('providers.templates.content')}
-                onChange={(event) => patch(item.id, { content: event.target.value })}
-              />
-            </>
-          )}
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <label className="flex items-center gap-2 text-xs">
-              <Switch
-                checked={item.is_default}
-                onCheckedChange={(checked) => patch(item.id, { is_default: checked })}
-              />
-              {t('providers.templates.isDefault')}
-            </label>
-            <div className="flex items-center gap-2">
-              <Button type="button" size="sm" disabled={savingID === item.id} onClick={() => void save(item)}>
-                {t('common.save')}
-              </Button>
-              {item.id > 0 ? (
-                <Button type="button" variant="outline" size="sm" onClick={() => setDeleting(item)}>
-                  {t('common.delete')}
-                </Button>
-              ) : null}
-            </div>
-          </div>
-        </div>
-      ))}
-      <ConfirmDialog
-        open={Boolean(deleting)}
-        onOpenChange={(open) => !open && setDeleting(null)}
-        titleKey="providers.templates.deleteTitle"
-        descriptionKey="providers.templates.deleteHint"
-        onConfirm={() => void confirmDelete()}
-      />
-    </div>
   )
 }
 

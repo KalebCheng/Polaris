@@ -134,6 +134,7 @@
 | GET | `/applications/subject-options?type=user\|job_title\|department&keyword=&parent_id=&offset=&limit=` | `application:read` |
 | GET/POST | `/providers` · GET/PUT/DELETE `/providers/:id` | `provider:*` |
 | GET | `/providers/catalog` · POST `/providers/:id/test` | `provider:read/update` |
+| GET | `/providers/message-template-scenes` | `provider:read` |
 | GET/POST | `/providers/:id/message-templates` | `provider:read/update` |
 | GET/PUT/DELETE | `/providers/:id/message-templates/:templateId` | `provider:read/update/delete` |
 | GET/POST | `/certs` · GET/PUT/DELETE `/certs/:name` | `cert:*` |

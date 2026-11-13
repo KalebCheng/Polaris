@@ -855,18 +855,40 @@ expect_code 201 "$(code -b "$JAR" -X POST "$BASE/api/v1/providers" -H 'Content-T
   "创建 短信 提供商 → 201"
 SMS_ID="$(json_field id)"
 TEST_PROVIDERS="$TEST_PROVIDERS $SMS_ID"
+SCENES_BODY="$(curl -sS -b "$JAR" "$BASE/api/v1/providers/message-template-scenes")"
+case "$SCENES_BODY" in
+  *'"channel":"email"'*'"required":true'*'"channel":"sms"'*) green "PASS  模板场景与必填占位符已下发" ;;
+  *) red "FAIL  模板场景声明异常: $SCENES_BODY"; exit 1 ;;
+esac
 expect_code 201 "$(code -b "$JAR" -X POST "$BASE/api/v1/providers/$SMS_ID/message-templates" -H 'Content-Type: application/json' \
-  --data-raw '{"name":"登录验证码","scene":"login_code","template_code":"SMS_1","template_params":["code","minutes"],"content":"验证码 ${code}，${minutes} 分钟内有效"}' )" \
-  "创建短信模板（声明模板变量 code+minutes）→ 201"
+  --data-raw '{"name":"登录验证码","scene":"login_code","template_code":"SMS_1","template_params":[{"key":"code1","source":"code"},{"key":"minutes1","source":"minutes"}]}' )" \
+  "创建短信模板（厂商变量映射到平台占位符）→ 201"
 SMS_VARS="$(json_field template_params)"
 case "$SMS_VARS" in
-  *'code'*'minutes'*) green "PASS  模板变量已落库并回显：$SMS_VARS" ;;
-  *) red "FAIL  模板变量未回显: $SMS_VARS"; exit 1 ;;
+  *"'key': 'code1'"*"'source': 'code'"*"'key': 'minutes1'"*"'source': 'minutes'"*) \
+    green "PASS  参数映射已落库并回显：$SMS_VARS" ;;
+  *) red "FAIL  参数映射未回显: $SMS_VARS"; exit 1 ;;
 esac
 # 变量名必须在内置变量集内：取不到值的名字在落库前就拒绝（否则会变成"配了但发送失败"）
 expect_code 400 "$(code -b "$JAR" -X POST "$BASE/api/v1/providers/$SMS_ID/message-templates" -H 'Content-Type: application/json' \
-  --data-raw '{"name":"非法模板","scene":"login_code","template_code":"SMS_BAD","template_params":["code","not_a_var"],"content":"${code} ${not_a_var}"}' )" \
-  "未知模板变量 → 400（内置变量集之外的取值拒绝落库）"
+  --data-raw '{"name":"非法模板","scene":"login_code","template_code":"SMS_BAD","template_params":[{"key":"code1","source":"code"},{"key":"bad","source":"not_a_var"}]}' )" \
+  "未知占位符 → 400（内置变量集之外的取值拒绝落库）"
+expect_code 400 "$(code -b "$JAR" -X POST "$BASE/api/v1/providers/$SMS_ID/message-templates" -H 'Content-Type: application/json' \
+  --data-raw '{"name":"缺少验证码","scene":"login_code","template_code":"SMS_BAD","template_params":[{"key":"minutes1","source":"minutes"}]}' )" \
+  "登录场景缺少 code 映射 → 400"
+expect_code 201 "$(code -b "$JAR" -X POST "$BASE/api/v1/providers/$EMAIL_ID/message-templates" -H 'Content-Type: application/json' \
+  --data-raw '{"name":"魔法链接","scene":"magic_link","subject":"登录 {{application}}","content":"<p>您好，<a href=\"{{link}}\">登录</a></p>","is_default":true}' )" \
+  "创建富文本邮件模板 → 201"
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/providers/$EMAIL_ID/message-templates?scene=magic_link")" \
+  "列出富文本邮件模板 → 200"
+EMAIL_TEMPLATE_CONTENT="$(json_items_field content)"
+case "$EMAIL_TEMPLATE_CONTENT" in
+  *'<a href="{{link}}">登录</a>'*) green "PASS  富文本正文已按 HTML 回显" ;;
+  *) red "FAIL  富文本正文未回显: $EMAIL_TEMPLATE_CONTENT"; exit 1 ;;
+esac
+expect_code 400 "$(code -b "$JAR" -X POST "$BASE/api/v1/providers/$EMAIL_ID/message-templates" -H 'Content-Type: application/json' \
+  --data-raw '{"name":"跨场景占位符","scene":"login_code","subject":"验证码","content":"<p>{{link}}</p>"}' )" \
+  "邮件登录场景引用 {{link}} → 400（占位符按场景收敛）"
 
 step "22b. 外部身份提供方：控制台配置后登录页立即可见（无需重启）"
 OIDC_NAME="smoke-oidc-$RUN_ID"

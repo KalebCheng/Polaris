@@ -96,11 +96,6 @@ func TestCatalogShape(t *testing.T) {
 				if field.Type == FieldMultiSelect && len(field.Options) == 0 {
 					t.Fatalf("类型 %s 字段 %s 是受限多选，必须声明 Options", info.Key, field.Key)
 				}
-				for _, option := range field.Options {
-					if field.Key == "template_params" && !IsKnownTemplateVar(option.Value) {
-						t.Fatalf("模板变量 %s 取不到值（不属于内置变量集）", option.Value)
-					}
-				}
 				if field.Secret && field.Type != FieldPassword {
 					t.Fatalf("类型 %s 的敏感字段 %s 必须使用 password 控件", info.Key, field.Key)
 				}

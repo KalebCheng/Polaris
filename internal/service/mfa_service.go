@@ -656,7 +656,7 @@ func notificationSender(p *repository.Provider, tpl *repository.ProviderTemplate
 		SslMode: p.SslMode, FromAddress: p.FromAddress, Title: tpl.Subject,
 		Content: tpl.Content, RegionID: p.RegionID, SignName: p.SignName,
 		TemplateCode: tpl.TemplateCode, AppID: p.ClientID, AppSecret: p.ClientSecret,
-		Endpoint: p.Endpoint, TemplateParams: tpl.TemplateParams,
+		Endpoint: p.Endpoint, TemplateParams: templateParamMap(tpl.TemplateParams),
 	}
 	return notify.New(p.Category, cfg)
 }

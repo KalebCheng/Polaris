@@ -5,17 +5,28 @@
 package notify
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
+	"mime"
+	"mime/multipart"
+	"mime/quotedprintable"
 	"net"
 	"net/http"
+	"net/mail"
 	"net/smtp"
+	"net/textproto"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	xhtml "golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
 )
 
 // Message 一条待发送的通知
@@ -50,8 +61,8 @@ type Config struct {
 	RegionID     string
 	SignName     string
 	TemplateCode string
-	// TemplateParams 模板变量声明（内置变量集的子集）；空表示只发 code（历史行为）
-	TemplateParams []string
+	// TemplateParams 厂商模板变量 → 平台占位符映射；空表示只发 code（历史数据兜底）
+	TemplateParams map[string]string
 	AppID          string
 	AppSecret      string
 	Endpoint       string
@@ -119,13 +130,54 @@ func newHTTPSMSSender(cfg Config) (Sender, error) {
 	return &HTTPSMSSender{cfg: cfg}, nil
 }
 
-// render 渲染模板中的 {{key}} 占位符
+var notificationPlaceholderPattern = regexp.MustCompile(`\{\{\s*([^{}]+?)\s*\}\}`)
+
+// render 渲染模板中的 {{key}} 占位符；允许占位符内出现空白。
 func render(template string, vars map[string]string) string {
+	return renderPlaceholders(template, vars, false)
+}
+
+func renderPlaceholders(template string, vars map[string]string, escape bool) string {
+	return notificationPlaceholderPattern.ReplaceAllStringFunc(template, func(token string) string {
+		match := notificationPlaceholderPattern.FindStringSubmatch(token)
+		if len(match) < 2 {
+			return token
+		}
+		value, ok := vars[strings.TrimSpace(match[1])]
+		if !ok {
+			return token
+		}
+		if escape {
+			return html.EscapeString(value)
+		}
+		return value
+	})
+}
+
+var emailHTMLTagPattern = regexp.MustCompile(`(?i)<[a-z][^>]*>`)
+
+// renderEmailHTML 渲染邮件正文：富文本按 HTML 输出，历史纯文本按段落转义后输出。
+// 变量值一律 HTML 转义，避免组织名/应用名里的尖括号改变正文结构。
+func renderEmailHTML(template string, vars map[string]string) string {
+	plain := !emailHTMLTagPattern.MatchString(template)
 	out := template
-	for key, value := range vars {
-		out = strings.ReplaceAll(out, "{{"+key+"}}", value)
+	if plain {
+		out = html.EscapeString(out)
 	}
-	return out
+	out = renderPlaceholders(out, vars, true)
+	if !plain {
+		return out
+	}
+	out = strings.ReplaceAll(out, "\r\n", "\n")
+	blocks := strings.Split(out, "\n\n")
+	parts := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		if strings.TrimSpace(block) == "" {
+			continue
+		}
+		parts = append(parts, "<p>"+strings.ReplaceAll(block, "\n", "<br>")+"</p>")
+	}
+	return strings.Join(parts, "")
 }
 
 // EmailSender 基于 net/smtp 的邮件发送器
@@ -135,7 +187,7 @@ type EmailSender struct{ cfg Config }
 func (s *EmailSender) Category() string { return "email" }
 
 // Send 发送邮件
-func (s *EmailSender) Send(_ context.Context, msg Message) error {
+func (s *EmailSender) Send(ctx context.Context, msg Message) error {
 	from := s.cfg.FromAddress
 	if from == "" {
 		from = s.cfg.User
@@ -158,33 +210,175 @@ func (s *EmailSender) Send(_ context.Context, msg Message) error {
 	for k, v := range msg.Vars {
 		series[k] = v
 	}
-	body = render(body, series)
+	subject = render(subject, series)
+	body = renderEmailHTML(body, series)
 	if strings.TrimSpace(body) == "" {
-		body = fmt.Sprintf("您的验证码是 %s，5 分钟内有效。", msg.Code)
+		body = fmt.Sprintf("<p>您的验证码是 <strong>%s</strong>，5 分钟内有效。</p>", html.EscapeString(msg.Code))
 	}
 
-	host := s.cfg.Host
-	// 使用 net.JoinHostPort 以兼容 IPv6 字面量主机
-	addr := net.JoinHostPort(host, strconv.Itoa(orDefaultInt(s.cfg.Port, 587)))
-	header := map[string]string{
-		"From":         from,
-		"To":           msg.To,
-		"Subject":      subject,
-		"MIME-Version": "1.0",
-		"Content-Type": "text/plain; charset=UTF-8",
+	raw, err := buildEmailMessage(from, msg.To, subject, body)
+	if err != nil {
+		return err
 	}
-	var builder strings.Builder
-	for k, v := range header {
-		_, _ = fmt.Fprintf(&builder, "%s: %s\r\n", k, v)
-	}
-	builder.WriteString("\r\n")
-	builder.WriteString(body)
 
-	var auth smtp.Auth
+	client, err := dialSMTP(ctx, s.cfg)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = client.Close() }()
 	if s.cfg.User != "" {
-		auth = smtp.PlainAuth("", s.cfg.User, s.cfg.Password, host)
+		if err := client.Auth(smtp.PlainAuth("", s.cfg.User, s.cfg.Password, s.cfg.Host)); err != nil {
+			return fmt.Errorf("SMTP 认证失败: %w", err)
+		}
 	}
-	return smtp.SendMail(addr, auth, from, []string{msg.To}, []byte(builder.String()))
+	fromAddress := smtpEnvelopeAddress(from)
+	toAddress := smtpEnvelopeAddress(msg.To)
+	if fromAddress == "" || toAddress == "" {
+		return fmt.Errorf("邮件地址格式无效")
+	}
+	if err := client.Mail(fromAddress); err != nil {
+		return fmt.Errorf("设置发件人失败: %w", err)
+	}
+	if err := client.Rcpt(toAddress); err != nil {
+		return fmt.Errorf("设置收件人失败: %w", err)
+	}
+	writer, err := client.Data()
+	if err != nil {
+		return fmt.Errorf("开始写入邮件正文失败: %w", err)
+	}
+	if _, err := writer.Write(raw); err != nil {
+		_ = writer.Close()
+		return fmt.Errorf("写入邮件正文失败: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("结束邮件正文失败: %w", err)
+	}
+	if err := client.Quit(); err != nil {
+		return fmt.Errorf("结束 SMTP 会话失败: %w", err)
+	}
+	return nil
+}
+
+// buildEmailMessage 构造 multipart/alternative 邮件：客户端优先渲染 HTML，
+// 不支持 HTML 的客户端读取纯文本替代部分。主题按 RFC 2047 编码，避免中文乱码。
+func buildEmailMessage(from, to, subject, htmlBody string) ([]byte, error) {
+	var buf bytes.Buffer
+	from = emailHeaderValue(from)
+	to = emailHeaderValue(to)
+	subject = emailHeaderValue(subject)
+	fromHeader := from
+	if address, err := mail.ParseAddress(from); err == nil {
+		fromHeader = address.String()
+	}
+	_, _ = fmt.Fprintf(&buf, "From: %s\r\n", fromHeader)
+	_, _ = fmt.Fprintf(&buf, "To: %s\r\n", to)
+	_, _ = fmt.Fprintf(&buf, "Subject: %s\r\n", mime.QEncoding.Encode("UTF-8", subject))
+	buf.WriteString("MIME-Version: 1.0\r\n")
+	buf.WriteString("X-Mailer: Polaris\r\n")
+
+	writer := multipart.NewWriter(&buf)
+	_, _ = fmt.Fprintf(&buf, "Content-Type: multipart/alternative; boundary=%q\r\n\r\n", writer.Boundary())
+	textHeader := textproto.MIMEHeader{}
+	textHeader.Set("Content-Type", "text/plain; charset=UTF-8")
+	textHeader.Set("Content-Transfer-Encoding", "quoted-printable")
+	textPart, err := writer.CreatePart(textHeader)
+	if err != nil {
+		return nil, err
+	}
+	textWriter := quotedprintable.NewWriter(textPart)
+	if _, err := textWriter.Write([]byte(emailPlainText(htmlBody) + "\r\n")); err != nil {
+		return nil, err
+	}
+	if err := textWriter.Close(); err != nil {
+		return nil, err
+	}
+
+	htmlHeader := textproto.MIMEHeader{}
+	htmlHeader.Set("Content-Type", "text/html; charset=UTF-8")
+	htmlHeader.Set("Content-Transfer-Encoding", "quoted-printable")
+	htmlPart, err := writer.CreatePart(htmlHeader)
+	if err != nil {
+		return nil, err
+	}
+	htmlWriter := quotedprintable.NewWriter(htmlPart)
+	if _, err := htmlWriter.Write([]byte(htmlBody)); err != nil {
+		return nil, err
+	}
+	if err := htmlWriter.Close(); err != nil {
+		return nil, err
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func emailHeaderValue(value string) string {
+	return strings.NewReplacer("\r", " ", "\n", " ").Replace(value)
+}
+
+// emailPlainText 从 HTML 正文提取纯文本替代内容；链接保留文字与目标地址。
+func emailPlainText(body string) string {
+	context := &xhtml.Node{Type: xhtml.ElementNode, Data: "div", DataAtom: atom.Div}
+	nodes, err := xhtml.ParseFragment(strings.NewReader(body), context)
+	if err != nil {
+		return body
+	}
+	var out strings.Builder
+	var walk func(*xhtml.Node)
+	walk = func(node *xhtml.Node) {
+		switch node.Type {
+		case xhtml.TextNode:
+			out.WriteString(node.Data)
+			return
+		case xhtml.ElementNode:
+			tag := strings.ToLower(node.Data)
+			if tag == "br" {
+				out.WriteString("\n")
+				return
+			}
+			block := tag == "p" || tag == "div" || tag == "h1" || tag == "h2" ||
+				tag == "h3" || tag == "li" || tag == "blockquote" || tag == "hr"
+			if block {
+				out.WriteString("\n")
+			}
+			for child := node.FirstChild; child != nil; child = child.NextSibling {
+				walk(child)
+			}
+			if tag == "a" {
+				href := emailAttr(node, "href")
+				if href != "" && !strings.Contains(href, "{{") {
+					out.WriteString(" (")
+					out.WriteString(href)
+					out.WriteString(")")
+				}
+			}
+			if block {
+				out.WriteString("\n")
+			}
+		}
+	}
+	for _, node := range nodes {
+		walk(node)
+	}
+	lines := strings.Split(out.String(), "\n")
+	cleaned := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			cleaned = append(cleaned, line)
+		}
+	}
+	return strings.Join(cleaned, "\n")
+}
+
+func emailAttr(node *xhtml.Node, key string) string {
+	for _, attr := range node.Attr {
+		if strings.EqualFold(attr.Key, key) {
+			return attr.Val
+		}
+	}
+	return ""
 }
 
 // smsGatewayPayload 通用 HTTP 网关的请求体。
@@ -198,13 +392,11 @@ func smsGatewayPayload(cfg Config, msg Message) map[string]string {
 		"signName": cfg.SignName,
 		"template": cfg.TemplateCode,
 	}
-	for name := range templateParams(cfg, msg) {
+	for name, value := range templateParams(cfg, msg) {
 		if _, fixed := payload[name]; fixed {
 			continue
 		}
-		if value, ok := msg.Vars[name]; ok {
-			payload[name] = value
-		}
+		payload[name] = value
 	}
 	return payload
 }
@@ -256,8 +448,28 @@ func Test(ctx context.Context, category string, cfg Config, target string) error
 	return strategy(ctx, cfg, target)
 }
 
-func testEmail(_ context.Context, cfg Config, _ string) error {
-	return testSMTP(cfg)
+func testEmail(ctx context.Context, cfg Config, target string) error {
+	return testEmailWithSender(ctx, cfg, target, newEmailSender)
+}
+
+// testEmailWithSender 有自检收件人时真实发送一封测试邮件；否则只验证连接与认证。
+// senderFactory 作为参数传入，便于回归测试锁定"用户填了收件人就一定会发信"。
+func testEmailWithSender(ctx context.Context, cfg Config, target string, factory senderFactory) error {
+	if strings.TrimSpace(target) == "" {
+		return testSMTP(ctx, cfg)
+	}
+	sender, err := factory(cfg)
+	if err != nil {
+		return err
+	}
+	return sender.Send(ctx, Message{
+		To:      target,
+		Subject: "Polaris SMTP 连通性测试",
+		Body: fmt.Sprintf(
+			"<p>这是一封来自 Polaris 的 SMTP 连通性测试邮件。</p><p>提供商：%s<br>SMTP：%s</p>",
+			html.EscapeString(cfg.Name), html.EscapeString(cfg.Host),
+		),
+	})
 }
 
 func testSMS(ctx context.Context, cfg Config, target string) error {
@@ -268,34 +480,92 @@ func testSMS(ctx context.Context, cfg Config, target string) error {
 	if strings.TrimSpace(target) == "" {
 		return nil
 	}
-	return sender.Send(ctx, Message{To: target, Code: "000000"})
+	return sender.Send(ctx, Message{
+		To: target, Code: "000000",
+		Vars: map[string]string{
+			"code": "000000", "minutes": "5", "phone": target,
+			"institution": "Polaris", "application": "Polaris",
+		},
+	})
 }
 
-// testSMTP 建立 SMTP 连接并认证，用于管理端"测试"动作
-func testSMTP(cfg Config) error {
-	if cfg.Host == "" {
-		return fmt.Errorf("缺少 SMTP 主机")
-	}
-	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(orDefaultInt(cfg.Port, 587)))
-	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+// testSMTP 建立 SMTP 连接并认证，用于管理端"测试"动作。
+func testSMTP(ctx context.Context, cfg Config) error {
+	client, err := dialSMTP(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("连接 SMTP 失败: %w", err)
-	}
-	defer func() { _ = conn.Close() }()
-	client, err := smtp.NewClient(conn, cfg.Host)
-	if err != nil {
-		return fmt.Errorf("创建 SMTP 客户端失败: %w", err)
+		return err
 	}
 	defer func() { _ = client.Close() }()
-	if ok, _ := client.Extension("STARTTLS"); ok && strings.ToLower(cfg.SslMode) != "disable" {
-		if err := client.StartTLS(&tls.Config{ServerName: cfg.Host, MinVersion: tls.VersionTLS12}); err != nil {
-			return fmt.Errorf("STARTTLS 失败: %w", err)
-		}
-	}
 	if cfg.User != "" {
 		if err := client.Auth(smtp.PlainAuth("", cfg.User, cfg.Password, cfg.Host)); err != nil {
 			return fmt.Errorf("SMTP 认证失败: %w", err)
 		}
 	}
+	if err := client.Quit(); err != nil {
+		return fmt.Errorf("结束 SMTP 会话失败: %w", err)
+	}
 	return nil
+}
+
+// dialSMTP 统一连接入口：465 使用隐式 TLS，其余端口按 ssl_mode 走 STARTTLS。
+// QQ / 163 等邮箱的 465 端口要求先完成 TLS 握手再发 EHLO，明文连接会被直接断开（EOF）。
+func dialSMTP(ctx context.Context, cfg Config) (*smtp.Client, error) {
+	if cfg.Host == "" {
+		return nil, fmt.Errorf("缺少 SMTP 主机")
+	}
+	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(orDefaultInt(cfg.Port, 587)))
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	tlsConfig := &tls.Config{ServerName: cfg.Host, MinVersion: tls.VersionTLS12}
+	var (
+		conn net.Conn
+		err  error
+	)
+	implicitTLS := smtpUsesImplicitTLS(cfg)
+	if implicitTLS {
+		tlsDialer := &tls.Dialer{NetDialer: dialer, Config: tlsConfig}
+		conn, err = tlsDialer.DialContext(ctx, "tcp", addr)
+	} else {
+		conn, err = dialer.DialContext(ctx, "tcp", addr)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("连接 SMTP 失败: %w", err)
+	}
+	client, err := smtp.NewClient(conn, cfg.Host)
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("创建 SMTP 客户端失败: %w", err)
+	}
+	if implicitTLS {
+		return client, nil
+	}
+	mode := strings.ToLower(strings.TrimSpace(cfg.SslMode))
+	if ok, _ := client.Extension("STARTTLS"); ok && mode != "disable" {
+		if err := client.StartTLS(tlsConfig); err != nil {
+			_ = client.Close()
+			return nil, fmt.Errorf("STARTTLS 失败: %w", err)
+		}
+	} else if mode == "starttls" {
+		_ = client.Close()
+		return nil, fmt.Errorf("SMTP 服务器未提供 STARTTLS")
+	}
+	return client, nil
+}
+
+func smtpUsesImplicitTLS(cfg Config) bool {
+	switch strings.ToLower(strings.TrimSpace(cfg.SslMode)) {
+	case "ssl", "tls", "smtps":
+		return true
+	case "starttls", "disable":
+		return false
+	default:
+		return orDefaultInt(cfg.Port, 587) == 465
+	}
+}
+
+func smtpEnvelopeAddress(value string) string {
+	value = strings.TrimSpace(value)
+	if address, err := mail.ParseAddress(value); err == nil {
+		return address.Address
+	}
+	return value
 }

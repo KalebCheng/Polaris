@@ -21,7 +21,7 @@ func TestTemplateParamsFollowDeclaration(t *testing.T) {
 	}
 
 	// 声明 code + minutes → 只发这两个，且取到真实值
-	declared := templateParams(Config{TemplateParams: []string{"code", "minutes"}}, msg)
+	declared := templateParams(Config{TemplateParams: map[string]string{"code": "code", "minutes": "minutes"}}, msg)
 	if len(declared) != 2 || declared["code"] != "123456" || declared["minutes"] != "5" {
 		t.Fatalf("按声明装配失败: %+v", declared)
 	}
@@ -30,20 +30,32 @@ func TestTemplateParamsFollowDeclaration(t *testing.T) {
 	}
 
 	// 声明的变量在本次发送里没有取值 → 不放入（避免发出空值导致厂商报错）
-	empty := templateParams(Config{TemplateParams: []string{"code", "application"}}, msg)
+	empty := templateParams(Config{TemplateParams: map[string]string{"code": "code", "application": "application"}}, msg)
 	if _, sent := empty["application"]; sent {
 		t.Fatalf("取不到值的变量不应下发: %+v", empty)
+	}
+
+	// 厂商变量名可以与平台占位符不同：key 给厂商，value 从平台占位符取。
+	mapped := templateParams(Config{TemplateParams: map[string]string{"code1": "code", "minutes1": "minutes"}}, msg)
+	if mapped["code1"] != "123456" || mapped["minutes1"] != "5" {
+		t.Fatalf("参数映射失败: %+v", mapped)
+	}
+	if _, sent := mapped["code"]; sent {
+		t.Fatalf("不应使用平台占位符名作为厂商参数名: %+v", mapped)
 	}
 }
 
 // 通用 HTTP 网关：固定字段保持历史契约，声明的额外变量追加进来。
 func TestSMSGatewayPayloadAddsDeclaredVars(t *testing.T) {
-	cfg := Config{SignName: "Polaris", TemplateCode: "SMS_1", TemplateParams: []string{"code", "minutes"}}
+	cfg := Config{
+		SignName: "Polaris", TemplateCode: "SMS_1",
+		TemplateParams: map[string]string{"code": "code", "minutes1": "minutes"},
+	}
 	msg := Message{To: "13800000000", Code: "123456", Vars: map[string]string{"minutes": "5"}}
 
 	payload := smsGatewayPayload(cfg, msg)
 	for key, want := range map[string]string{
-		"phone": "13800000000", "code": "123456", "signName": "Polaris", "template": "SMS_1", "minutes": "5",
+		"phone": "13800000000", "code": "123456", "signName": "Polaris", "template": "SMS_1", "minutes1": "5",
 	} {
 		if payload[key] != want {
 			t.Fatalf("payload[%s] = %q, want %q（完整 payload: %+v）", key, payload[key], want, payload)

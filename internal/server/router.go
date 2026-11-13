@@ -182,6 +182,7 @@ func RegisterRoutes(engine *gin.Engine, mw *Middleware, h *Handlers) {
 	providers.DELETE("/:id", mw.RequirePermission("provider", "delete"), h.Provider.Delete)
 	providers.POST("/:id/test", mw.RequirePermission("provider", "update"), h.Provider.Test)
 	providers.POST("/:id/state", mw.RequirePermission("provider", "update"), h.Provider.SetState)
+	providers.GET("/message-template-scenes", mw.RequirePermission("provider", "read"), h.Provider.TemplateScenes)
 	providers.GET("/:id/message-templates", mw.RequirePermission("provider", "read"), h.Provider.Templates)
 	providers.POST("/:id/message-templates", mw.RequirePermission("provider", "update"), h.Provider.CreateTemplate)
 	providers.GET("/:id/message-templates/:templateId", mw.RequirePermission("provider", "read"), h.Provider.GetTemplate)

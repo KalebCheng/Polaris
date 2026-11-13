@@ -233,6 +233,7 @@ GET|POST         /syncers               GET|PUT|DELETE /syncers/:name (/run, /ru
 POST   /me/avatar                       # 上传当前用户头像（multipart，字段名 file）
 GET    /providers/catalog               # 提供商目录（类别 / 类型 / 字段 schema；前端唯一来源）
 POST   /providers/:id/test              # 提供商连通性自检（按类别真实探测）
+GET    /providers/message-template-scenes # 模板场景与场景内可用占位符
 GET|POST /providers/:id/message-templates # 邮件 / 短信消息模板
 GET|PUT|DELETE /providers/:id/message-templates/:templateId
 GET    /institutions/:name/stats       # 组织资源聚合
@@ -276,8 +277,15 @@ GET    /readyz                          # 就绪探针（含依赖状态）
 - **存储结构**：`providers` 只保留公共身份与状态，类型配置放在 `provider_oauth` / `provider_email` /
   `provider_sms` / `provider_captcha` / `provider_storage` / `provider_mfa` 子表；消息模板按渠道分为
   `provider_email_templates` 与 `provider_sms_templates`。
-- **消息模板变量**：模板内容里用到的 `${变量}` 由短信模板声明（可选 code / minutes / phone /
-  institution / application / link）；发送时只按声明装配——阿里云对变量名严格匹配，多一个少一个都会拒绝。
+- **消息模板独立管理**：模板不再放进提供商新增/编辑向导，而是从提供商卡片的「模板」进入
+  `/providers/:id/templates`，按场景（登录验证码 / MFA 验证码 / 魔法链接）维护。
+- **占位符按场景收敛**：`GET /providers/message-template-scenes` 是场景与可用占位符的唯一声明；
+  邮件登录验证码必须有 `{{code}}`，魔法链接必须有 `{{link}}`，短信场景必须映射到 `code`。
+- **短信参数映射**：`template_params` 为 JSONB 数组 `[{"key":"code1","source":"code"}]`；
+  `key` 是厂商模板变量名，`source` 是平台占位符。发送时按 `source` 取值、以 `key` 组装 `TemplateParam`，
+  阿里云对变量名严格匹配。
+- **邮件富文本**：邮件正文按 HTML 落库，服务端清洗脚本 / 事件属性 / 非安全协议后再发送；
+  发送使用 `multipart/alternative`（HTML + 纯文本替代），历史纯文本模板自动转换为段落。
 - **单例类别**：`captcha` / `storage` 在**同一组织内最多一个启用项**；`email` / `sms` / `mfa` / `oauth`
   可并存多个，由应用登录方式或 MFA 提供商显式选择。
 - **外部身份提供方**：`category=oauth`（钉钉 / 微信 / 飞书 / Lark / 标准 OIDC）。改配置**无需重启**即生效；

@@ -38,10 +38,21 @@ type NotificationTemplateInput struct {
 	Name           string
 	Scene          string
 	TemplateCode   string
-	TemplateParams []string
+	TemplateParams []NotificationTemplateParam
 	Subject        string
 	Content        string
 	IsDefault      bool
+}
+
+// NotificationTemplateParam 短信模板参数映射输入：提供商的变量名 → 平台占位符。
+type NotificationTemplateParam struct {
+	Key    string `json:"key"`
+	Source string `json:"source"`
+}
+
+// Scenes 返回通知模板可用场景与场景内占位符（前端编辑器据此渲染，不在前端另抄一份）。
+func (s *TemplateService) Scenes() []providerpkg.TemplateSceneInfo {
+	return providerpkg.TemplateScenes()
 }
 
 // List 列出某提供商的模板（可按 scene 过滤）。
@@ -50,10 +61,11 @@ func (s *TemplateService) List(ctx context.Context, institutionID, providerID in
 	if err != nil {
 		return nil, err
 	}
-	if scene != "" && !repository.IsTemplateScene(scene) {
+	channel := channelForCategory(provider.Category)
+	if scene != "" && !providerpkg.TemplateSceneAllowed(channel, scene) {
 		return nil, bizerrors.ErrInvalidParams.WithDetail("scene", scene)
 	}
-	return s.templates.ListByProvider(ctx, channelForCategory(provider.Category), institutionID, providerID, scene)
+	return s.templates.ListByProvider(ctx, channel, institutionID, providerID, scene)
 }
 
 // Get 按 provider 主键 + 模板主键查询（渠道由 provider 类别决定）。
@@ -88,8 +100,9 @@ func (s *TemplateService) Create(ctx context.Context, actor string, institutionI
 		InstitutionID: institutionID, ProviderID: providerID,
 		Channel: channelForCategory(provider.Category),
 		Name:    normalized.Name, Scene: normalized.Scene,
-		TemplateCode: normalized.TemplateCode, TemplateParams: normalized.TemplateParams,
-		Subject: normalized.Subject, Content: normalized.Content, IsDefault: normalized.IsDefault,
+		TemplateCode:   normalized.TemplateCode,
+		TemplateParams: repositoryTemplateParams(normalized.TemplateParams),
+		Subject:        normalized.Subject, Content: normalized.Content, IsDefault: normalized.IsDefault,
 	}
 	id, err := s.templates.Create(ctx, item)
 	if err != nil {
@@ -122,7 +135,7 @@ func (s *TemplateService) Update(ctx context.Context, actor string, institutionI
 	existing.Name = normalized.Name
 	existing.Scene = normalized.Scene
 	existing.TemplateCode = normalized.TemplateCode
-	existing.TemplateParams = normalized.TemplateParams
+	existing.TemplateParams = repositoryTemplateParams(normalized.TemplateParams)
 	existing.Subject = normalized.Subject
 	existing.Content = normalized.Content
 	existing.IsDefault = normalized.IsDefault
@@ -189,9 +202,21 @@ func (s *TemplateService) ResolveNotification(ctx context.Context, institutionID
 	if item.Scene != scene {
 		return nil, nil, bizerrors.ErrInvalidParams.WithDetail("template_scene", item.Scene).WithDetail("expected", scene)
 	}
-	for _, name := range item.TemplateParams {
-		if !providerpkg.IsKnownTemplateVar(name) {
-			return nil, nil, bizerrors.ErrInvalidParams.WithDetail("template_param", name)
+	switch channel {
+	case "sms":
+		seenSources := map[string]bool{}
+		for _, param := range item.TemplateParams {
+			if !providerpkg.TemplateVarAllowed(channel, scene, param.Source) {
+				return nil, nil, bizerrors.ErrInvalidParams.WithDetail("template_param", param.Source)
+			}
+			seenSources[param.Source] = true
+		}
+		if required := providerpkg.RequiredTemplateVar(channel, scene); required != "" && !seenSources[required] {
+			return nil, nil, bizerrors.ErrInvalidParams.WithDetail("required_template_param", required)
+		}
+	case "email":
+		if err := validateEmailTemplateVars(item.Subject, item.Content, channel, scene); err != nil {
+			return nil, nil, err
 		}
 	}
 	s.runtime.DecryptSecrets(provider)
@@ -260,63 +285,137 @@ func (s *TemplateService) ensureNotReferenced(ctx context.Context, institutionID
 	return nil
 }
 
-var templatePlaceholderPattern = regexp.MustCompile(`\{\{\s*([a-zA-Z0-9_]+)\s*\}\}`)
+var (
+	templatePlaceholderPattern = regexp.MustCompile(`\{\{\s*([^{}]*?)\s*\}\}`)
+	templateParamKeyPattern    = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
+)
 
 func normalizeTemplateInput(category string, in NotificationTemplateInput) (NotificationTemplateInput, error) {
 	in.Name = strings.TrimSpace(in.Name)
 	in.Scene = strings.ToLower(strings.TrimSpace(in.Scene))
 	in.TemplateCode = strings.TrimSpace(in.TemplateCode)
 	in.Subject = strings.TrimSpace(in.Subject)
+	in.Content = strings.TrimSpace(in.Content)
 	if in.Name == "" {
 		return in, bizerrors.ErrInvalidParams.WithDetail("required", "name")
 	}
-	if !repository.IsTemplateScene(in.Scene) {
+	channel := channelForCategory(category)
+	if channel == "" || !providerpkg.TemplateSceneAllowed(channel, in.Scene) {
 		return in, bizerrors.ErrInvalidParams.WithDetail("scene", in.Scene)
 	}
-	seen := map[string]bool{}
-	params := make([]string, 0, len(in.TemplateParams))
-	for _, name := range in.TemplateParams {
-		name = strings.TrimSpace(name)
-		if name == "" || seen[name] {
-			continue
-		}
-		if !providerpkg.IsKnownTemplateVar(name) {
-			return in, bizerrors.ErrInvalidParams.WithDetail("template_param", name)
-		}
-		seen[name] = true
-		params = append(params, name)
-	}
-	in.TemplateParams = params
 
-	switch providerpkg.NormalizeCategory(category) {
-	case string(providerpkg.CategorySMS):
+	switch channel {
+	case "sms":
 		if in.TemplateCode == "" {
 			return in, bizerrors.ErrInvalidParams.WithDetail("required", "template_code")
 		}
-		if len(in.TemplateParams) == 0 {
-			in.TemplateParams = providerpkg.DefaultTemplateVars()
+		params, err := normalizeTemplateParams(in.TemplateParams, channel, in.Scene)
+		if err != nil {
+			return in, err
 		}
-	case string(providerpkg.CategoryEmail):
+		in.TemplateParams = params
+		in.Subject = ""
+		in.Content = ""
+	case "email":
 		if in.Content == "" {
 			return in, bizerrors.ErrInvalidParams.WithDetail("required", "content")
 		}
-		for _, text := range []string{in.Subject, in.Content} {
-			for _, match := range templatePlaceholderPattern.FindAllStringSubmatch(text, -1) {
-				if !providerpkg.IsKnownTemplateVar(match[1]) {
-					return in, bizerrors.ErrInvalidParams.WithDetail("template_param", match[1])
-				}
-			}
+		content, err := sanitizeEmailHTML(in.Content)
+		if err != nil {
+			return in, err
+		}
+		in.Content = content
+		in.TemplateParams = []NotificationTemplateParam{}
+		if err := validateEmailTemplateVars(in.Subject, in.Content, channel, in.Scene); err != nil {
+			return in, err
 		}
 	default:
 		return in, bizerrors.ErrInvalidParams.WithDetail("category", category)
 	}
-	if in.Scene == repository.TemplateSceneMfaCode && providerpkg.NormalizeCategory(category) != string(providerpkg.CategorySMS) {
-		return in, bizerrors.ErrInvalidParams.WithDetail("scene", in.Scene)
-	}
-	if in.Scene == repository.TemplateSceneMagicLink && providerpkg.NormalizeCategory(category) != string(providerpkg.CategoryEmail) {
-		return in, bizerrors.ErrInvalidParams.WithDetail("scene", in.Scene)
-	}
 	return in, nil
+}
+
+func normalizeTemplateParams(
+	params []NotificationTemplateParam, channel, scene string,
+) ([]NotificationTemplateParam, error) {
+	requiredSource := providerpkg.RequiredTemplateVar(channel, scene)
+	seenKeys := map[string]bool{}
+	seenSources := map[string]bool{}
+	out := make([]NotificationTemplateParam, 0, len(params))
+	for _, item := range params {
+		key := strings.TrimSpace(item.Key)
+		source := strings.TrimSpace(item.Source)
+		if key == "" && source == "" {
+			continue
+		}
+		if key == "" {
+			return nil, bizerrors.ErrInvalidParams.WithDetail("required", "template_param.key")
+		}
+		if !templateParamKeyPattern.MatchString(key) {
+			return nil, bizerrors.ErrInvalidParams.WithDetail("template_param.key", key)
+		}
+		if seenKeys[key] {
+			return nil, bizerrors.ErrInvalidParams.WithDetail("duplicate_template_param", key)
+		}
+		if source == "" {
+			return nil, bizerrors.ErrInvalidParams.WithDetail("required", "template_param.source")
+		}
+		if !providerpkg.TemplateVarAllowed(channel, scene, source) {
+			return nil, bizerrors.ErrInvalidParams.
+				WithDetail("template_param", source).
+				WithDetail("scene", scene)
+		}
+		seenKeys[key] = true
+		seenSources[source] = true
+		out = append(out, NotificationTemplateParam{Key: key, Source: source})
+	}
+	if len(out) == 0 {
+		return nil, bizerrors.ErrInvalidParams.WithDetail("required", "template_params")
+	}
+	if requiredSource != "" && !seenSources[requiredSource] {
+		return nil, bizerrors.ErrInvalidParams.
+			WithDetail("required_template_param", requiredSource).
+			WithDetail("scene", scene)
+	}
+	return out, nil
+}
+
+func validateEmailTemplateVars(subject, content, channel, scene string) error {
+	requiredSource := providerpkg.RequiredTemplateVar(channel, scene)
+	found := map[string]bool{}
+	for _, text := range []string{subject, content} {
+		for _, match := range templatePlaceholderPattern.FindAllStringSubmatch(text, -1) {
+			key := strings.TrimSpace(match[1])
+			if !providerpkg.TemplateVarAllowed(channel, scene, key) {
+				return bizerrors.ErrInvalidParams.
+					WithDetail("template_param", key).
+					WithDetail("scene", scene)
+			}
+			found[key] = true
+		}
+	}
+	if requiredSource != "" && !found[requiredSource] {
+		return bizerrors.ErrInvalidParams.
+			WithDetail("required_template_param", requiredSource).
+			WithDetail("scene", scene)
+	}
+	return nil
+}
+
+func repositoryTemplateParams(params []NotificationTemplateParam) []repository.ProviderTemplateParam {
+	out := make([]repository.ProviderTemplateParam, 0, len(params))
+	for _, item := range params {
+		out = append(out, repository.ProviderTemplateParam{Key: item.Key, Source: item.Source})
+	}
+	return out
+}
+
+func templateParamMap(params []repository.ProviderTemplateParam) map[string]string {
+	out := make(map[string]string, len(params))
+	for _, item := range params {
+		out[item.Key] = item.Source
+	}
+	return out
 }
 
 var templateChannelByCategory = map[string]string{

@@ -112,13 +112,13 @@ func (h *ProviderHandler) Update(c *gin.Context) {
 }
 
 type templateRequest struct {
-	Name           string   `json:"name"`
-	Scene          string   `json:"scene"`
-	TemplateCode   string   `json:"template_code"`
-	TemplateParams []string `json:"template_params"`
-	Subject        string   `json:"subject"`
-	Content        string   `json:"content"`
-	IsDefault      bool     `json:"is_default"`
+	Name           string                              `json:"name"`
+	Scene          string                              `json:"scene"`
+	TemplateCode   string                              `json:"template_code"`
+	TemplateParams []service.NotificationTemplateParam `json:"template_params"`
+	Subject        string                              `json:"subject"`
+	Content        string                              `json:"content"`
+	IsDefault      bool                                `json:"is_default"`
 }
 
 func (r templateRequest) toInput() service.NotificationTemplateInput {
@@ -126,6 +126,11 @@ func (r templateRequest) toInput() service.NotificationTemplateInput {
 		Name: r.Name, Scene: r.Scene, TemplateCode: r.TemplateCode, TemplateParams: r.TemplateParams,
 		Subject: r.Subject, Content: r.Content, IsDefault: r.IsDefault,
 	}
+}
+
+// TemplateScenes 返回通知模板的场景与场景内可用占位符（编辑器唯一声明来源）。
+func (h *ProviderHandler) TemplateScenes(c *gin.Context) {
+	bizerrors.RenderSuccess(c, gin.H{"scenes": h.templates.Scenes()})
 }
 
 // Templates 列出某提供商的模板（可按 scene 过滤）。

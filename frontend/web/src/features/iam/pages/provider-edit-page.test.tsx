@@ -288,24 +288,12 @@ vi.mock('../api', () => ({
                   secret: true,
                 },
                 { key: 'sign_name', label: '短信签名', group: 'connection', type: 'text' },
-                { key: 'template_code', label: '短信模板编号', group: 'connection', type: 'text' },
                 {
                   key: 'endpoint',
                   label: '接口地址',
                   group: 'advanced',
                   type: 'text',
                   hint: '留空使用阿里云默认地址',
-                },
-                {
-                  key: 'template_params',
-                  label: '模板变量',
-                  group: 'advanced',
-                  type: 'multiselect',
-                  default: 'code',
-                  options: [
-                    { value: 'code', label: '验证码' },
-                    { value: 'minutes', label: '有效分钟数' },
-                  ],
                 },
                 {
                   key: 'region_id',
@@ -460,8 +448,6 @@ describe('ProviderEditPage', () => {
     // 关键：这一列在阿里云短信里叫「接口地址」，而不是把存储/网关含义拼进来的通用标签
     expect(screen.getByText('API endpoint')).toBeInTheDocument()
     expect(screen.getByText('Defaults to cn-hangzhou')).toBeInTheDocument()
-    // 模板变量是"受限多选"：只能从内置变量集里选（阿里云对变量名多一个少一个都报错）
-    expect(screen.getByText('Template variables')).toBeInTheDocument()
     expect(screen.queryByText('Endpoint')).toBeNull()
     expect(screen.queryByText('Storage root path')).toBeNull()
   })
@@ -572,39 +558,6 @@ describe('ProviderEditPage', () => {
 })
 
 describe('toPayload', () => {
-  it('短信模板变量作为数组进 config（按目录声明装配）', () => {
-    const aliyun = {
-      key: 'aliyun',
-      name: '阿里云短信',
-      description: 'd',
-      icon: 'aliyun',
-      category: 'sms',
-      capabilities: { signin: false, notify: true, captcha: false, storage: false, mfa: false, test: true },
-      fields: [
-        { key: 'name', label: '标识', group: 'basic', type: 'text', required: true, immutable: true },
-        { key: 'display_name', label: '名称', group: 'basic', type: 'text' },
-        { key: 'template_code', label: '短信模板编号', group: 'connection', type: 'text' },
-        {
-          key: 'template_params',
-          label: '模板变量',
-          group: 'advanced',
-          type: 'multiselect',
-          options: [
-            { value: 'code', label: '验证码' },
-            { value: 'minutes', label: '有效分钟数' },
-          ],
-        },
-      ],
-    } as unknown as ProviderTypeInfo
-    const payload = toPayload(aliyun, {
-      name: 'sms-1',
-      template_code: 'SMS_1',
-      template_params: ['code', 'minutes'],
-    })
-    expect(payload.config).toEqual({ template_code: 'SMS_1', template_params: ['code', 'minutes'] })
-    expect(payload.secrets).toEqual({})
-  })
-
   it('按目录声明分桶：敏感进 secrets、策略进 policy、其余进 config', () => {
     const payload = toPayload(OIDC_TYPE, {
       name: 'corp-sso',
