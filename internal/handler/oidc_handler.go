@@ -45,6 +45,14 @@ func (h *OIDCHandler) Authorize(c *gin.Context) {
 		c.Redirect(http.StatusFound, loginURL)
 		return
 	}
+	if authCtx.MfaPending {
+		bizerrors.Fail(c, bizerrors.ErrMfaEnrollRequired)
+		return
+	}
+	if authCtx.PasswordChangeRequired {
+		bizerrors.Fail(c, bizerrors.ErrPasswordChangeRequired)
+		return
+	}
 	redirect, err := h.oidc.Authorize(c.Request.Context(), service.AuthorizeParams{
 		ClientID:            query(c, "client_id"),
 		RedirectURI:         query(c, "redirect_uri"),

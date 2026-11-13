@@ -351,6 +351,7 @@ func (s *AuthService) Callback(ctx context.Context, code, state, ip, userAgent s
 	if err := s.enforceAppAccess(ctx, ssoApp, user); err != nil {
 		return nil, "", err
 	}
+	s.applyPasswordChangeRequirement(ctx, st.InstitutionID, user)
 	session, err := s.sessions.Create(ctx, user, applicationCode(ssoApp), ip, userAgent)
 	if err != nil {
 		return nil, "", err

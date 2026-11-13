@@ -24,37 +24,38 @@ type userDTO struct {
 	// DepartmentPath 主部门展示路径（服务端批量补全；部门为空时不下发）
 	DepartmentPath string `json:"department_path,omitempty"`
 	// DepartmentPaths 全部部门归属的展示路径（Spec Q2 = A：一个人可能在多个部门挂职）
-	DepartmentPaths []string   `json:"department_paths,omitempty"`
-	DisplayName     string     `json:"display_name,omitempty"`
-	FirstName       string     `json:"first_name,omitempty"`
-	LastName        string     `json:"last_name,omitempty"`
-	Avatar          string     `json:"avatar,omitempty"`
-	Email           string     `json:"email,omitempty"`
-	EmailVerified   bool       `json:"email_verified"`
-	Phone           string     `json:"phone,omitempty"`
-	PhoneVerified   bool       `json:"phone_verified"`
-	CountryCode     string     `json:"country_code,omitempty"`
-	Location        string     `json:"location,omitempty"`
-	Address         string     `json:"address,omitempty"`
-	Affiliation     string     `json:"affiliation,omitempty"`
-	Title           string     `json:"title,omitempty"`
-	Homepage        string     `json:"homepage,omitempty"`
-	Bio             string     `json:"bio,omitempty"`
-	Language        string     `json:"language,omitempty"`
-	Gender          string     `json:"gender,omitempty"`
-	Birthday        string     `json:"birthday,omitempty"`
-	Education       string     `json:"education,omitempty"`
-	IsAdmin         bool       `json:"is_admin"`
-	IsForbidden     bool       `json:"is_forbidden"`
-	IsDeleted       bool       `json:"is_deleted"`
-	MfaEnabled      bool       `json:"mfa_enabled"`
-	HasPassword     bool       `json:"has_password"`
-	RegisterType    string     `json:"register_type,omitempty"`
-	RegisterSource  string     `json:"register_source,omitempty"`
-	LastSigninTime  *time.Time `json:"last_signin_time,omitempty"`
-	LastSigninIP    string     `json:"last_signin_ip,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	DepartmentPaths    []string   `json:"department_paths,omitempty"`
+	DisplayName        string     `json:"display_name,omitempty"`
+	FirstName          string     `json:"first_name,omitempty"`
+	LastName           string     `json:"last_name,omitempty"`
+	Avatar             string     `json:"avatar,omitempty"`
+	Email              string     `json:"email,omitempty"`
+	EmailVerified      bool       `json:"email_verified"`
+	Phone              string     `json:"phone,omitempty"`
+	PhoneVerified      bool       `json:"phone_verified"`
+	CountryCode        string     `json:"country_code,omitempty"`
+	Location           string     `json:"location,omitempty"`
+	Address            string     `json:"address,omitempty"`
+	Affiliation        string     `json:"affiliation,omitempty"`
+	Title              string     `json:"title,omitempty"`
+	Homepage           string     `json:"homepage,omitempty"`
+	Bio                string     `json:"bio,omitempty"`
+	Language           string     `json:"language,omitempty"`
+	Gender             string     `json:"gender,omitempty"`
+	Birthday           string     `json:"birthday,omitempty"`
+	Education          string     `json:"education,omitempty"`
+	IsAdmin            bool       `json:"is_admin"`
+	IsForbidden        bool       `json:"is_forbidden"`
+	IsDeleted          bool       `json:"is_deleted"`
+	MfaEnabled         bool       `json:"mfa_enabled"`
+	HasPassword        bool       `json:"has_password"`
+	MustChangePassword bool       `json:"must_change_password"`
+	RegisterType       string     `json:"register_type,omitempty"`
+	RegisterSource     string     `json:"register_source,omitempty"`
+	LastSigninTime     *time.Time `json:"last_signin_time,omitempty"`
+	LastSigninIP       string     `json:"last_signin_ip,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 }
 
 // toUserDTO 将用户实体转换为响应 DTO（剥离敏感字段）。
@@ -81,8 +82,9 @@ func toUserDTOFields(u *repository.User) *userDTO {
 		Homepage: u.Homepage, Bio: u.Bio, Language: u.Language, Gender: u.Gender, Birthday: u.Birthday,
 		Education: u.Education, IsAdmin: u.IsAdmin, IsForbidden: u.IsForbidden,
 		IsDeleted: u.IsDeleted, MfaEnabled: u.MfaEnabled,
-		HasPassword:  u.HasPassword || u.PasswordHash != "",
-		RegisterType: u.RegisterType, RegisterSource: u.RegisterSource,
+		HasPassword:        u.HasPassword || u.PasswordHash != "",
+		MustChangePassword: u.MustChangePassword,
+		RegisterType:       u.RegisterType, RegisterSource: u.RegisterSource,
 		LastSigninTime: u.LastSigninTime, LastSigninIP: u.LastSigninIP,
 		CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt,
 	}

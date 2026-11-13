@@ -6,6 +6,7 @@ interface AuthContextValue {
   status: AuthStatus | null
   loading: boolean
   authenticated: boolean
+  passwordChangeRequired: boolean
   isAdmin: boolean
   /** Whether the user may enter the administration console. */
   hasConsoleAccess: boolean
@@ -68,10 +69,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     // Delegated administrators can enter the console; end users only use the portal.
     const hasConsoleAccess = isAdmin || (status?.permissions ?? []).some((rule) => rule.effect !== 'Deny')
+    const passwordChangeRequired = Boolean(status?.password_change_required)
     return {
       status,
       loading,
       authenticated: Boolean(status?.authenticated && !status?.mfa_pending),
+      passwordChangeRequired,
       isAdmin,
       hasConsoleAccess,
       refresh,

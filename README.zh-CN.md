@@ -127,7 +127,7 @@ git tag 1.2.3 && git push origin 1.2.3
 仓库按版本顺序执行迁移：
 
 - `migrations/001_init.up.sql`：创建基线 schema。
-- `migrations/002_*` 至 `migrations/004_*`：增加用户导入记录，并把用户密码、登录统计与注册来源拆分到独立 1:1 子表。
+- `migrations/002_*` 至 `migrations/005_*`：增加用户导入记录，把用户密码、登录统计与注册来源拆分到独立 1:1 子表，并加入密码历史失效与强制改密状态。
 - 每个 `NNNN_name.up.sql` 都有对应的 `NNNN_name.down.sql`。
 
 已有数据库必须先应用新增迁移，再启动依赖新结构的二进制。迁移 `003` 在发现

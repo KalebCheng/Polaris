@@ -109,6 +109,7 @@ func (s *UserService) prepareImportUser(org *repository.Institution, item *Creat
 	u.PasswordHash = hash
 	u.PasswordType = auth.NormalizePasswordType(org.PasswordType)
 	u.PasswordSalt = org.PasswordSalt
+	u.MustChangePassword = true
 	now := time.Now()
 	u.PasswordUpdatedAt = &now
 	if u.UID == "" {

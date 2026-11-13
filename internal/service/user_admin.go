@@ -70,9 +70,10 @@ type UserSecurityStatus struct {
 	HasPassword       bool       `json:"has_password"`
 	PasswordUpdatedAt *time.Time `json:"password_updated_at,omitempty"`
 	// PasswordExpireAt 依据组织密码有效期策略推算（策略为 0 时不下发）
-	PasswordExpireAt *time.Time `json:"password_expire_at,omitempty"`
-	MfaEnabled       bool       `json:"mfa_enabled"`
-	MfaType          string     `json:"mfa_type,omitempty"`
+	PasswordExpireAt   *time.Time `json:"password_expire_at,omitempty"`
+	MustChangePassword bool       `json:"must_change_password"`
+	MfaEnabled         bool       `json:"mfa_enabled"`
+	MfaType            string     `json:"mfa_type,omitempty"`
 	// MfaRecoveryCodesLeft 恢复码剩余数量（只回数量，绝不回码本身）
 	MfaRecoveryCodesLeft int `json:"mfa_recovery_codes_left"`
 }
@@ -466,8 +467,9 @@ func (s *UserService) SecurityStatus(ctx context.Context, institutionID int64, n
 		return nil, err
 	}
 	status := &UserSecurityStatus{
-		HasPassword:       u.HasPassword || u.PasswordHash != "",
-		PasswordUpdatedAt: u.PasswordUpdatedAt,
+		HasPassword:        u.HasPassword || u.PasswordHash != "",
+		PasswordUpdatedAt:  u.PasswordUpdatedAt,
+		MustChangePassword: u.MustChangePassword,
 	}
 	if s.mfa != nil {
 		enabled, types, recoveryLeft, summaryErr := s.mfa.CredentialSummary(ctx, institutionID, u.ID)
@@ -483,6 +485,9 @@ func (s *UserService) SecurityStatus(ctx context.Context, institutionID int64, n
 	if u.PasswordUpdatedAt != nil && org.PasswordExpireDays > 0 {
 		expireAt := u.PasswordUpdatedAt.Add(time.Duration(org.PasswordExpireDays) * 24 * time.Hour)
 		status.PasswordExpireAt = &expireAt
+		if expireAt.Before(time.Now()) {
+			status.MustChangePassword = true
+		}
 	}
 	return status, nil
 }

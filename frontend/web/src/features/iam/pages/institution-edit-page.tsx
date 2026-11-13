@@ -43,6 +43,7 @@ interface Form {
   password_options: string[]
   password_salt: string
   password_expire_days: number
+  password_history_count: number
   disable_signin: boolean
   use_email_as_username: boolean
 }
@@ -58,6 +59,7 @@ const emptyForm: Form = {
   password_options: ['AtLeast8'],
   password_salt: '',
   password_expire_days: 0,
+  password_history_count: 0,
   disable_signin: false,
   use_email_as_username: false,
 }
@@ -125,6 +127,7 @@ export default function InstitutionEditPage() {
           password_options: org.password_options ?? [],
           password_salt: '',
           password_expire_days: org.password_expire_days ?? 0,
+          password_history_count: org.password_history_count ?? 0,
           disable_signin: org.disable_signin,
           use_email_as_username: org.use_email_as_username,
         }
@@ -161,6 +164,7 @@ export default function InstitutionEditPage() {
       password_type: form.password_type,
       password_options: form.password_options,
       password_expire_days: Number(form.password_expire_days) || 0,
+      password_history_count: Number(form.password_history_count) || 0,
       disable_signin: form.disable_signin,
       use_email_as_username: form.use_email_as_username,
     }
@@ -310,6 +314,19 @@ export default function InstitutionEditPage() {
                       min={0}
                       value={form.password_expire_days}
                       onChange={(event) => set('password_expire_days', Number(event.target.value))}
+                    />
+                  </Field>
+                  <Field
+                    id="org-history"
+                    labelKey="institutions.passwordHistoryCount"
+                    hint={t('institutions.passwordHistoryCountHint')}
+                  >
+                    <Input
+                      id="org-history"
+                      type="number"
+                      min={0}
+                      value={form.password_history_count}
+                      onChange={(event) => set('password_history_count', Number(event.target.value))}
                     />
                   </Field>
                   <Field

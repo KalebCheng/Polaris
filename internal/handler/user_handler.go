@@ -270,7 +270,8 @@ func (h *UserHandler) Create(c *gin.Context) {
 			JobLevelID:    req.JobLevelID,
 			IsAdmin:       req.IsAdmin,
 		},
-		Password: req.Password,
+		Password:              req.Password,
+		RequirePasswordChange: true,
 	})
 	if err != nil {
 		bizerrors.Fail(c, err)

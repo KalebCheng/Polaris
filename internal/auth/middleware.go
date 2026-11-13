@@ -104,6 +104,10 @@ func (m *Middleware) Handle() gin.HandlerFunc {
 			bizerrors.AbortError(c, bizerrors.ErrMfaEnrollRequired)
 			return
 		}
+		if authCtx.PasswordChangeRequired && !passwordChangeAllowedPath(c.Request.URL.Path) {
+			bizerrors.AbortError(c, bizerrors.ErrPasswordChangeRequired)
+			return
+		}
 
 		c.Set(AuthContextKey, authCtx)
 		c.Set("user_id", authCtx.UserID)
@@ -172,23 +176,25 @@ func (m *Middleware) resolveSession(c *gin.Context, sessionID string) *AuthConte
 		return nil
 	}
 	return &AuthContext{
-		SessionID:          session.ID,
-		UserID:             session.UserID,
-		InstitutionID:      session.InstitutionID,
-		Name:               session.Name,
-		DisplayName:        session.DisplayName,
-		Email:              session.Email,
-		IsAdmin:            session.IsAdmin,
-		Roles:              session.Roles,
-		Permissions:        session.Permissions,
-		ExpiresAt:          session.ExpiresAt,
-		MfaPending:         session.MfaPending,
-		MfaProviderIDs:     session.MfaProviderIDs,
-		MfaRequired:        session.MfaRequired,
-		MfaCanSkip:         session.MfaCanSkip,
-		MfaMethod:          session.MfaMethod,
-		MfaRemember:        session.MfaRemember,
-		MfaTrustProviderID: session.MfaTrustProviderID,
+		SessionID:              session.ID,
+		UserID:                 session.UserID,
+		InstitutionID:          session.InstitutionID,
+		Name:                   session.Name,
+		DisplayName:            session.DisplayName,
+		Email:                  session.Email,
+		IsAdmin:                session.IsAdmin,
+		Roles:                  session.Roles,
+		Permissions:            session.Permissions,
+		ExpiresAt:              session.ExpiresAt,
+		MfaPending:             session.MfaPending,
+		PasswordChangeRequired: session.PasswordChangeRequired,
+		PasswordVerified:       session.PasswordVerified,
+		MfaProviderIDs:         session.MfaProviderIDs,
+		MfaRequired:            session.MfaRequired,
+		MfaCanSkip:             session.MfaCanSkip,
+		MfaMethod:              session.MfaMethod,
+		MfaRemember:            session.MfaRemember,
+		MfaTrustProviderID:     session.MfaTrustProviderID,
 	}
 }
 
@@ -346,6 +352,16 @@ func mfaPendingAllowedPath(path string) bool {
 	case "/api/v1/auth/mfa/options", "/api/v1/auth/mfa/enroll", "/api/v1/auth/mfa/enroll/resend", "/api/v1/auth/mfa/enroll/verify",
 		"/api/v1/auth/mfa/verify", "/api/v1/auth/mfa/skip", "/api/v1/auth/mfa/setup",
 		"/api/v1/auth/logout", "/api/v1/auth/status":
+		return true
+	}
+	return false
+}
+
+// passwordChangeAllowedPath 强制改密会话允许访问的路径。
+func passwordChangeAllowedPath(path string) bool {
+	switch path {
+	case "/api/v1/auth/change-password", "/api/v1/auth/logout", "/api/v1/auth/status",
+		"/api/v1/auth/mfa/options", "/api/v1/me":
 		return true
 	}
 	return false

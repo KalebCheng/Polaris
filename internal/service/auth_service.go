@@ -194,8 +194,10 @@ func (s *AuthService) Login(ctx context.Context, req auth.LoginRequest, host, ip
 	mfaChallenge := (*auth.MfaChallenge)(nil)
 	mfaTrustToken, mfaTrustMaxAge := "", 0
 
-	if err := s.checkPasswordExpiry(org, user); err != nil {
-		return nil, "", err
+	if passwordExpired(org, user) {
+		// Do not lock the user out: create a restricted session and force a
+		// password update after login.
+		user.MustChangePassword = true
 	}
 
 	// 应用名可空（组织未配置应用时）：会话与 JIT 仅在确有应用时关联
@@ -203,7 +205,7 @@ func (s *AuthService) Login(ctx context.Context, req auth.LoginRequest, host, ip
 	if app != nil {
 		appName = app.Code
 	}
-	session, err := s.sessions.Create(ctx, user, appName, ip, userAgent)
+	session, err := s.sessions.CreateWithPasswordProof(ctx, user, appName, ip, userAgent)
 	if err != nil {
 		return nil, "", err
 	}
@@ -237,6 +239,39 @@ func (s *AuthService) LoadSession(ctx context.Context, sessionID string) (*auth.
 	return s.sessions.Load(ctx, sessionID)
 }
 
+// ChangePasswordAndRenewSession completes the forced password-change flow.
+// UserService.ChangePassword invalidates every session for the user; this
+// method then creates a fresh full session so the login page can continue the
+// original login flow without asking the user to sign in again.
+func (s *AuthService) ChangePasswordAndRenewSession(
+	ctx context.Context, sessionID, oldPassword, newPassword string,
+) (string, error) {
+	session, err := s.sessions.Load(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	if !session.PasswordChangeRequired {
+		return "", bizerrors.ErrPasswordChangeRequired
+	}
+	if session.PasswordVerified {
+		if err := s.userService.ForceChangePassword(ctx, session.InstitutionID, session.Name, newPassword); err != nil {
+			return "", err
+		}
+	} else if err := s.userService.ChangePassword(ctx, session.InstitutionID, session.Name, oldPassword, newPassword); err != nil {
+		return "", err
+	}
+	user, err := s.users.GetByName(ctx, session.InstitutionID, session.Name)
+	if err != nil {
+		return "", err
+	}
+	renewed, err := s.sessions.Create(ctx, user, session.Application, session.IP, session.UserAgent)
+	if err != nil {
+		return "", err
+	}
+	_ = s.users.UpdateLastSignin(ctx, user.ID, time.Now(), session.IP)
+	return renewed.ID, nil
+}
+
 // MFA 返回 MFA 运行时（handler 唯一入口）。
 func (s *AuthService) MFA() *MFAService { return s.mfa }
 
@@ -256,9 +291,11 @@ func (s *AuthService) PasswordIdentifiers(app *repository.Application) []string 
 
 func (s *AuthService) loginResponse(user *repository.User, session *auth.Session, from string) *auth.LoginResponse {
 	return &auth.LoginResponse{
-		Session: &auth.LoginSession{ExpiresAt: session.ExpiresAt, From: from},
-		User:    toUserView(user),
-		Roles:   session.Roles,
+		Session:                           &auth.LoginSession{ExpiresAt: session.ExpiresAt, From: from},
+		User:                              toUserView(user),
+		Roles:                             session.Roles,
+		PasswordChangeRequired:            session.PasswordChangeRequired,
+		PasswordChangeRequiresOldPassword: session.PasswordChangeRequired && !session.PasswordVerified,
 	}
 }
 
@@ -457,14 +494,26 @@ func dedupeInt64(values []int64) []int64 {
 	return out
 }
 
-func (s *AuthService) checkPasswordExpiry(org *repository.Institution, user *repository.User) error {
-	if org.PasswordExpireDays <= 0 || user.PasswordUpdatedAt == nil {
-		return nil
+func passwordExpired(org *repository.Institution, user *repository.User) bool {
+	if org == nil || user == nil || org.PasswordExpireDays <= 0 || user.PasswordUpdatedAt == nil {
+		return false
 	}
-	if time.Since(*user.PasswordUpdatedAt) > time.Duration(org.PasswordExpireDays)*24*time.Hour {
-		return bizerrors.New(bizerrors.CodePasswordExpired, "password expired, please change it")
+	return time.Since(*user.PasswordUpdatedAt) > time.Duration(org.PasswordExpireDays)*24*time.Hour
+}
+
+// applyPasswordChangeRequirement marks non-password login paths (SSO, code,
+// magic link) as password-change-required when the password policy applies.
+func (s *AuthService) applyPasswordChangeRequirement(ctx context.Context, institutionID int64, user *repository.User) {
+	if user == nil || user.MustChangePassword || s.orgs == nil {
+		return
 	}
-	return nil
+	org, err := s.orgs.GetByID(ctx, institutionID)
+	if err != nil {
+		return
+	}
+	if passwordExpired(org, user) {
+		user.MustChangePassword = true
+	}
 }
 
 // signinFailurePolicy 解析登录失败限制：应用级字段优先（0 = 沿用平台默认）。
@@ -550,16 +599,18 @@ func (s *AuthService) Status(ctx context.Context, sessionID string) *auth.AuthSt
 		return &auth.AuthStatus{Authenticated: false}
 	}
 	status := &auth.AuthStatus{
-		Authenticated: true,
-		MfaPending:    session.MfaPending,
-		InstitutionID: session.InstitutionID,
-		Name:          session.Name,
-		DisplayName:   session.DisplayName,
-		Email:         session.Email,
-		IsAdmin:       session.IsAdmin,
-		Roles:         session.Roles,
-		Permissions:   session.Permissions,
-		ExpiresAt:     session.ExpiresAt,
+		Authenticated:                     true,
+		MfaPending:                        session.MfaPending,
+		PasswordChangeRequired:            session.PasswordChangeRequired,
+		PasswordChangeRequiresOldPassword: session.PasswordChangeRequired && !session.PasswordVerified,
+		InstitutionID:                     session.InstitutionID,
+		Name:                              session.Name,
+		DisplayName:                       session.DisplayName,
+		Email:                             session.Email,
+		IsAdmin:                           session.IsAdmin,
+		Roles:                             session.Roles,
+		Permissions:                       session.Permissions,
+		ExpiresAt:                         session.ExpiresAt,
 	}
 	// 顶栏与个人资料需要组织展示名与头像：会话里只存登录快照，头像可能在登录后才上传，
 	// 因此按会话里的组织 + 账号实时回填（/auth/status 只在应用启动与显式 refresh 时调用）。

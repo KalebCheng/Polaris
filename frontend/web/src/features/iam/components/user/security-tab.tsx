@@ -127,6 +127,11 @@ export function SecurityTab({ user, onChanged }: SecurityTabProps) {
                       ) : (
                         <Badge variant="outline">{t('users.noPassword')}</Badge>
                       )}
+                      {status?.must_change_password ? (
+                        <Badge variant="warning" className="ml-1.5">
+                          {t('users.mustChangePassword')}
+                        </Badge>
+                      ) : null}
                     </dd>
                   </div>
                   <div className="flex items-center justify-between gap-3">

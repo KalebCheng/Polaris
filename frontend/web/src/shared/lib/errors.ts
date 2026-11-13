@@ -16,6 +16,8 @@ export function describeError(error: unknown, t: TFunction): string {
         return t('auth.userDisabled')
       case 'PASSWORD_EXPIRED':
         return t('auth.passwordExpired')
+      case 'PASSWORD_CHANGE_REQUIRED':
+        return t('auth.passwordChangeRequired')
       case 'INSTITUTION_REQUIRED':
         return t('auth.institutionAmbiguous')
       case 'MFA_INVALID':

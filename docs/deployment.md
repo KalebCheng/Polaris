@@ -231,7 +231,8 @@ docker run --rm \
 迁移 `003_user_auth_normalization` 会拆分密码、登录统计并移除 `users.mfa_*`。执行前会检查
 “只在旧 MFA 列中存在、未落到 `user_mfa_credentials`”的绑定；发现这类数据会主动报错中止，
 需要先迁移或让相关用户重新绑定。`004_user_registration_cleanup` 会把注册来源迁到
-`user_registrations` 并清理冗余索引。
+`user_registrations` 并清理冗余索引；`005_password_change_policy` 会为密码历史补上失效时间，
+并把当前密码登记为唯一的 active 历史行，之后导入/管理员重置的用户首次登录会被要求改密。
 
 约束：
 

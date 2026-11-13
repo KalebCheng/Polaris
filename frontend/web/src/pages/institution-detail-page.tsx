@@ -205,6 +205,10 @@ export default function InstitutionDetailPage() {
                   label={t('institutions.passwordExpireDays')}
                   value={org.password_expire_days || '—'}
                 />
+                <InfoRow
+                  label={t('institutions.passwordHistoryCount')}
+                  value={String(org.password_history_count ?? 0)}
+                />
                 <InfoRow label={t('institutions.description')} value={org.description || '—'} />
               </dl>
             </CardContent>

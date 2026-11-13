@@ -106,6 +106,7 @@ export interface User {
   is_deleted: boolean
   mfa_enabled: boolean
   has_password: boolean
+  must_change_password?: boolean
   register_type?: string
   register_source?: string
   last_signin_time?: string | null
@@ -124,6 +125,7 @@ export interface UserSecurityStatus {
   mfa_type?: string
   /** 恢复码剩余数量（只回数量，不回码本身） */
   mfa_recovery_codes_left: number
+  must_change_password?: boolean
 }
 
 /** 一条登录失败计数记录（按应用 + IP 维度） */
@@ -945,6 +947,10 @@ export interface AuthStatus {
   authenticated: boolean
   /** 主认证已通过但 MFA 尚未完成；API 只能访问 MFA 必要端点 */
   mfa_pending?: boolean
+  /** 已登录但必须先修改密码；API 只能访问改密必要端点 */
+  password_change_required?: boolean
+  /** 强制改密时是否仍需要旧密码（非密码登录创建的受限会话为 true） */
+  password_change_requires_old_password?: boolean
   institution_id: number
   /** 组织展示名（账号菜单与个人资料展示；不直接用主键） */
   institution_name?: string
@@ -973,6 +979,8 @@ export interface LoginResponse {
   roles?: string[]
   mfa?: { required: boolean; type: string; enroll?: boolean; remember_hours?: number }
   identity_linked?: boolean
+  password_change_required?: boolean
+  password_change_requires_old_password?: boolean
 }
 
 /** 身份连接：方向（入=从外部拉取；出=推送给下游应用） */

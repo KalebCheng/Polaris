@@ -13,7 +13,10 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/shared/api/auth', () => ({
-  authApi: { oauthCallback: mocks.oauthCallback },
+  authApi: {
+    oauthCallback: mocks.oauthCallback,
+    status: async () => ({ authenticated: true, institution_id: 2 }),
+  },
 }))
 
 vi.mock('@/shared/lib/navigation', () => ({

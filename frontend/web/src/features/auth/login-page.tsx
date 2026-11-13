@@ -78,7 +78,7 @@ export default function LoginPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const { refresh, authenticated, isAdmin } = useAuth()
+  const { refresh, authenticated, isAdmin, passwordChangeRequired, status } = useAuth()
   // 登录页使用公开端点获取组织（/auth/institutions），不请求受保护的组织接口
   const [institutions, setInstitutions] = useState<{ id: number; name: string; display_name: string }[]>([])
   // 组织由后端自动解析（域名 / 唯一账号命中 / 默认组织），登录页**默认为空**；
@@ -148,7 +148,11 @@ export default function LoginPage() {
   // 登录流程分屏：凭据 → （组织要求时）第二因子 / 绑定。
   // 对齐成熟产品（Casdoor `MfaVerify`）：第二因子是**独立一屏**，
   // 而不是在凭据表单里再塞一个「动态码」字段、把账号密码再提交一遍。
-  const [step, setStep] = useState<'credentials' | 'mfa' | 'enroll'>('credentials')
+  const [step, setStep] = useState<'credentials' | 'mfa' | 'enroll' | 'password-change'>('credentials')
+  const [changeNewPassword, setChangeNewPassword] = useState('')
+  const [changeConfirmPassword, setChangeConfirmPassword] = useState('')
+  const [changeRequiresOldPassword, setChangeRequiresOldPassword] = useState(false)
+  const [changeCurrentPassword, setChangeCurrentPassword] = useState('')
   const [mfaRememberHours, setMfaRememberHours] = useState(0)
   const [mfaOptions, setMfaOptions] = useState<MFAOptions | null>(null)
   const [mfaProviderID, setMfaProviderID] = useState<number | null>(null)
@@ -253,6 +257,13 @@ export default function LoginPage() {
   const autoRedirected = useRef(false)
   useEffect(() => {
     if (!authenticated || autoRedirected.current) return
+    if (passwordChangeRequired) {
+      autoRedirected.current = true
+      setMode('password')
+      setChangeRequiresOldPassword(Boolean(status?.password_change_requires_old_password))
+      setStep('password-change')
+      return
+    }
     autoRedirected.current = true
     if (canResumeAuthorize) {
       // 先做一次本地预检：未授权时留在登录页的提醒视图，不把用户送到 /oauth/authorize。
@@ -276,7 +287,17 @@ export default function LoginPage() {
       return
     }
     navigate(isAdmin ? '/' : '/portal', { replace: true })
-  }, [authenticated, isAdmin, canResumeAuthorize, oauthQuery, clientId, from, navigate])
+  }, [
+    authenticated,
+    passwordChangeRequired,
+    status?.password_change_requires_old_password,
+    isAdmin,
+    canResumeAuthorize,
+    oauthQuery,
+    clientId,
+    from,
+    navigate,
+  ])
 
   // APP_ACCESS_DENIED：登录/二次验证/验证码登录都可能命中；统一切到提醒视图。
   const showAccessDenied = useCallback(
@@ -322,10 +343,20 @@ export default function LoginPage() {
 
   const finishLogin = useCallback(
     async (resolvedInstitution?: string, target?: string) => {
+      // This callback owns the post-login navigation; suppress the generic
+      // "already authenticated" redirect while the password-change step runs.
+      autoRedirected.current = true
       // 以**后端解析出的组织**为准写入控制台偏好，使其落地到正确组织（而非登录页的猜测）
       const landingOrg = resolvedInstitution || institution
       if (landingOrg) window.localStorage.setItem('polaris.institution', landingOrg)
       await refresh()
+      const status = await authApi.status().catch(() => null)
+      if (status?.password_change_required) {
+        setMode('password')
+        setChangeRequiresOldPassword(Boolean(status.password_change_requires_old_password))
+        setStep('password-change')
+        return
+      }
       // 应用驱动登录：登录成功后回到 /oauth/authorize 续走授权，由其按 redirect_uri 回跳应用
       // （缺 redirect_uri 时无法回跳，退化为按角色落地——应用侧应补齐回调地址）
       if (canResumeAuthorize) {
@@ -334,14 +365,21 @@ export default function LoginPage() {
       }
       // 显式 from 优先；否则按角色落地——管理员进控制台，普通用户进门户
       if (target && target.startsWith('/') && !target.startsWith('//')) {
+        if (target.startsWith('/oauth/authorize')) {
+          navigateDocument(target)
+          return
+        }
         navigate(target, { replace: true })
         return
       }
       if (from) {
+        if (from.startsWith('/oauth/authorize')) {
+          navigateDocument(from)
+          return
+        }
         navigate(from, { replace: true })
         return
       }
-      const status = await authApi.status().catch(() => null)
       navigate(status?.is_admin ? '/' : '/portal', { replace: true })
     },
     [refresh, navigate, from, institution, canResumeAuthorize, oauthQuery],
@@ -458,6 +496,45 @@ export default function LoginPage() {
       setSubmitting(false)
     }
   }, [finishLogin, t])
+
+  const submitRequiredPasswordChange = useCallback(
+    async (event: React.FormEvent) => {
+      event.preventDefault()
+      if (!changeNewPassword) return
+      if (changeRequiresOldPassword && !changeCurrentPassword) {
+        toast.error(t('auth.fieldRequired'))
+        return
+      }
+      if (changeNewPassword !== changeConfirmPassword) {
+        toast.error(t('auth.passwordMismatch'))
+        return
+      }
+      setSubmitting(true)
+      try {
+        await authApi.changePassword(
+          changeRequiresOldPassword
+            ? { old_password: changeCurrentPassword, new_password: changeNewPassword }
+            : { new_password: changeNewPassword },
+        )
+        setChangeCurrentPassword('')
+        setChangeNewPassword('')
+        setChangeConfirmPassword('')
+        await finishLogin()
+      } catch (error) {
+        toast.error(describeError(error, t))
+      } finally {
+        setSubmitting(false)
+      }
+    },
+    [
+      changeConfirmPassword,
+      changeCurrentPassword,
+      changeNewPassword,
+      changeRequiresOldPassword,
+      finishLogin,
+      t,
+    ],
+  )
 
   // 返回凭据屏：清掉第二因子中间态，并换一份新的人机校验挑战
   const backToCredentials = useCallback(async () => {
@@ -771,13 +848,13 @@ export default function LoginPage() {
             {subtitle ? <p className="text-muted-foreground text-sm leading-relaxed">{subtitle}</p> : null}
           </header>
 
-          {appDriven && !canResumeAuthorize ? (
+          {step !== 'password-change' && appDriven && !canResumeAuthorize ? (
             <p className="text-muted-foreground border-border rounded-md border border-dashed px-3 py-2 text-center text-xs leading-relaxed">
               {t('auth.appNoRedirectHint')}
             </p>
           ) : null}
 
-          {showInstitutionSelector ? (
+          {step !== 'password-change' && showInstitutionSelector ? (
             <div className="space-y-2">
               <Label htmlFor="institution">{t('auth.institution')}</Label>
               {institutionRequired ? (
@@ -817,7 +894,8 @@ export default function LoginPage() {
 
           <Tabs value={mode} onValueChange={(value) => setMode(value as 'password' | 'code')}>
             {/* 仅一种登录方式时不必渲染切换条，避免出现只有一个标签的空壳 */}
-            {[passwordAvailable, codeAvailable, magicAvailable].filter(Boolean).length > 1 ? (
+            {step !== 'password-change' &&
+            [passwordAvailable, codeAvailable, magicAvailable].filter(Boolean).length > 1 ? (
               <TabsList
                 variant="plain"
                 className="h-auto w-full justify-start gap-6 rounded-none border-b bg-transparent p-0"
@@ -844,7 +922,52 @@ export default function LoginPage() {
             ) : null}
 
             <TabsContent value="password" className="pt-6">
-              {step === 'mfa' ? (
+              {step === 'password-change' ? (
+                <form className="space-y-4" onSubmit={(event) => void submitRequiredPasswordChange(event)}>
+                  <div className="space-y-2 text-center">
+                    <h2 className="text-lg font-semibold tracking-tight">{t('auth.passwordChangeTitle')}</h2>
+                    <p className="text-muted-foreground text-sm leading-relaxed">
+                      {t('auth.passwordChangeHint')}
+                    </p>
+                  </div>
+                  {changeRequiresOldPassword ? (
+                    <div className="space-y-2">
+                      <Label htmlFor="change-current-password">{t('auth.currentPassword')}</Label>
+                      <Input
+                        id="change-current-password"
+                        type="password"
+                        autoComplete="current-password"
+                        value={changeCurrentPassword}
+                        onChange={(event) => setChangeCurrentPassword(event.target.value)}
+                        required
+                      />
+                    </div>
+                  ) : null}
+                  <div className="space-y-2">
+                    <Label htmlFor="change-new-password">{t('auth.newPassword')}</Label>
+                    <Input
+                      id="change-new-password"
+                      type="password"
+                      autoComplete="new-password"
+                      value={changeNewPassword}
+                      onChange={(event) => setChangeNewPassword(event.target.value)}
+                      required
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="change-confirm-password">{t('auth.confirmPassword')}</Label>
+                    <Input
+                      id="change-confirm-password"
+                      type="password"
+                      autoComplete="new-password"
+                      value={changeConfirmPassword}
+                      onChange={(event) => setChangeConfirmPassword(event.target.value)}
+                      required
+                    />
+                  </div>
+                  <SubmitButton pending={submitting}>{t('auth.changeAndContinue')}</SubmitButton>
+                </form>
+              ) : step === 'mfa' ? (
                 /* 第二因子：独立一屏；凭据已保存，只补动态码 */
                 <MfaVerifyStep
                   rememberHours={mfaRememberHours}

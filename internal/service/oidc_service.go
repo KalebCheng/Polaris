@@ -40,6 +40,22 @@ func (s *OIDCService) enforceAccess(ctx context.Context, app *repository.Applica
 	return s.access.Enforce(ctx, app, user)
 }
 
+// ensureUserMayAuthenticate blocks OIDC token issuance for users who must
+// change their password or whose password has expired.
+func (s *OIDCService) ensureUserMayAuthenticate(ctx context.Context, app *repository.Application, user *repository.User) error {
+	if user.MustChangePassword {
+		return bizerrors.ErrPasswordChangeRequired
+	}
+	org, err := s.orgs.GetByID(ctx, app.InstitutionID)
+	if err != nil {
+		return bizerrors.ErrOAuthInvalidGrant.WithDetail("reason", "institution_missing")
+	}
+	if passwordExpired(org, user) {
+		return bizerrors.New(bizerrors.CodePasswordExpired, "password expired, please change it")
+	}
+	return nil
+}
+
 // NewOIDCService 创建 OIDC 服务
 func NewOIDCService(
 	apps repository.ApplicationRepository,
@@ -133,6 +149,9 @@ func (s *OIDCService) Authorize(ctx context.Context, p AuthorizeParams) (string,
 	user, err := s.users.GetByName(ctx, app.InstitutionID, p.UserName)
 	if err != nil {
 		return "", bizerrors.ErrUnauthorized
+	}
+	if err := s.ensureUserMayAuthenticate(ctx, app, user); err != nil {
+		return "", err
 	}
 	// 应用准入判定（Spec FR-3）：authorize 天然携带应用上下文（client_id），因此一律判定。
 	// 拒绝时不返回错误信封，而是按 OAuth2 规范回跳 redirect_uri?error=access_denied&state=...，
@@ -293,6 +312,9 @@ func (s *OIDCService) grantAuthorizationCode(ctx context.Context, app *repositor
 	if err != nil {
 		return nil, bizerrors.ErrOAuthInvalidGrant.WithDetail("reason", "user_missing")
 	}
+	if err := s.ensureUserMayAuthenticate(ctx, app, user); err != nil {
+		return nil, err
+	}
 	// 应用准入：authorize 与换码之间被移出名单时，授权码立即失效（收口窗口期）
 	if err := s.enforceAccess(ctx, app, user); err != nil {
 		return nil, err
@@ -319,6 +341,9 @@ func (s *OIDCService) grantRefreshToken(ctx context.Context, app *repository.App
 	user, err := s.users.GetByName(ctx, rec.InstitutionID, rec.User)
 	if err != nil {
 		return nil, bizerrors.ErrOAuthInvalidGrant.WithDetail("reason", "user_missing")
+	}
+	if err := s.ensureUserMayAuthenticate(ctx, app, user); err != nil {
+		return nil, err
 	}
 	// 「撤销授权立即生效」的关键点：换新令牌前**实时**判定，不依赖会话是否已被失效。
 	if err := s.enforceAccess(ctx, app, user); err != nil {
@@ -351,6 +376,9 @@ func (s *OIDCService) grantPassword(ctx context.Context, app *repository.Applica
 	}
 	if user.IsForbidden || user.IsDeleted || !auth.VerifyPasswordWith(req.Password, user.PasswordHash, user.PasswordType, user.PasswordSalt) {
 		return nil, bizerrors.ErrInvalidCredentials
+	}
+	if err := s.ensureUserMayAuthenticate(ctx, app, user); err != nil {
+		return nil, err
 	}
 	if err := s.enforceAccess(ctx, app, user); err != nil {
 		return nil, err

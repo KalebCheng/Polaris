@@ -149,6 +149,9 @@ export default function UsersPage() {
           ) : null}
           {user.mfa_enabled ? <Badge variant="secondary">{t('users.mfa')}</Badge> : null}
           {!user.has_password ? <Badge variant="outline">{t('users.noPassword')}</Badge> : null}
+          {user.must_change_password ? (
+            <Badge variant="warning">{t('users.mustChangePassword')}</Badge>
+          ) : null}
         </div>
       ),
     },

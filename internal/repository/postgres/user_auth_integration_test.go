@@ -38,6 +38,7 @@ func TestUserAuthDetailsLoadFromChildTables(t *testing.T) {
 		PasswordHash:         "hash-1",
 		PasswordType:         "bcrypt",
 		PasswordSalt:         "pepper-1",
+		MustChangePassword:   true,
 		SignupApplication:    "app-auth",
 		SignupApplicationID:  appID,
 		RegisterType:         "syncer",
@@ -59,6 +60,9 @@ func TestUserAuthDetailsLoadFromChildTables(t *testing.T) {
 	}
 	if !got.HasPassword || got.PasswordHash != "hash-1" || got.PasswordType != "bcrypt" || got.PasswordSalt != "pepper-1" {
 		t.Fatalf("密码子表未正确回填: %+v", got)
+	}
+	if !got.MustChangePassword {
+		t.Fatal("导入/重置后的 must_change_password 未回填")
 	}
 	if got.SignupApplicationID != appID || got.SignupApplication != "app-auth" ||
 		got.RegistrationSyncerID != syncerID || got.RegisterSource != "sync-auth" || got.CreatedIP != "10.0.0.1" {
@@ -122,6 +126,7 @@ func TestUserAuthDetailsLoadFromChildTables(t *testing.T) {
 	got.PasswordHash = "hash-2"
 	got.PasswordType = "salt"
 	got.PasswordSalt = "pepper-2"
+	got.MustChangePassword = false
 	if err := repo.UpdatePassword(ctx, got, 10); err != nil {
 		t.Fatalf("update password: %v", err)
 	}
@@ -134,6 +139,38 @@ func TestUserAuthDetailsLoadFromChildTables(t *testing.T) {
 	}
 	if history[0].PasswordHash != "hash-2" || history[0].PasswordType != "salt" || history[0].PasswordSalt != "pepper-2" {
 		t.Fatalf("密码历史未记录写入时算法/盐: %+v", history[0])
+	}
+	var activeCount, invalidatedCount int
+	if err := client.QueryRow(ctx, `SELECT
+			count(*) FILTER (WHERE invalidated_at IS NULL),
+			count(*) FILTER (WHERE invalidated_at IS NOT NULL)
+		FROM password_history WHERE user_id=$1`, id).Scan(&activeCount, &invalidatedCount); err != nil {
+		t.Fatalf("count password history: %v", err)
+	}
+	if activeCount != 1 || invalidatedCount < 1 {
+		t.Fatalf("密码历史状态错误: active=%d invalidated=%d", activeCount, invalidatedCount)
+	}
+	got, err = repo.GetByName(ctx, institutionID, "alice")
+	if err != nil {
+		t.Fatalf("get user after password change: %v", err)
+	}
+	if got.MustChangePassword {
+		t.Fatal("改密成功后必须清除 must_change_password")
+	}
+
+	got.PasswordHash = "hash-3"
+	got.MustChangePassword = false
+	if err := repo.UpdatePassword(ctx, got, 0); err != nil {
+		t.Fatalf("update password with history disabled: %v", err)
+	}
+	if err := client.QueryRow(ctx, `SELECT
+			count(*) FILTER (WHERE invalidated_at IS NULL),
+			count(*) FILTER (WHERE invalidated_at IS NOT NULL)
+		FROM password_history WHERE user_id=$1`, id).Scan(&activeCount, &invalidatedCount); err != nil {
+		t.Fatalf("count password history after prune: %v", err)
+	}
+	if activeCount != 1 || invalidatedCount != 0 {
+		t.Fatalf("history_count=0 应只保留 active 行: active=%d invalidated=%d", activeCount, invalidatedCount)
 	}
 
 	createdBySyncer, err := repo.ListByRegistrationSyncer(ctx, institutionID, syncerID, 10)

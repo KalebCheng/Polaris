@@ -63,6 +63,21 @@ func defaultEffect(effect string) string {
 
 // Create 创建会话并返回会话对象与 JWT 用的 session ID。
 func (m *SessionManager) Create(ctx context.Context, user *repository.User, application, ip, userAgent string) (*Session, error) {
+	return m.create(ctx, user, application, ip, userAgent, false)
+}
+
+// CreateWithPasswordProof creates a session whose primary authentication was
+// the current password. This allows forced password change to skip a second
+// old-password prompt.
+func (m *SessionManager) CreateWithPasswordProof(
+	ctx context.Context, user *repository.User, application, ip, userAgent string,
+) (*Session, error) {
+	return m.create(ctx, user, application, ip, userAgent, true)
+}
+
+func (m *SessionManager) create(
+	ctx context.Context, user *repository.User, application, ip, userAgent string, passwordVerified bool,
+) (*Session, error) {
 	roles, err := m.roles.RolesForUser(ctx, user.InstitutionID, user.Name)
 	if err != nil {
 		return nil, err
@@ -75,20 +90,22 @@ func (m *SessionManager) Create(ctx context.Context, user *repository.User, appl
 	now := nowTime()
 	expires := now.Add(m.sessionTTL)
 	session := &Session{
-		ID:            uuid.NewString(),
-		UserID:        user.ID,
-		InstitutionID: user.InstitutionID,
-		Name:          user.Name,
-		DisplayName:   user.DisplayName,
-		Email:         user.Email,
-		IsAdmin:       user.IsAdmin,
-		Roles:         roles,
-		Permissions:   perms,
-		Application:   application,
-		IP:            ip,
-		UserAgent:     userAgent,
-		CreatedAt:     now.Unix(),
-		ExpiresAt:     expires.Unix(),
+		ID:                     uuid.NewString(),
+		UserID:                 user.ID,
+		InstitutionID:          user.InstitutionID,
+		Name:                   user.Name,
+		DisplayName:            user.DisplayName,
+		Email:                  user.Email,
+		IsAdmin:                user.IsAdmin,
+		Roles:                  roles,
+		Permissions:            perms,
+		Application:            application,
+		PasswordChangeRequired: user.MustChangePassword,
+		PasswordVerified:       passwordVerified,
+		IP:                     ip,
+		UserAgent:              userAgent,
+		CreatedAt:              now.Unix(),
+		ExpiresAt:              expires.Unix(),
 	}
 
 	data, err := json.Marshal(session)

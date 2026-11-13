@@ -40,6 +40,13 @@ export default function MagicLinkPage() {
           return
         }
         await refresh()
+        const status = await authApi.status().catch(() => null)
+        if (status?.password_change_required) {
+          const target = result.session?.from
+          const query = target ? `?from=${encodeURIComponent(target)}` : ''
+          navigate(`/login${query}`, { replace: true })
+          return
+        }
         navigate(isAdmin ? '/' : '/portal', { replace: true })
       } catch (err) {
         setError(describeError(err, t))

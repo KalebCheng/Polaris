@@ -44,6 +44,9 @@ function resetSigninMethods() {
 let forceMfaEnroll = false
 // 是否让登录返回"需要第二因子"（用于验证独立第二屏）
 let requireMfaCode = false
+let requirePasswordChange = false
+let passwordChanged = false
+let lastChangePasswordPayload: Record<string, unknown> | null = null
 
 const calls = {
   status: 0,
@@ -56,7 +59,17 @@ vi.mock('@/shared/api/auth', () => ({
   authApi: {
     status: async () => {
       calls.status += 1
-      return { authenticated, institution_id: authenticated ? 2 : 0, permissions: [] }
+      return {
+        authenticated,
+        institution_id: authenticated ? 2 : 0,
+        permissions: [],
+        password_change_required: requirePasswordChange && !passwordChanged,
+      }
+    },
+    changePassword: async (body: Record<string, unknown>) => {
+      lastChangePasswordPayload = body
+      passwordChanged = true
+      return { status: 'ok' }
     },
     logout: async () => undefined,
     institutions: async () => {
@@ -124,6 +137,7 @@ vi.mock('@/shared/api/auth', () => ({
       return {
         user: { institution_id: 2, name: 'testlogin' },
         session: { id: 's1', expires_at: 0 },
+        password_change_required: requirePasswordChange,
       }
     },
     mfaOptions: async () => ({
@@ -554,6 +568,45 @@ describe('应用授权提醒', () => {
     } finally {
       authenticated = false
       appAccessAllowed = true
+    }
+  })
+})
+
+// 回归：强制改密必须留在登录页完成，改密成功后继续原登录落地流程，
+// 不能直接跳到受保护页面再收到 PASSWORD_CHANGE_REQUIRED JSON。
+describe('登录后强制改密', () => {
+  it('在登录页完成改密并继续登录流程', async () => {
+    requirePasswordChange = true
+    passwordChanged = false
+    lastChangePasswordPayload = null
+    try {
+      render(
+        <I18nextProvider i18n={i18n}>
+          <MemoryRouter initialEntries={['/login']}>
+            <AuthProvider>
+              <LoginPage />
+            </AuthProvider>
+          </MemoryRouter>
+        </I18nextProvider>,
+      )
+
+      await userEvent.type(screen.getByLabelText(i18n.t('auth.username')), 'testlogin')
+      await userEvent.type(screen.getByLabelText(i18n.t('auth.password')), 'test123456')
+      await userEvent.click(screen.getByRole('button', { name: i18n.t('auth.signIn') }))
+
+      expect(await screen.findByText(i18n.t('auth.passwordChangeTitle'))).toBeInTheDocument()
+      await userEvent.type(screen.getByLabelText(i18n.t('auth.newPassword')), 'NewPass123!')
+      await userEvent.type(screen.getByLabelText(i18n.t('auth.confirmPassword')), 'NewPass123!')
+      await userEvent.click(screen.getByRole('button', { name: i18n.t('auth.changeAndContinue') }))
+
+      await waitFor(() =>
+        expect(lastChangePasswordPayload).toMatchObject({
+          new_password: 'NewPass123!',
+        }),
+      )
+    } finally {
+      requirePasswordChange = false
+      passwordChanged = false
     }
   })
 })

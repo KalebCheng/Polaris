@@ -232,6 +232,7 @@ func (s *AuthService) VerifyMagicLink(ctx context.Context, req MagicLinkVerifyRe
 	if err := s.enforceAppAccess(ctx, app, user); err != nil {
 		return nil, "", err
 	}
+	s.applyPasswordChangeRequirement(ctx, org.ID, user)
 	session, err := s.sessions.Create(ctx, user, applicationCode(app), ip, userAgent)
 	if err != nil {
 		return nil, "", err

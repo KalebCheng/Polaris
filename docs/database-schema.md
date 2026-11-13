@@ -1,6 +1,6 @@
 # 数据库表结构与 ER 图
 
-> **适用版本**：迁移 `001`–`004`（整理日期：2026-11-13）
+> **适用版本**：迁移 `001`–`005`（整理日期：2026-11-13）
 >
 > **事实来源**：在空 PostgreSQL 库中顺序执行 `migrations/*.up.sql` 后，从 `information_schema` / `pg_catalog` 读取的实际结构。本文只描述 PostgreSQL 业务库；Redis 中的会话、OAuth state 与限流计数不在本文范围内。
 >
@@ -634,6 +634,7 @@ erDiagram
 | `password_type` | TEXT | 否 | 'bcrypt' | 写入时的密码算法 |
 | `password_salt` | TEXT | 否 | '' | 写入时的组织级盐/胡椒快照 |
 | `password_updated_at` | TIMESTAMPTZ | 是 | — | 密码最后更新时间 |
+| `must_change_password` | BOOLEAN | 否 | false | 下次登录是否必须先改密 |
 | `created_at` / `updated_at` | TIMESTAMPTZ | 否 | NOW() | 时间戳 |
 
 ---
@@ -776,11 +777,14 @@ erDiagram
 
 用户历史密码哈希。用于组织级“禁止复用最近 N 次密码”策略。
 
+`institutions.password_history_count` 同时作为保留上限：`0` 只保留当前 active 行；
+`N>0` 保留当前密码及最近 `N-1` 条已失效历史。
+
 **键、约束与索引**
 
 - 主键：`id`
 - 外键：`user_id` → `users(id)` ON DELETE CASCADE
-- 索引：`password_history_institution_id_idx` (institution_id)；`password_history_pkey` UNIQUE (id)；`password_history_user_idx` (user_id, created_at DESC)
+- 索引：`password_history_active_key` UNIQUE (user_id) WHERE invalidated_at IS NULL；`password_history_institution_id_idx` (institution_id)；`password_history_pkey` UNIQUE (id)；`password_history_user_idx` (user_id, created_at DESC)
 
 | 字段 | 类型 | 可空 | 默认 | 说明 |
 |---|---|---|---|---|
@@ -788,6 +792,7 @@ erDiagram
 | `password_hash` | TEXT | 否 | — | 历史密码哈希（敏感） |
 | `password_type` | TEXT | 否 | 'bcrypt' | 写入时的密码算法 |
 | `password_salt` | TEXT | 否 | '' | 写入时的组织级盐/胡椒快照 |
+| `invalidated_at` | TIMESTAMPTZ | 是 | — | 失效时间；为空表示当前生效的历史行 |
 | `created_at` | TIMESTAMPTZ | 否 | NOW() | 创建时间 |
 | `institution_id` | BIGINT | 否 | — | 所属组织（租户隔离键） |
 | `user_id` **FK** | BIGINT | 否 | — | 用户 |

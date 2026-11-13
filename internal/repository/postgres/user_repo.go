@@ -50,6 +50,7 @@ COALESCE(p.password_hash, ''),
 COALESCE(p.password_type, 'bcrypt'),
 COALESCE(p.password_salt, ''),
 p.password_updated_at,
+COALESCE(p.must_change_password, false),
 COALESCE(r.signup_application_code, ''),
 COALESCE(r.signup_application_id, 0),
 COALESCE(r.register_type, ''),
@@ -72,7 +73,7 @@ func userDetailTargets(u *repository.User) ([]interface{}, error) {
 		return nil, err
 	}
 	return append(targets,
-		&u.PasswordHash, &u.PasswordType, &u.PasswordSalt, &u.PasswordUpdatedAt,
+		&u.PasswordHash, &u.PasswordType, &u.PasswordSalt, &u.PasswordUpdatedAt, &u.MustChangePassword,
 		&u.SignupApplication, &u.SignupApplicationID, &u.RegisterType, &u.RegisterSource,
 		&u.RegistrationSyncerID, &u.CreatedIP,
 		&u.LastSigninTime, &u.LastSigninIP, &u.MfaEnabled,
@@ -127,6 +128,7 @@ func (r *UserRepository) attachUserDetails(ctx context.Context, users []*reposit
 		var id int64
 		var passwordHash, passwordType, passwordSalt string
 		var passwordUpdatedAt *time.Time
+		var mustChangePassword bool
 		var signupApplication, registerType, registerSource, createdIP string
 		var signupApplicationID, registrationSyncerID int64
 		var lastSigninTime *time.Time
@@ -134,7 +136,7 @@ func (r *UserRepository) attachUserDetails(ctx context.Context, users []*reposit
 		var mfaEnabled bool
 		if err := rows.Scan(
 			&id,
-			&passwordHash, &passwordType, &passwordSalt, &passwordUpdatedAt,
+			&passwordHash, &passwordType, &passwordSalt, &passwordUpdatedAt, &mustChangePassword,
 			&signupApplication, &signupApplicationID, &registerType, &registerSource,
 			&registrationSyncerID, &createdIP,
 			&lastSigninTime, &lastSigninIP, &mfaEnabled,
@@ -147,6 +149,7 @@ func (r *UserRepository) attachUserDetails(ctx context.Context, users []*reposit
 		}
 		u.PasswordHash, u.PasswordType, u.PasswordSalt = passwordHash, passwordType, passwordSalt
 		u.PasswordUpdatedAt = passwordUpdatedAt
+		u.MustChangePassword = mustChangePassword
 		u.HasPassword = passwordHash != ""
 		u.SignupApplication, u.SignupApplicationID = signupApplication, signupApplicationID
 		u.RegisterType, u.RegisterSource = registerType, registerSource
@@ -162,15 +165,16 @@ func (r *UserRepository) attachUserDetails(ctx context.Context, users []*reposit
 func insertUserRelations(ctx context.Context, tx pgx.Tx, u *repository.User) error {
 	if u.PasswordHash != "" {
 		if _, err := tx.Exec(ctx, `INSERT INTO user_passwords
-			(user_id, institution_id, password_hash, password_type, password_salt, password_updated_at, created_at, updated_at)
-			VALUES ($1,$2,$3,$4,$5,COALESCE($6,NOW()),NOW(),NOW())
+			(user_id, institution_id, password_hash, password_type, password_salt, must_change_password, password_updated_at, created_at, updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,NOW()),NOW(),NOW())
 			ON CONFLICT (user_id) DO NOTHING`,
-			u.ID, u.InstitutionID, u.PasswordHash, defaultStr(u.PasswordType, "bcrypt"), u.PasswordSalt, u.PasswordUpdatedAt); err != nil {
+			u.ID, u.InstitutionID, u.PasswordHash, defaultStr(u.PasswordType, "bcrypt"), u.PasswordSalt,
+			u.MustChangePassword, u.PasswordUpdatedAt); err != nil {
 			return mapError(err, "")
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO password_history
-			(institution_id, user_id, password_hash, password_type, password_salt)
-			VALUES ($1,$2,$3,$4,$5)`,
+			(institution_id, user_id, password_hash, password_type, password_salt, invalidated_at)
+			VALUES ($1,$2,$3,$4,$5,NULL)`,
 			u.InstitutionID, u.ID, u.PasswordHash, defaultStr(u.PasswordType, "bcrypt"), u.PasswordSalt); err != nil {
 			return mapError(err, "")
 		}
@@ -456,14 +460,18 @@ func (r *UserRepository) UpdateInitialPassword(ctx context.Context, u *repositor
 func (r *UserRepository) writePassword(ctx context.Context, u *repository.User, historyLimit int, initialOnly bool) error {
 	passwordType := defaultStr(u.PasswordType, "bcrypt")
 	updatedAt := time.Now()
+	keepHistory := historyLimit
+	if keepHistory < 1 {
+		keepHistory = 1
+	}
 	err := r.db.WithTx(ctx, func(tx pgx.Tx) error {
 		if initialOnly {
 			tag, err := tx.Exec(ctx, `INSERT INTO user_passwords
-				(user_id, institution_id, password_hash, password_type, password_salt, password_updated_at, created_at, updated_at)
-				SELECT id, institution_id, $2, $3, $4, NOW(), NOW(), NOW()
+				(user_id, institution_id, password_hash, password_type, password_salt, must_change_password, password_updated_at, created_at, updated_at)
+				SELECT id, institution_id, $2, $3, $4, $5, NOW(), NOW(), NOW()
 				FROM users WHERE id = $1
 				ON CONFLICT (user_id) DO NOTHING`,
-				u.ID, u.PasswordHash, passwordType, u.PasswordSalt)
+				u.ID, u.PasswordHash, passwordType, u.PasswordSalt, u.MustChangePassword)
 			if err != nil {
 				return mapError(err, "user not found")
 			}
@@ -472,19 +480,19 @@ func (r *UserRepository) writePassword(ctx context.Context, u *repository.User, 
 			}
 		} else {
 			tag, err := tx.Exec(ctx, `UPDATE user_passwords
-				SET password_hash=$2, password_type=$3, password_salt=$4,
+				SET password_hash=$2, password_type=$3, password_salt=$4, must_change_password=$5,
 				    password_updated_at=NOW(), updated_at=NOW()
 				WHERE user_id=$1`,
-				u.ID, u.PasswordHash, passwordType, u.PasswordSalt)
+				u.ID, u.PasswordHash, passwordType, u.PasswordSalt, u.MustChangePassword)
 			if err != nil {
 				return mapError(err, "user not found")
 			}
 			if tag.RowsAffected() == 0 {
 				tag, err = tx.Exec(ctx, `INSERT INTO user_passwords
-					(user_id, institution_id, password_hash, password_type, password_salt, password_updated_at, created_at, updated_at)
-					SELECT id, institution_id, $2, $3, $4, NOW(), NOW(), NOW()
+					(user_id, institution_id, password_hash, password_type, password_salt, must_change_password, password_updated_at, created_at, updated_at)
+					SELECT id, institution_id, $2, $3, $4, $5, NOW(), NOW(), NOW()
 					FROM users WHERE id = $1`,
-					u.ID, u.PasswordHash, passwordType, u.PasswordSalt)
+					u.ID, u.PasswordHash, passwordType, u.PasswordSalt, u.MustChangePassword)
 				if err != nil {
 					return mapError(err, "user not found")
 				}
@@ -493,20 +501,24 @@ func (r *UserRepository) writePassword(ctx context.Context, u *repository.User, 
 				}
 			}
 		}
+		if _, err := tx.Exec(ctx, `UPDATE password_history
+			SET invalidated_at=NOW()
+			WHERE institution_id=$1 AND user_id=$2 AND invalidated_at IS NULL`,
+			u.InstitutionID, u.ID); err != nil {
+			return mapError(err, "")
+		}
 		if _, err := tx.Exec(ctx, `INSERT INTO password_history
-			(institution_id, user_id, password_hash, password_type, password_salt)
-			VALUES ($1,$2,$3,$4,$5)`,
+			(institution_id, user_id, password_hash, password_type, password_salt, invalidated_at)
+			VALUES ($1,$2,$3,$4,$5,NULL)`,
 			u.InstitutionID, u.ID, u.PasswordHash, passwordType, u.PasswordSalt); err != nil {
 			return mapError(err, "")
 		}
-		if historyLimit > 0 {
-			_, err := tx.Exec(ctx, `DELETE FROM password_history WHERE institution_id=$1 AND user_id=$2
-				AND id NOT IN (
-					SELECT id FROM password_history WHERE institution_id=$1 AND user_id=$2
-					ORDER BY created_at DESC, id DESC LIMIT $3)`, u.InstitutionID, u.ID, historyLimit)
-			if err != nil {
-				return mapError(err, "")
-			}
+		if _, err := tx.Exec(ctx, `DELETE FROM password_history WHERE institution_id=$1 AND user_id=$2
+			AND id NOT IN (
+				SELECT id FROM password_history WHERE institution_id=$1 AND user_id=$2
+				ORDER BY (invalidated_at IS NULL) DESC, created_at DESC, id DESC LIMIT $3)`,
+			u.InstitutionID, u.ID, keepHistory); err != nil {
+			return mapError(err, "")
 		}
 		return nil
 	})

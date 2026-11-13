@@ -31,7 +31,7 @@ import { CopyButton } from '@/shared/components/copy-button'
 export default function PortalSecurityPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
-  const { signOut } = useAuth()
+  const { signOut, status } = useAuth()
   const { pending, run } = usePortalAction()
   const [mfaEnabled, setMfaEnabled] = useState(false)
   const [mfaOptions, setMfaOptions] = useState<MFAOptions | null>(null)
@@ -66,10 +66,13 @@ export default function PortalSecurityPage() {
   const changePassword = async (event: React.FormEvent) => {
     event.preventDefault()
     if (hasPassword === null || newPassword !== confirmPassword) return
+    const requiresOldPassword =
+      hasPassword &&
+      (!status?.password_change_required || Boolean(status?.password_change_requires_old_password))
     const ok = await run(
       () =>
         authApi.changePassword(
-          hasPassword
+          requiresOldPassword
             ? { old_password: oldPassword, new_password: newPassword }
             : { new_password: newPassword },
         ),
@@ -85,6 +88,16 @@ export default function PortalSecurityPage() {
 
   return (
     <PortalPage titleKey="portal.securityTitle" subtitleKey="portal.securitySubtitle">
+      {status?.password_change_required ? (
+        <Card className="border-warning/25 bg-warning/10 mb-5">
+          <CardHeader>
+            <CardTitle className="text-warning text-base">
+              {t('portal.passwordChangeRequiredTitle')}
+            </CardTitle>
+            <CardDescription>{t('portal.passwordChangeRequiredHint')}</CardDescription>
+          </CardHeader>
+        </Card>
+      ) : null}
       <div className="grid gap-5 lg:grid-cols-[1.15fr_0.85fr]">
         <Card>
           <CardHeader>
@@ -100,7 +113,8 @@ export default function PortalSecurityPage() {
               <Skeleton className="h-44 w-full" />
             ) : (
               <form className="space-y-4" onSubmit={changePassword}>
-                {hasPassword ? (
+                {hasPassword &&
+                (!status?.password_change_required || status?.password_change_requires_old_password) ? (
                   <div className="space-y-2">
                     <Label htmlFor="portal-old-password">{t('profile.oldPassword')}</Label>
                     <Input
@@ -143,7 +157,9 @@ export default function PortalSecurityPage() {
                   type="submit"
                   disabled={
                     pending ||
-                    (hasPassword && !oldPassword) ||
+                    (hasPassword &&
+                      (!status?.password_change_required || status?.password_change_requires_old_password) &&
+                      !oldPassword) ||
                     !newPassword ||
                     newPassword !== confirmPassword
                   }

@@ -388,6 +388,7 @@ func (s *AuthService) CodeLogin(ctx context.Context, req CodeLoginRequest, host,
 	if err := s.enforceAppAccess(ctx, appCtx, user); err != nil {
 		return nil, "", err
 	}
+	s.applyPasswordChangeRequirement(ctx, app.InstitutionID, user)
 	session, err := s.sessions.Create(ctx, user, app.Code, ip, userAgent)
 	if err != nil {
 		return nil, "", err

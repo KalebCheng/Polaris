@@ -260,6 +260,9 @@ func TestImportCreatesSkipsAndFailsRows(t *testing.T) {
 	if created.User.RegisterType != "import" || created.User.RegisterSource != "batch.csv" {
 		t.Fatalf("账号来源应标记为导入: %q / %q", created.User.RegisterType, created.User.RegisterSource)
 	}
+	if !created.User.MustChangePassword {
+		t.Fatal("导入账号必须要求首次登录改密")
+	}
 	if f.records.record.Status != repository.UserImportPartial || len(f.records.rows) != 3 {
 		t.Fatalf("导入记录应为 partial 且逐行落库: %+v rows=%d", f.records.record.Status, len(f.records.rows))
 	}

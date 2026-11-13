@@ -55,7 +55,13 @@ export default function OAuthCallbackPage() {
           return
         }
         await refresh()
+        const status = await authApi.status().catch(() => null)
         const target = result.session?.from
+        if (status?.password_change_required) {
+          const query = target ? `?from=${encodeURIComponent(target)}` : ''
+          navigate(`/login${query}`, { replace: true })
+          return
+        }
         if (target?.startsWith('/oauth/authorize')) {
           // /oauth/authorize 是后端协议端点，不属于 SPA 路由；必须整页跳转。
           navigateDocument(target)

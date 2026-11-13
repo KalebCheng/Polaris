@@ -166,3 +166,38 @@ func TestValidatePasswordUsesHistoricalAlgorithmAndSalt(t *testing.T) {
 		t.Fatal("复用校验失败时不得写入密码")
 	}
 }
+
+func TestChangePasswordRejectsCurrentPasswordWithoutHistory(t *testing.T) {
+	currentHash, err := auth.HashPassword("CurrentPass123")
+	if err != nil {
+		t.Fatalf("生成当前密码失败: %v", err)
+	}
+	svc, repo := newPasswordServiceWithOrg(&repository.User{
+		ID: 11, InstitutionID: 7, Name: "local-user", PasswordHash: currentHash,
+	}, &repository.Institution{ID: 7, Name: "acme", PasswordHistoryCount: 0})
+
+	err = svc.ChangePassword(context.Background(), 7, "local-user", "CurrentPass123", "CurrentPass123")
+	if !bizerrors.Is(err, bizerrors.CodeInvalidParams) {
+		t.Fatalf("新密码等于当前密码时应拒绝，实际: %v", err)
+	}
+	if repo.updateCalls != 0 || repo.initialCalls != 0 {
+		t.Fatal("校验失败时不得写入密码")
+	}
+}
+
+func TestAdminResetPasswordRequiresChangeOnNextLogin(t *testing.T) {
+	currentHash, err := auth.HashPassword("CurrentPass123")
+	if err != nil {
+		t.Fatalf("生成当前密码失败: %v", err)
+	}
+	svc, repo := newPasswordServiceWithOrg(&repository.User{
+		ID: 11, InstitutionID: 7, Name: "local-user", PasswordHash: currentHash,
+	}, &repository.Institution{ID: 7, Name: "acme"})
+
+	if err := svc.SetPassword(context.Background(), "admin", 7, "local-user", "ResetPass123"); err != nil {
+		t.Fatalf("管理员重置密码失败: %v", err)
+	}
+	if repo.updated == nil || !repo.updated.MustChangePassword {
+		t.Fatal("管理员重置后必须要求下次登录改密")
+	}
+}

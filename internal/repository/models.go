@@ -182,6 +182,8 @@ type User struct {
 
 	// Password update time (user_passwords).
 	PasswordUpdatedAt *time.Time `db:"-" json:"password_updated_at"`
+	// MustChangePassword forces a password update after the next login.
+	MustChangePassword bool `db:"-" json:"must_change_password"`
 
 	// Whether the user has an active MFA credential (user_mfa_credentials).
 	MfaEnabled bool `db:"-" json:"mfa_enabled"`
