@@ -70,70 +70,57 @@ func signinDisplayName(item *repository.Provider) string {
 	return item.Name
 }
 
-// ListAppProviders 返回指定应用可用的外部身份提供方：
-// 应用配置了 providers 白名单时只返回其中已启用且真实存在的；未配置时返回该组织全部启用提供方。
+// ListAppProviders 返回指定应用/组织 effective 方法允许的外部身份提供方。
 func (s *AuthService) ListAppProviders(ctx context.Context, institution string, application string) []auth.OAuthProviderInfo {
-	app, err := s.resolveApplication(ctx, institution, application)
-	if err != nil || app == nil {
-		// 明确指定了应用却解析不到：**不给任何入口**（fail-closed）。
-		// 曾经的实现会退化成"列出组织内全部提供方"，于是随便传一个不存在的应用标识
-		// 就能绕过应用白名单拿到全部第三方入口。
-		if strings.TrimSpace(application) != "" {
-			return []auth.OAuthProviderInfo{}
-		}
-		// 未指定应用 = 组织级登录页（该组织可能还没建应用）→ 按组织列出可用提供方
-		if strings.TrimSpace(institution) == "" {
-			return s.ListSigninProviders(ctx, 0)
-		}
-		org, orgErr := s.resolveOrgForLogin(ctx, institution)
-		if orgErr != nil {
-			return []auth.OAuthProviderInfo{}
-		}
-		return s.ListSigninProviders(ctx, org.ID)
+	if s.signinPolicy == nil {
+		return []auth.OAuthProviderInfo{}
 	}
-	return appSigninProviders(s.ListSigninProviders(ctx, app.InstitutionID), app)
+	if strings.TrimSpace(institution) == "" {
+		return []auth.OAuthProviderInfo{}
+	}
+	org, err := s.resolveOrgForLogin(ctx, institution)
+	if err != nil {
+		return []auth.OAuthProviderInfo{}
+	}
+	var app *repository.Application
+	if code := strings.TrimSpace(application); code != "" {
+		app, err = s.apps.GetByCode(ctx, org.ID, code)
+		if err != nil {
+			return []auth.OAuthProviderInfo{}
+		}
+	}
+	methods, err := s.signinPolicy.Methods(ctx, org.ID, app)
+	if err != nil {
+		return []auth.OAuthProviderInfo{}
+	}
+	return filterProviderInfos(s.ListSigninProviders(ctx, org.ID), s.signinPolicy.ProviderItems(ctx, methods))
 }
 
-// ListAppProvidersByClientID 按 client_id 定位应用后过滤其启用的提供方（应用驱动登录页）。
+// ListAppProvidersByClientID 按 client_id 定位应用后过滤 effective Provider 方法。
 func (s *AuthService) ListAppProvidersByClientID(ctx context.Context, clientID string) []auth.OAuthProviderInfo {
+	if s.signinPolicy == nil {
+		return []auth.OAuthProviderInfo{}
+	}
 	if clientID == "" {
-		return s.ListSigninProviders(ctx, 0)
+		return []auth.OAuthProviderInfo{}
 	}
 	app, err := s.apps.GetByClientID(ctx, clientID)
 	if err != nil || app == nil {
-		// client_id 无效：登录页本来就没有可信的应用上下文，宁可不给入口（fail-closed）
 		return []auth.OAuthProviderInfo{}
 	}
-	return appSigninProviders(s.ListSigninProviders(ctx, app.InstitutionID), app)
-}
-
-// appSigninProviders 是"某个应用到底有哪些第三方登录入口"的**唯一判定入口**。
-//
-// 语义（与写入侧的 validateApplication「启用第三方登录必须带具体提供方」、
-// 下发侧的 availableSigninMethods「providers 为空则不下发 Provider 登录方式」保持一致）：
-//
-//	app == nil（组织级登录页，没有应用上下文）      → 组织内全部启用的提供方
-//	应用未启用 Provider 登录方式 / providers 为空   → 该应用**没有**第三方入口
-//	否则                                          → 按白名单过滤，只保留 canSignIn 的项
-//
-// 历史缺陷：`providers` 为空时曾被当作"全都要"，于是**没配钉钉的应用，登录页却出现钉钉按钮**——
-// 空的语义只能是"一个都不要"（对齐 §3.5 对"空值含义必须唯一"的要求），
-// 否则"配了才生效"这条原则在读取侧就被推翻了。
-func appSigninProviders(all []auth.OAuthProviderInfo, app *repository.Application) []auth.OAuthProviderInfo {
-	if app == nil {
-		return all
-	}
-	if len(app.Providers) == 0 || !app.HasSigninMethod(repository.SigninMethodProvider) {
+	methods, err := s.signinPolicy.ApplicationMethods(ctx, app)
+	if err != nil {
 		return []auth.OAuthProviderInfo{}
 	}
-	return filterProviders(all, app.Providers)
+	return filterProviderInfos(s.ListSigninProviders(ctx, app.InstitutionID), s.signinPolicy.ProviderItems(ctx, methods))
 }
 
-// filterProviders 按应用的提供方白名单过滤（白名单项以名称引用提供商）
-func filterProviders(all []auth.OAuthProviderInfo, whitelist []repository.ProviderItem) []auth.OAuthProviderInfo {
+func filterProviderInfos(all []auth.OAuthProviderInfo, whitelist []repository.ProviderItem) []auth.OAuthProviderInfo {
 	enabled := make(map[string]bool, len(whitelist))
 	for _, item := range whitelist {
-		enabled[item.Name] = item.CanSignIn
+		if item.CanSignIn {
+			enabled[item.Name] = true
+		}
 	}
 	filtered := make([]auth.OAuthProviderInfo, 0, len(all))
 	for _, item := range all {
@@ -193,6 +180,11 @@ func (s *AuthService) Authorize(ctx context.Context, institution, providerName, 
 	app, err := s.resolveAppContext(ctx, institutionID, institution, application, clientID)
 	if err != nil {
 		return "", "", err
+	}
+	if _, ok, methodErr := s.findProviderMethod(ctx, institutionID, app, item.ID); methodErr != nil {
+		return "", "", methodErr
+	} else if !ok {
+		return "", "", bizerrors.New(bizerrors.CodeForbidden, "this sign-in provider is not enabled")
 	}
 	payload := ssoState{
 		InstitutionID: institutionID, Provider: providerName,
@@ -351,12 +343,19 @@ func (s *AuthService) Callback(ctx context.Context, code, state, ip, userAgent s
 	if err := s.enforceAppAccess(ctx, ssoApp, user); err != nil {
 		return nil, "", err
 	}
+	providerMethod, ok, err := s.findProviderMethod(ctx, st.InstitutionID, ssoApp, item.ID)
+	if err != nil {
+		return nil, "", err
+	}
+	if !ok {
+		return nil, "", bizerrors.New(bizerrors.CodeForbidden, "this sign-in provider is not enabled")
+	}
 	s.applyPasswordChangeRequirement(ctx, st.InstitutionID, user)
 	session, err := s.sessions.Create(ctx, user, applicationCode(ssoApp), ip, userAgent)
 	if err != nil {
 		return nil, "", err
 	}
-	challenge, _, _, err := s.applyMFA(ctx, session, ssoApp, repository.SigninMethodProvider, user, "", "", false)
+	challenge, _, _, err := s.applyMFA(ctx, session, providerMethod, user, "", "", false)
 	if err != nil {
 		_ = s.sessions.Delete(ctx, session)
 		return nil, "", err

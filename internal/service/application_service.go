@@ -9,7 +9,6 @@ import (
 	"polaris/internal/auth/tokenhash"
 	bizerrors "polaris/internal/errors"
 	"polaris/internal/repository"
-	providerpkg "polaris/internal/service/provider"
 )
 
 // applicationCodePattern 应用标识（code）的合法形式：
@@ -19,11 +18,13 @@ var applicationCodePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-_]{1,30}$`)
 
 // ApplicationService 应用服务
 type ApplicationService struct {
-	apps      repository.ApplicationRepository
-	orgs      repository.InstitutionRepository
-	providers repository.ProviderRepository
-	templates *TemplateService
-	audits    *AuditRecorder
+	apps         repository.ApplicationRepository
+	orgs         repository.InstitutionRepository
+	providers    repository.ProviderRepository
+	templates    *TemplateService
+	signin       *SigninMethodService
+	signinPolicy *SigninPolicyResolver
+	audits       *AuditRecorder
 }
 
 // NewApplicationService 创建应用服务
@@ -37,9 +38,14 @@ func NewApplicationServiceWithResources(
 	orgs repository.InstitutionRepository,
 	providers repository.ProviderRepository,
 	templates *TemplateService,
+	signin *SigninMethodService,
+	signinPolicy *SigninPolicyResolver,
 	audits *AuditRecorder,
 ) *ApplicationService {
-	return &ApplicationService{apps: apps, orgs: orgs, providers: providers, templates: templates, audits: audits}
+	return &ApplicationService{
+		apps: apps, orgs: orgs, providers: providers, templates: templates,
+		signin: signin, signinPolicy: signinPolicy, audits: audits,
+	}
 }
 
 // Create 创建应用：校验标识、补全默认值、并由服务端生成客户端凭据
@@ -69,14 +75,18 @@ func (s *ApplicationService) Create(ctx context.Context, actor string, app *repo
 	if err := normalizeApplication(app); err != nil {
 		return nil, err
 	}
-	if err := s.normalizeSigninMethods(ctx, app, true); err != nil {
+	methodIDs, err := s.resolveCreateMethodIDs(ctx, app)
+	if err != nil {
 		return nil, err
 	}
-	id, err := s.apps.Create(ctx, app)
+	id, err := s.apps.CreateWithSigninMethods(ctx, app, methodIDs)
 	if err != nil {
 		return nil, err
 	}
 	app.ID = id
+	if err := s.fillMethods(ctx, app); err != nil {
+		return nil, err
+	}
 	s.audits.Record(ctx, actor, app.InstitutionID, "application.create", app.Code, nil)
 	return app, nil
 }
@@ -86,6 +96,9 @@ func (s *ApplicationService) Get(ctx context.Context, institutionID int64, code 
 	app, err := s.apps.GetByCode(ctx, institutionID, code)
 	if err != nil {
 		return nil, bizerrors.ErrNotFound.WithDetail("application", code)
+	}
+	if err := s.fillMethods(ctx, app); err != nil {
+		return nil, err
 	}
 	return app, nil
 }
@@ -114,10 +127,22 @@ func (s *ApplicationService) Update(ctx context.Context, actor string, app *repo
 	if err := normalizeApplication(app); err != nil {
 		return err
 	}
-	if err := s.normalizeSigninMethods(ctx, app, false); err != nil {
+	var methodIDs *[]int64
+	if app.SigninMethodIDs != nil {
+		validated, err := s.signin.ValidateSelection(ctx, app.InstitutionID, app.SigninMethodIDs)
+		if err != nil {
+			return err
+		}
+		ids := make([]int64, 0, len(validated))
+		for _, item := range validated {
+			ids = append(ids, item.ID)
+		}
+		methodIDs = &ids
+	}
+	if err := s.apps.UpdateWithSigninMethods(ctx, app, methodIDs); err != nil {
 		return err
 	}
-	if err := s.apps.Update(ctx, app); err != nil {
+	if err := s.fillMethods(ctx, app); err != nil {
 		return err
 	}
 	s.audits.Record(ctx, actor, app.InstitutionID, "application.update", app.Code, nil)
@@ -144,11 +169,89 @@ func (s *ApplicationService) List(ctx context.Context, institutionID int64, keyw
 	if err != nil {
 		return nil, 0, err
 	}
+	if err := s.fillMethodsForApps(ctx, items); err != nil {
+		return nil, 0, err
+	}
 	total, err := s.apps.Count(ctx, q)
 	if err != nil {
 		return nil, 0, err
 	}
 	return items, total, nil
+}
+
+// resolveCreateMethodIDs 新应用缺省时默认全选组织当前启用方法。
+func (s *ApplicationService) resolveCreateMethodIDs(ctx context.Context, app *repository.Application) ([]int64, error) {
+	if len(app.SigninMethodIDs) == 0 {
+		ids, err := s.signin.DefaultMethodIDs(ctx, app.InstitutionID)
+		if err != nil {
+			return nil, err
+		}
+		if len(ids) == 0 {
+			return nil, bizerrors.ErrInvalidParams.WithDetail("required", "signin_method_ids")
+		}
+		return ids, nil
+	}
+	items, err := s.signin.ValidateSelection(ctx, app.InstitutionID, app.SigninMethodIDs)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]int64, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	return ids, nil
+}
+
+// fillMethods 为单个应用装配 effective 方法摘要。
+func (s *ApplicationService) fillMethods(ctx context.Context, app *repository.Application) error {
+	if app == nil || s.signinPolicy == nil {
+		return nil
+	}
+	methods, err := s.signinPolicy.ApplicationMethodsByID(ctx, app.InstitutionID, app.ID)
+	if err != nil {
+		return err
+	}
+	app.SigninMethods = methods
+	app.SigninMethodIDs = methodIDsOf(methods)
+	return nil
+}
+
+// fillMethodsForApps 批量装配应用列表的方法摘要，避免 N+1。
+func (s *ApplicationService) fillMethodsForApps(ctx context.Context, apps []*repository.Application) error {
+	if len(apps) == 0 || s.signin == nil {
+		return nil
+	}
+	ids := make([]int64, 0, len(apps))
+	for _, app := range apps {
+		if app != nil {
+			ids = append(ids, app.ID)
+		}
+	}
+	methods, err := s.signin.SelectedByApplications(ctx, apps[0].InstitutionID, ids)
+	if err != nil {
+		return err
+	}
+	for _, app := range apps {
+		if app == nil {
+			continue
+		}
+		app.SigninMethods = methods[app.ID]
+		if app.SigninMethods == nil {
+			app.SigninMethods = []repository.SigninMethod{}
+		}
+		app.SigninMethodIDs = methodIDsOf(app.SigninMethods)
+	}
+	return nil
+}
+
+func methodIDsOf(methods []repository.SigninMethod) []int64 {
+	ids := make([]int64, 0, len(methods))
+	for _, method := range methods {
+		if method.ID > 0 {
+			ids = append(ids, method.ID)
+		}
+	}
+	return ids
 }
 
 // ResetSecret 重新生成应用密钥（响应仅在本次返回明文）
@@ -178,11 +281,6 @@ func normalizeApplication(app *repository.Application) error {
 	if app.Type == "" {
 		app.Type = "oidc"
 	}
-	if len(app.SigninMethods) == 0 {
-		app.SigninMethods = []repository.SigninMethod{
-			{Name: repository.SigninMethodPassword, DisplayName: "Password", Rule: "All"},
-		}
-	}
 	if len(app.GrantTypes) == 0 {
 		app.GrantTypes = []string{"authorization_code", "password", "refresh_token", "client_credentials"}
 	}
@@ -208,145 +306,7 @@ func normalizeApplication(app *repository.Application) error {
 		app.Adapter = "default"
 		app.AdapterConfig = nil
 	}
-	if app.EmailCodeTTLSeconds <= 0 {
-		app.EmailCodeTTLSeconds = 300
-	}
-	if app.SMSCodeTTLSeconds <= 0 {
-		app.SMSCodeTTLSeconds = 300
-	}
-	if app.MagicLinkTTLSeconds <= 0 {
-		app.MagicLinkTTLSeconds = 600
-	}
 	return validateApplication(app)
-}
-
-// normalizeSigninMethods 补齐登录方式默认值并校验显式资源引用。
-// 这是“保存时失败”而不是“运行时才发现”的唯一入口。
-func (s *ApplicationService) normalizeSigninMethods(ctx context.Context, app *repository.Application, create bool) error {
-	for i := range app.SigninMethods {
-		method := &app.SigninMethods[i]
-		switch method.Name {
-		case repository.SigninMethodPassword:
-			if method.Identifiers == nil {
-				if create {
-					method.Identifiers = []string{repository.PasswordIdentifierUsername}
-				} else {
-					method.Identifiers = []string{repository.PasswordIdentifierUsername, repository.PasswordIdentifierEmail}
-				}
-			}
-			identifiers := make([]string, 0, len(method.Identifiers))
-			seen := map[string]bool{}
-			for _, kind := range method.Identifiers {
-				kind = strings.ToLower(strings.TrimSpace(kind))
-				if !repository.IsPasswordIdentifier(kind) {
-					return bizerrors.ErrInvalidParams.WithDetail("identifier", kind)
-				}
-				if !seen[kind] {
-					seen[kind] = true
-					identifiers = append(identifiers, kind)
-				}
-			}
-			if len(identifiers) == 0 {
-				return bizerrors.ErrInvalidParams.WithDetail("required", "identifiers")
-			}
-			ordered := make([]string, 0, len(identifiers))
-			for _, kind := range []string{repository.PasswordIdentifierUsername, repository.PasswordIdentifierEmail, repository.PasswordIdentifierPhone} {
-				if seen[kind] {
-					ordered = append(ordered, kind)
-				}
-			}
-			method.Identifiers = ordered
-		case repository.SigninMethodEmailCode, repository.SigninMethodSMSCode, repository.SigninMethodMagicLink:
-			if err := s.normalizeNotificationMethod(ctx, app.InstitutionID, method); err != nil {
-				return err
-			}
-		}
-		method.MfaEnabled = method.MFAEnabled()
-		method.MfaRequired = method.MFARequired()
-		if method.MfaRequired && !method.MfaEnabled {
-			return bizerrors.ErrInvalidParams.WithDetail("required", "mfa_enabled")
-		}
-		if method.MfaEnabled {
-			ids, err := s.normalizeMFAProviders(ctx, app.InstitutionID, method.MfaProviderIDs)
-			if err != nil {
-				return err
-			}
-			method.MfaProviderIDs = ids
-		} else {
-			method.MfaProviderIDs = []int64{}
-			method.MfaRequired = false
-		}
-	}
-	return validateApplication(app)
-}
-
-func (s *ApplicationService) normalizeNotificationMethod(ctx context.Context, institutionID int64, method *repository.SigninMethod) error {
-	expected := providerpkg.CategoryEmail
-	scene := repository.TemplateSceneLoginCode
-	if method.Name == repository.SigninMethodSMSCode {
-		expected = providerpkg.CategorySMS
-	}
-	if method.Name == repository.SigninMethodMagicLink {
-		scene = repository.TemplateSceneMagicLink
-	}
-	if s.providers == nil || s.templates == nil {
-		return nil
-	}
-	provider, err := s.providers.GetByID(ctx, method.ProviderID)
-	if err != nil || provider.InstitutionID != institutionID ||
-		providerpkg.NormalizeCategory(provider.Category) != string(expected) ||
-		!strings.EqualFold(provider.State, "active") {
-		return bizerrors.ErrInvalidParams.WithDetail("provider_id", method.ProviderID).WithDetail("method", method.Name)
-	}
-	_, tpl, err := s.templates.ResolveNotification(ctx, institutionID, method.ProviderID, method.TemplateID, scene, expected)
-	if err != nil {
-		return err
-	}
-	method.TemplateID = tpl.ID
-	return nil
-}
-
-func (s *ApplicationService) normalizeMFAProviders(ctx context.Context, institutionID int64, ids []int64) ([]int64, error) {
-	ids = dedupeInt64(ids)
-	if s.providers == nil {
-		return ids, nil
-	}
-	if len(ids) == 0 {
-		items, err := s.providers.List(ctx, repository.ListQuery{
-			InstitutionID: institutionID, Field: "category", Value: string(providerpkg.CategoryMFA), Limit: 1000,
-		})
-		if err != nil {
-			return nil, err
-		}
-		var fallback int64
-		for _, item := range items {
-			if !strings.EqualFold(item.State, "active") {
-				continue
-			}
-			if item.Name == "default-totp" {
-				fallback = item.ID
-				break
-			}
-			if fallback == 0 && providerpkg.NormalizeType(providerpkg.CategoryMFA, item.Type) == providerpkg.TypeMFATOTP {
-				fallback = item.ID
-			}
-		}
-		if fallback == 0 {
-			return nil, bizerrors.ErrInvalidParams.WithDetail("required", "mfa_provider_ids")
-		}
-		return []int64{fallback}, nil
-	}
-	out := make([]int64, 0, len(ids))
-	for _, id := range ids {
-		item, err := s.providers.GetByID(ctx, id)
-		if err != nil || item.InstitutionID != institutionID ||
-			providerpkg.NormalizeCategory(item.Category) != string(providerpkg.CategoryMFA) ||
-			!strings.EqualFold(item.State, "active") {
-			return nil, bizerrors.ErrInvalidParams.WithDetail("mfa_provider_id", id)
-		}
-		out = append(out, id)
-	}
-	return out, nil
 }
 
 // validateApplication 校验跨字段约束（服务层统一出口，错误码复用通用非法参数码）。
@@ -358,30 +318,6 @@ func validateApplication(app *repository.Application) error {
 	default:
 		return bizerrors.New(bizerrors.CodeInvalidParams, "unsupported token_format").
 			WithDetail("token_format", app.TokenFormat)
-	}
-	if len(app.SigninMethods) == 0 {
-		return bizerrors.New(bizerrors.CodeInvalidParams, "at least one sign-in method is required")
-	}
-	// 登录方式必须是"已实现运行时"的方式，且第三方登录必须带具体提供方
-	// （前端按"一个提供方一张卡片"提交，接口层同样不允许空名或未实现的方式混进来）
-	for _, method := range app.SigninMethods {
-		if !implementedSigninMethods[method.Name] {
-			return bizerrors.New(bizerrors.CodeInvalidParams, "unsupported sign-in method").
-				WithDetail("method", method.Name)
-		}
-		if method.Name != repository.SigninMethodProvider {
-			continue
-		}
-		named := 0
-		for _, provider := range app.Providers {
-			if strings.TrimSpace(provider.Name) != "" {
-				named++
-			}
-		}
-		if named == 0 {
-			return bizerrors.New(bizerrors.CodeInvalidParams,
-				"provider sign-in requires at least one provider")
-		}
 	}
 	if app.SigninErrorLimit < 0 || app.SigninRetryWaitMinutes < 0 {
 		return bizerrors.New(bizerrors.CodeInvalidParams,

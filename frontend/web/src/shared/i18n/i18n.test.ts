@@ -48,6 +48,8 @@ describe('i18n 资源一致性', () => {
       'nav.audit',
       'nav.profile',
       'nav.groupOverview',
+      'nav.groupConfig',
+      'nav.authentication',
       'users.status',
     ]) {
       expect(zhKeys).toContain(key)

@@ -510,7 +510,7 @@ erDiagram
 
 - 主键：`id`
 - 唯一约束：`UNIQUE (name)`
-- 检查约束：无（MFA 策略已下沉到应用登录方式与 MFA 提供商）
+- 检查约束：无（MFA 策略已下沉到组织登录方式与 MFA 提供商）
 - 索引：`institutions_domain_key` UNIQUE (lower(domain)) WHERE (domain <> ''::text)；`institutions_name_key` UNIQUE (name)；`institutions_pkey` UNIQUE (id)
 
 | 字段 | 类型 | 可空 | 默认 | 说明 |
@@ -1009,7 +1009,7 @@ OAuth2 / OIDC 应用（客户端）及其登录、注册、令牌、会话、访
 | `max_sessions` | INTEGER | 否 | 0 | 会话上限：0 不限，1 独占，N 最多 N 个 |
 | `grant_types` | TEXT[] | 否 | '{authorization_code,password,refresh_token,client_credentials}' | 允许的 OAuth grant types |
 | `redirect_uris` | TEXT[] | 否 | '{}' | 已登记回调地址 |
-| `providers` | JSONB | 否 | '[]' | 登录提供方配置（JSONB） |
+| `providers` | JSONB | 否 | '[]' | **历史列**：登录提供方配置；新代码不再读写，008 删除 |
 | `scopes` | JSONB | 否 | '[]' | scope 定义（JSONB） |
 | `client_id` | TEXT | 否 | '' | OAuth client_id |
 | `client_secret_hash` | TEXT | 否 | '' | OAuth client_secret 哈希（敏感，禁止下发） |
@@ -1033,16 +1033,16 @@ OAuth2 / OIDC 应用（客户端）及其登录、注册、令牌、会话、访
 | `backchannel_logout_uri` | TEXT | 否 | '' | OIDC Back-Channel Logout 地址 |
 | `token_attributes` | JSONB | 否 | '[]' | access_token 自定义 claim（name/category/value/type） |
 | `disable_refresh_rotation` | BOOLEAN | 否 | false | 是否关闭 refresh token 轮换 |
-| `signin_methods` | JSONB | 否 | '[]' | 登录方式声明（JSONB，唯一数据源） |
+| `signin_methods` | JSONB | 否 | '[]' | **历史列**：应用级登录方式声明；新代码不再读写，008 删除 |
 | `signup_items` | JSONB | 否 | '[]' | 注册字段编排（JSONB） |
 | `theme_data` | JSONB | 是 | — | 应用级品牌主题（JSONB） |
 | `adapter` | TEXT | 否 | 'default' | OIDC claim 适配器：default \| custom |
 | `adapter_config` | JSONB | 是 | — | 自定义适配器配置（JSONB） |
 | `self_signup_enabled` | BOOLEAN | 否 | false | 是否开放自助注册 |
 | `signup_auto_signin` | BOOLEAN | 否 | true | 注册后是否自动登录 |
-| `email_code_ttl_seconds` | INTEGER | 否 | 300 | 邮箱验证码有效期（秒） |
-| `sms_code_ttl_seconds` | INTEGER | 否 | 300 | 短信验证码有效期（秒） |
-| `magic_link_ttl_seconds` | INTEGER | 否 | 600 | 魔法链接有效期（秒） |
+| `email_code_ttl_seconds` | INTEGER | 否 | 300 | **历史列**：TTL 已上移到组织登录方式；008 删除 |
+| `sms_code_ttl_seconds` | INTEGER | 否 | 300 | **历史列**：TTL 已上移到组织登录方式；008 删除 |
+| `magic_link_ttl_seconds` | INTEGER | 否 | 600 | **历史列**：TTL 已上移到组织登录方式；008 删除 |
 | `institution_id` **FK** | BIGINT | 否 | — | 所属组织（租户隔离键） |
 | `signin_error_limit` | INTEGER | 否 | 0 | 登录失败次数上限（0 = 平台默认） |
 | `signin_retry_wait_minutes` | INTEGER | 否 | 0 | 达到失败上限后的等待分钟数（0 = 平台默认） |
@@ -1208,6 +1208,50 @@ OAuth2 / OIDC 应用（客户端）及其登录、注册、令牌、会话、访
 >   ADD CONSTRAINT provider_sms_templates_params_check
 >   CHECK (jsonb_typeof(template_params) = 'array');
 > ```
+
+#### `institution_signin_methods`
+
+组织级登录方式定义（007 新增）。Password / EmailCode / SMSCode / MagicLink 每组织各一条；Provider 每个具体
+OAuth/OIDC 提供商一条。应用只通过 `application_signin_methods` 选择，不再保存任何方法参数。
+
+**键、约束与索引**
+
+- 主键：`id`
+- 外键：`institution_id` → `institutions(id)` ON DELETE CASCADE；`provider_id` / `email_template_id` / `sms_template_id`
+  以 `(id, institution_id)` 复合外键指向对应表，`ON DELETE RESTRICT`
+- 唯一索引：`(institution_id)` WHERE `name='Password'`；`(institution_id, name)` WHERE `name IN ('EmailCode','SMSCode','MagicLink')`；
+  `(institution_id, provider_id)` WHERE `name='Provider'`
+
+| 字段 | 类型 | 可空 | 默认 | 说明 |
+|---|---|---|---|---|
+| `id` **PK** | BIGINT | 否 | 自增 | 主键 |
+| `institution_id` **FK** | BIGINT | 否 | — | 所属组织 |
+| `name` | TEXT | 否 | — | Password \| EmailCode \| SMSCode \| MagicLink \| Provider |
+| `display_name` | TEXT | 否 | '' | 展示名称 |
+| `identifiers` | TEXT[] | 否 | '{}' | Password 标识（username/email/phone） |
+| `provider_id` | BIGINT | 是 | — | 通知通道或第三方提供商 |
+| `email_template_id` | BIGINT | 是 | — | EmailCode / MagicLink 的邮件模板 |
+| `sms_template_id` | BIGINT | 是 | — | SMSCode 的短信模板 |
+| `ttl_seconds` | INTEGER | 否 | 0 | 验证码/魔法链接有效期 |
+| `mfa_enabled` / `mfa_required` | BOOLEAN | 否 | false | 组织统一 MFA 策略 |
+| `sort_order` | INTEGER | 否 | 0 | 登录页展示顺序 |
+| `state` | TEXT | 否 | 'active' | active \| disabled |
+
+#### `institution_signin_method_mfa_providers`
+
+组织登录方式 → MFA 提供商的多对多关联。主键 `(method_id, provider_id)`；`method_id` 级联删除，
+`provider_id` 以 `(id, institution_id)` 复合外键 `ON DELETE RESTRICT`。
+
+#### `application_signin_methods`
+
+应用 → 组织登录方式的选择关系。主键 `(application_id, method_id)`；`application_id` 以
+`(id, institution_id)` 复合外键级联删除，`method_id` `ON DELETE RESTRICT`。应用保存时整体替换，
+不保存任何 provider/template/TTL/MFA 参数。
+
+#### `signin_method_migration_conflicts`
+
+007 回填期间的差异报告（008 删除）：记录应用级旧配置与组织基线不一致、provider 找不到、
+应用映射后零选择等情况，供上线前人工确认。
 
 #### `user_mfa_credentials`
 

@@ -240,7 +240,7 @@ describe('任务中心（任务维度 + 执行记录 + 执行器）', () => {
     expect(within(cleanup).getByText('每 1 小时')).toBeInTheDocument()
     // 「下次执行」显示**具体时间**（相对描述退到 hover 的 title 提示）：
     // 之前这里误用过去时间格式化，未来时间一律显示"刚刚"
-    expect(within(cleanup).getByText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)).toBeInTheDocument()
+    expect(within(cleanup).getAllByText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/).length).toBeGreaterThan(0)
     // 停用的调度项：不再显示"下次执行"时间，而是如实说"已停用"
     const scan = jobCard('maintenance.asyncd_cleanup')
     expect(within(scan).getByText('每天 03:00 · 窗口 30 分钟')).toBeInTheDocument()

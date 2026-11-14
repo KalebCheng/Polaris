@@ -307,12 +307,11 @@ func countEntities(ctx context.Context, db *dbclient.Client, table, where string
 	return n, nil
 }
 
-// updateEntity 按主键更新实体；immutable 中的列不参与更新。
-// updated_at 由本方法统一维护（若实体含该列）。
-func updateEntity(ctx context.Context, db *dbclient.Client, table string, v interface{}, immutable ...string) error {
+// buildUpdateSQL 生成按主键更新的 SQL 与参数；immutable 中的列不参与更新。
+func buildUpdateSQL(table string, v interface{}, immutable ...string) (string, []interface{}, error) {
 	plan, err := planFor(v)
 	if err != nil {
-		return err
+		return "", nil, err
 	}
 	rv := reflect.ValueOf(v)
 	for rv.Kind() == reflect.Pointer {
@@ -340,11 +339,31 @@ func updateEntity(ctx context.Context, db *dbclient.Client, table string, v inte
 
 	id, ok := idOf(rv, plan)
 	if !ok {
-		return fmt.Errorf("实体缺少可用的 id 字段用于更新")
+		return "", nil, fmt.Errorf("实体缺少可用的 id 字段用于更新")
 	}
 	args = append(args, id)
 	sql := fmt.Sprintf("UPDATE %s SET %s WHERE id = %s", table, strings.Join(assignments, ", "), ph(len(args)))
+	return sql, args, nil
+}
+
+// updateEntity 按主键更新实体；immutable 中的列不参与更新。
+// updated_at 由本方法统一维护（若实体含该列）。
+func updateEntity(ctx context.Context, db *dbclient.Client, table string, v interface{}, immutable ...string) error {
+	sql, args, err := buildUpdateSQL(table, v, immutable...)
+	if err != nil {
+		return err
+	}
 	return mapError(db.Exec(ctx, sql, args...), notFoundMessage(table))
+}
+
+// updateEntityTx 与 updateEntity 相同，但在事务内执行。
+func updateEntityTx(ctx context.Context, tx pgx.Tx, table string, v interface{}, immutable ...string) error {
+	sql, args, err := buildUpdateSQL(table, v, immutable...)
+	if err != nil {
+		return err
+	}
+	_, execErr := tx.Exec(ctx, sql, args...)
+	return mapError(execErr, notFoundMessage(table))
 }
 
 func hasColumn(plan *fieldPlan, name string) bool {

@@ -8,9 +8,11 @@ import zh from '@/shared/i18n/locales/zh.json'
 import { WorkspaceNav } from './nav-list'
 
 /** 只关心"菜单怎么画"，权限与组织上下文给足即可 */
-const state = vi.hoisted(() => ({ institutionId: 3 }))
+const state = vi.hoisted(() => ({ institutionId: 3, isAdmin: true }))
 
-vi.mock('@/shared/auth/auth-context', () => ({ useAuth: () => ({ can: () => true }) }))
+vi.mock('@/shared/auth/auth-context', () => ({
+  useAuth: () => ({ can: () => true, isAdmin: state.isAdmin }),
+}))
 vi.mock('@/features/iam/institution-context', () => ({
   useCurrentInstitution: () => ({ institutionId: state.institutionId }),
 }))
@@ -92,9 +94,28 @@ describe('工作区侧栏（共享纵向菜单）', () => {
 
   it('分组抬头仍在（菜单列表只替换条目区，不吞掉分组结构）', () => {
     renderNav()
-    // 分组抬头是可折叠按钮，文案取自 nav-config 的 nav.groupOverview / nav.directory / nav.apps
-    for (const label of [zh.nav.groupOverview, zh.nav.directory, zh.nav.apps]) {
+    // 分组抬头是可折叠按钮，文案取自 nav-config 的 workspaceSections
+    for (const label of [zh.nav.groupOverview, zh.nav.groupConfig, zh.nav.directory, zh.nav.apps]) {
       expect(screen.getByRole('button', { name: new RegExp(label) })).toBeInTheDocument()
+    }
+  })
+
+  it('管理员在「基础配置」下看到「认证方式」，指向组织认证页', () => {
+    renderNav()
+    expect(screen.getByRole('link', { name: zh.nav.authentication })).toHaveAttribute(
+      'href',
+      '/institutions/3/signin-methods',
+    )
+  })
+
+  it('非管理员看不到认证方式入口', () => {
+    state.isAdmin = false
+    try {
+      renderNav()
+      expect(screen.queryByRole('link', { name: zh.nav.authentication })).toBeNull()
+      expect(screen.queryByRole('button', { name: new RegExp(zh.nav.groupConfig) })).toBeNull()
+    } finally {
+      state.isAdmin = true
     }
   })
 })

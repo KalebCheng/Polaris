@@ -17,7 +17,7 @@ import (
 type TemplateService struct {
 	templates repository.ProviderTemplateRepository
 	providers repository.ProviderRepository
-	apps      repository.ApplicationRepository
+	signin    repository.InstitutionSigninMethodRepository
 	runtime   *providerpkg.Runtime
 	audits    *AuditRecorder
 }
@@ -26,11 +26,11 @@ type TemplateService struct {
 func NewTemplateService(
 	templates repository.ProviderTemplateRepository,
 	providers repository.ProviderRepository,
-	apps repository.ApplicationRepository,
+	signin repository.InstitutionSigninMethodRepository,
 	runtime *providerpkg.Runtime,
 	audits *AuditRecorder,
 ) *TemplateService {
-	return &TemplateService{templates: templates, providers: providers, apps: apps, runtime: runtime, audits: audits}
+	return &TemplateService{templates: templates, providers: providers, signin: signin, runtime: runtime, audits: audits}
 }
 
 // NotificationTemplateInput 模板写入契约。
@@ -253,20 +253,18 @@ func (s *TemplateService) clearDefault(ctx context.Context, channel string, inst
 }
 
 func (s *TemplateService) ensureNotReferenced(ctx context.Context, institutionID int64, channel string, templateID int64) error {
-	apps, err := s.apps.List(ctx, repository.ListQuery{InstitutionID: institutionID, Limit: 10000})
+	methods, err := s.signin.List(ctx, institutionID)
 	if err != nil {
 		return err
 	}
-	for _, app := range apps {
-		for _, method := range app.SigninMethods {
-			if method.TemplateID != templateID {
-				continue
-			}
-			methodChannel := channelForMethod(method.Name)
-			if methodChannel == channel {
-				return bizerrors.New(bizerrors.CodeConflict, "template is referenced by an application sign-in method").
-					WithDetail("application", app.Code).WithDetail("method", method.Name)
-			}
+	for _, method := range methods {
+		if channel == "email" && method.EmailTemplateID != nil && *method.EmailTemplateID == templateID {
+			return bizerrors.New(bizerrors.CodeConflict, "template is referenced by an organization sign-in method").
+				WithDetail("method_id", method.ID).WithDetail("method", method.Name)
+		}
+		if channel == "sms" && method.SMSTemplateID != nil && *method.SMSTemplateID == templateID {
+			return bizerrors.New(bizerrors.CodeConflict, "template is referenced by an organization sign-in method").
+				WithDetail("method_id", method.ID).WithDetail("method", method.Name)
 		}
 	}
 	if channel != "sms" {

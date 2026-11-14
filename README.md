@@ -18,7 +18,7 @@ federated credentials, and custom HTML/CSS injection are out of scope.
 | --- | --- |
 | Identity directory | Institutions, users, departments, job titles, job levels, external identities |
 | Access control | Nested roles, allow/deny permissions, wildcard resources/actions, authorization diagnostics |
-| Applications | OAuth2/OIDC clients, sign-in methods, signup policy, session policy, token policy, branding, redirects |
+| Applications | OAuth2/OIDC clients; organization-owned sign-in methods selected per application; signup/session/token policy, branding, redirects |
 | Providers | OAuth/OIDC, email, SMS, captcha, storage, and MFA providers managed at runtime |
 | IdP endpoints | Discovery, JWKS, authorize, token, userinfo, introspection, logout |
 | Tokens | Authorization code + PKCE, refresh-token rotation, password, client credentials |

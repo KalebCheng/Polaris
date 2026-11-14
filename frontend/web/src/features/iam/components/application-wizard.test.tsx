@@ -22,10 +22,27 @@ function renderWizard(access: ApplicationAccessFormValue = emptyApplicationAcces
   return render(
     <I18nextProvider i18n={i18n}>
       <ApplicationWizard
-        form={{ ...emptyApplicationForm, code: 'portal', name: 'Portal' }}
+        form={{ ...emptyApplicationForm, code: 'portal', name: 'Portal', signin_method_ids: [1] }}
         onChange={vi.fn()}
         editing={null}
-        providers={[]}
+        signinMethods={[
+          {
+            id: 1,
+            institution_id: 1,
+            name: 'Password',
+            display_name: 'Password',
+            identifiers: ['username'],
+            ttl_seconds: 0,
+            mfa_enabled: false,
+            mfa_required: false,
+            mfa_provider_ids: [],
+            sort_order: 10,
+            state: 'active',
+            application_count: 0,
+            created_at: '',
+            updated_at: '',
+          },
+        ]}
         certs={[]}
         jobTitles={[]}
         onFinish={vi.fn()}

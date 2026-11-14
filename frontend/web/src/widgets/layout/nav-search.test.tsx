@@ -9,9 +9,13 @@ import { NavSearch } from './nav-search'
 // 权限门禁与组织上下文：本用例只关心"能不能搜到、搜到的点了去哪"
 let can: (resource: string, action: string) => boolean = () => true
 let institutionId = '1'
+let isAdmin = true
 
 vi.mock('@/shared/auth/auth-context', () => ({
-  useAuth: () => ({ can: (resource: string, action: string) => can(resource, action) }),
+  useAuth: () => ({
+    can: (resource: string, action: string) => can(resource, action),
+    isAdmin,
+  }),
 }))
 vi.mock('@/features/iam/institution-context', () => ({
   useCurrentInstitution: () => ({ institutionId, institution: institutionId }),
@@ -25,6 +29,7 @@ function renderSearch() {
         <Routes>
           <Route path="/" element={<div>平台总览页</div>} />
           <Route path="/institutions/1/users" element={<div>用户列表页</div>} />
+          <Route path="/institutions/1/signin-methods" element={<div>认证方式页</div>} />
           <Route path="/settings/*" element={<div>设置页</div>} />
         </Routes>
       </MemoryRouter>
@@ -98,11 +103,36 @@ describe('NavSearch', () => {
 
   it('没有当前组织时只列平台级目标', async () => {
     can = () => true
+    isAdmin = true
     institutionId = ''
     renderSearch()
 
     await openAndType('用户')
 
     expect(screen.queryByRole('option', { name: '用户' })).toBeNull()
+  })
+
+  it('管理员可搜索组织「认证方式」，非管理员不可见', async () => {
+    can = () => true
+    isAdmin = true
+    institutionId = '1'
+    const { unmount } = renderSearch()
+
+    const user = await openAndType('认证方式')
+    const option = screen.getByRole('option', { name: '认证方式' })
+    await user.click(option)
+    expect(await screen.findByText('认证方式页')).toBeInTheDocument()
+    unmount()
+
+    isAdmin = false
+    try {
+      renderSearch()
+      const nonAdmin = userEvent.setup()
+      await nonAdmin.click(screen.getByRole('button', { name: '快速跳转' }))
+      await screen.findByRole('textbox', { name: '快速跳转' })
+      expect(screen.queryByRole('option', { name: '认证方式' })).toBeNull()
+    } finally {
+      isAdmin = true
+    }
   })
 })

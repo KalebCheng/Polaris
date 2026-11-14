@@ -32,13 +32,11 @@ type applicationDTO struct {
 	DefaultJobTitleID *int64 `json:"default_job_title_id,omitempty"`
 
 	// 登录方式与自助注册
-	SigninMethods       []repository.SigninMethod `json:"signin_methods"`
-	SignupItems         []repository.SignupItem   `json:"signup_items"`
-	SelfSignupEnabled   bool                      `json:"self_signup_enabled"`
-	SignupAutoSignin    bool                      `json:"signup_auto_signin"`
-	EmailCodeTTLSeconds int                       `json:"email_code_ttl_seconds"`
-	SMSCodeTTLSeconds   int                       `json:"sms_code_ttl_seconds"`
-	MagicLinkTTLSeconds int                       `json:"magic_link_ttl_seconds"`
+	SigninMethods     []repository.SigninMethod `json:"signin_methods"`
+	SigninMethodIDs   []int64                   `json:"signin_method_ids"`
+	SignupItems       []repository.SignupItem   `json:"signup_items"`
+	SelfSignupEnabled bool                      `json:"self_signup_enabled"`
+	SignupAutoSignin  bool                      `json:"signup_auto_signin"`
 
 	// 会话策略（0 = 不限制；1 = 独占；N = 最多 N 个）
 	MaxSessions int `json:"max_sessions"`
@@ -60,10 +58,9 @@ type applicationDTO struct {
 	ForcedRedirectOrigin string `json:"forced_redirect_origin"`
 	BackchannelLogoutURI string `json:"backchannel_logout_uri"`
 
-	GrantTypes   []string                  `json:"grant_types"`
-	RedirectURIs []string                  `json:"redirect_uris"`
-	Providers    []repository.ProviderItem `json:"providers"`
-	Scopes       []repository.ScopeItem    `json:"scopes"`
+	GrantTypes   []string               `json:"grant_types"`
+	RedirectURIs []string               `json:"redirect_uris"`
+	Scopes       []repository.ScopeItem `json:"scopes"`
 
 	ClientID        string `json:"client_id"`
 	HasClientSecret bool   `json:"has_client_secret"`
@@ -98,18 +95,17 @@ func toApplicationDTO(a *repository.Application) *applicationDTO {
 		Favicon: a.Favicon, Title: a.Title, Description: a.Description,
 		HomepageURL: a.HomepageURL, Tags: orEmptySlice(a.Tags), Order: a.Order,
 		CertID: a.CertID, DefaultJobTitleID: a.DefaultJobTitleID,
-		SigninMethods: orEmptyMethods(a.SigninMethods), SignupItems: orEmptySignupItems(a.SignupItems),
+		SigninMethods: orEmptyMethods(a.SigninMethods), SigninMethodIDs: orEmptyInt64Slice(a.SigninMethodIDs),
+		SignupItems:       orEmptySignupItems(a.SignupItems),
 		SelfSignupEnabled: a.SelfSignupEnabled, SignupAutoSignin: a.SignupAutoSignin,
-		EmailCodeTTLSeconds: a.EmailCodeTTLSeconds, SMSCodeTTLSeconds: a.SMSCodeTTLSeconds,
-		MagicLinkTTLSeconds: a.MagicLinkTTLSeconds,
-		MaxSessions:         a.MaxSessions,
-		SigninErrorLimit:    a.SigninErrorLimit, SigninRetryWaitMinutes: a.SigninRetryWaitMinutes,
+		MaxSessions:      a.MaxSessions,
+		SigninErrorLimit: a.SigninErrorLimit, SigninRetryWaitMinutes: a.SigninRetryWaitMinutes,
 		OrgChoiceMode: a.OrgChoiceMode, IPRestriction: a.IPRestriction, IPWhitelist: a.IPWhitelist,
 		AccessMode: accessModeOrDefault(a.AccessMode),
 		SignupURL:  a.SignupURL, TermsOfUse: a.TermsOfUse,
 		ForcedRedirectOrigin: a.ForcedRedirectOrigin, BackchannelLogoutURI: a.BackchannelLogoutURI,
 		GrantTypes: orEmptySlice(a.GrantTypes), RedirectURIs: orEmptySlice(a.RedirectURIs),
-		Providers: orEmptyItems(a.Providers), Scopes: orEmptyScopes(a.Scopes),
+		Scopes:   orEmptyScopes(a.Scopes),
 		ClientID: a.ClientID, HasClientSecret: a.ClientSecretHash != "",
 		TokenFormat: a.TokenFormat, TokenSigningMethod: a.TokenSigningMethod,
 		TokenAttributes: orEmptyTokenAttributes(a.TokenAttributes), DisableRefreshRotation: a.DisableRefreshRotation,
@@ -280,16 +276,16 @@ func orEmptySlice(v []string) []string {
 	return v
 }
 
-func orEmptyTokenAttributes(v []repository.TokenAttribute) []repository.TokenAttribute {
+func orEmptyInt64Slice(v []int64) []int64 {
 	if v == nil {
-		return []repository.TokenAttribute{}
+		return []int64{}
 	}
 	return v
 }
 
-func orEmptyItems(v []repository.ProviderItem) []repository.ProviderItem {
+func orEmptyTokenAttributes(v []repository.TokenAttribute) []repository.TokenAttribute {
 	if v == nil {
-		return []repository.ProviderItem{}
+		return []repository.TokenAttribute{}
 	}
 	return v
 }

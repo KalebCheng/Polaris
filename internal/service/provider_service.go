@@ -19,7 +19,7 @@ import (
 type ProviderService struct {
 	providers repository.ProviderRepository
 	templates repository.ProviderTemplateRepository
-	apps      repository.ApplicationRepository
+	signin    repository.InstitutionSigninMethodRepository
 	orgs      repository.InstitutionRepository
 	syncers   repository.SyncerRepository
 	runtime   *providerpkg.Runtime
@@ -33,7 +33,7 @@ type ProviderService struct {
 func NewProviderService(
 	providers repository.ProviderRepository,
 	templates repository.ProviderTemplateRepository,
-	apps repository.ApplicationRepository,
+	signin repository.InstitutionSigninMethodRepository,
 	orgs repository.InstitutionRepository,
 	syncers repository.SyncerRepository,
 	runtime *providerpkg.Runtime,
@@ -43,7 +43,7 @@ func NewProviderService(
 	audits *AuditRecorder,
 ) *ProviderService {
 	return &ProviderService{
-		providers: providers, templates: templates, apps: apps, orgs: orgs, syncers: syncers,
+		providers: providers, templates: templates, signin: signin, orgs: orgs, syncers: syncers,
 		runtime: runtime, resolver: resolver,
 		captcha: captcha, storage: storage, audits: audits,
 	}
@@ -393,16 +393,20 @@ func (s *ProviderService) ensureProviderNotReferenced(ctx context.Context, item 
 	if item.Name == "default-totp" && providerpkg.NormalizeCategory(item.Category) == string(providerpkg.CategoryMFA) {
 		return bizerrors.ErrProtectedObject.WithDetail("provider", item.Name)
 	}
-	if s.apps != nil {
-		apps, err := s.apps.List(ctx, repository.ListQuery{InstitutionID: item.InstitutionID, Limit: 10000})
+	if s.signin != nil {
+		methods, err := s.signin.List(ctx, item.InstitutionID)
 		if err != nil {
 			return err
 		}
-		for _, app := range apps {
-			for _, method := range app.SigninMethods {
-				if method.ProviderID == item.ID {
-					return bizerrors.New(bizerrors.CodeConflict, "provider is referenced by an application sign-in method").
-						WithDetail("application", app.Code).WithDetail("method", method.Name)
+		for _, method := range methods {
+			if method.ProviderID != nil && *method.ProviderID == item.ID {
+				return bizerrors.New(bizerrors.CodeConflict, "provider is referenced by an organization sign-in method").
+					WithDetail("method_id", method.ID).WithDetail("method", method.Name)
+			}
+			for _, mfaProviderID := range method.MfaProviderIDs {
+				if mfaProviderID == item.ID {
+					return bizerrors.New(bizerrors.CodeConflict, "provider is referenced by a sign-in method MFA policy").
+						WithDetail("method_id", method.ID).WithDetail("method", method.Name)
 				}
 			}
 		}

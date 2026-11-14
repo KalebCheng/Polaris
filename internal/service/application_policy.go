@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	bizerrors "polaris/internal/errors"
+	"polaris/internal/logger"
 	"polaris/internal/repository"
 	providerpkg "polaris/internal/service/provider"
 )
@@ -78,13 +79,7 @@ func (s *AuthService) buildPlatformInfo(ctx context.Context, org *repository.Ins
 		OrgDescription: org.Description,
 		OrgLogo:        org.Logo,
 		OrgFavicon:     org.Favicon,
-		SigninMethods: []repository.SigninMethod{
-			normalizeMethodForClient(repository.SigninMethod{
-				Name:        repository.SigninMethodPassword,
-				DisplayName: "Password",
-				Rule:        "All",
-			}),
-		},
+		SigninMethods:  []repository.SigninMethod{},
 		SMSProviders:   []string{},
 		EmailProviders: []string{},
 		Providers:      []repository.ProviderItem{},
@@ -92,6 +87,15 @@ func (s *AuthService) buildPlatformInfo(ctx context.Context, org *repository.Ins
 	}
 	if s.providerRuntime != nil {
 		info.SMSProviders, info.EmailProviders, info.CaptchaRequired = s.providerCapabilities(ctx, org.ID)
+	}
+	if s.signinPolicy != nil {
+		if methods, err := s.signinPolicy.OrganizationMethods(ctx, org.ID); err == nil {
+			info.SigninMethods = methods
+			info.Providers = s.signinPolicy.ProviderItems(ctx, methods)
+			applySigninMethodMetadata(info, methods)
+		} else {
+			logger.Warn("load organization sign-in methods failed", "institution_id", org.ID, "error", err)
+		}
 	}
 	return info
 }
@@ -178,9 +182,9 @@ func (s *AuthService) buildAppInfo(ctx context.Context, app *repository.Applicat
 		ThemeData:           app.ThemeData,
 		SelfSignupEnabled:   app.SelfSignupEnabled,
 		SignupAutoSignin:    app.SignupAutoSignin,
-		MagicLinkTTLSeconds: app.MagicLinkTTLSeconds,
+		MagicLinkTTLSeconds: 600,
 		OrgChoiceMode:       app.OrgChoiceMode,
-		Providers:           orEmptyItems(app.Providers),
+		Providers:           []repository.ProviderItem{},
 		SignupItems:         orEmptySignupItems(app.SignupItems),
 		SignupURL:           app.SignupURL,
 		TermsOfUse:          app.TermsOfUse,
@@ -195,7 +199,15 @@ func (s *AuthService) buildAppInfo(ctx context.Context, app *repository.Applicat
 	if s.providerRuntime != nil {
 		info.SMSProviders, info.EmailProviders, info.CaptchaRequired = s.providerCapabilities(ctx, app.InstitutionID)
 	}
-	info.SigninMethods = s.availableSigninMethods(ctx, app, info.EmailProviders, info.SMSProviders)
+	if s.signinPolicy != nil {
+		if methods, err := s.signinPolicy.ApplicationMethods(ctx, app); err == nil {
+			info.SigninMethods = methods
+			info.Providers = s.signinPolicy.ProviderItems(ctx, methods)
+			applySigninMethodMetadata(info, methods)
+		} else {
+			logger.Warn("load application sign-in methods failed", "institution_id", app.InstitutionID, "application", app.Code, "error", err)
+		}
+	}
 	return info
 }
 
@@ -209,77 +221,19 @@ var implementedSigninMethods = map[string]bool{
 	repository.SigninMethodProvider:  true,
 }
 
-// availableSigninMethods 依据组织能力过滤登录方式（不可用的方式不下发）：
-//   - 邮箱验证码 / 魔法链接：需要组织启用邮件提供商；
-//   - 短信验证码：需要组织启用短信提供商；
-//   - 第三方：需要应用自身配置了提供方。
-func (s *AuthService) availableSigninMethods(ctx context.Context, app *repository.Application, email, sms []string) []repository.SigninMethod {
-	return s.filterSigninMethods(ctx, app, email, sms)
-}
-
-// availableSigninMethods 保留纯函数入口给单元测试；生产路径使用 filterSigninMethods（含显式 provider/template 校验）。
-func availableSigninMethods(app *repository.Application, email, sms []string) []repository.SigninMethod {
-	return (&AuthService{}).filterSigninMethods(context.Background(), app, email, sms)
-}
-
-func (s *AuthService) filterSigninMethods(ctx context.Context, app *repository.Application, email, sms []string) []repository.SigninMethod {
-	// 与 HasSigninMethod 保持一致：signin_methods 为空的历史应用兜底为"仅密码"，
-	// 避免登录页无任何入口而后端却仍放行密码登录（两边语义必须一致）。
-	if len(app.SigninMethods) == 0 {
-		return []repository.SigninMethod{normalizeMethodForClient(repository.SigninMethod{Name: repository.SigninMethodPassword, DisplayName: "Password", Rule: "All"})}
+func applySigninMethodMetadata(info *AppInfo, methods []repository.SigninMethod) {
+	if info == nil {
+		return
 	}
-	out := []repository.SigninMethod{}
-	for _, m := range app.SigninMethods {
-		if !implementedSigninMethods[m.Name] {
-			continue // 尚未实现运行时的登录方式不下发（避免"配了不生效"）
-		}
-		switch m.Name {
-		case repository.SigninMethodEmailCode, repository.SigninMethodMagicLink:
-			if m.ProviderID == 0 && len(email) == 0 {
-				continue
-			}
-			if s != nil && s.templates != nil && m.ProviderID > 0 {
-				scene := repository.TemplateSceneLoginCode
-				if m.Name == repository.SigninMethodMagicLink {
-					scene = repository.TemplateSceneMagicLink
-				}
-				p, tpl, err := s.templates.ResolveNotification(ctx, app.InstitutionID, m.ProviderID, m.TemplateID, scene, providerpkg.CategoryEmail)
-				if err != nil || p == nil || tpl == nil {
-					continue
-				}
-				m.TemplateID = tpl.ID
-			}
-		case repository.SigninMethodSMSCode:
-			if m.ProviderID == 0 && len(sms) == 0 {
-				continue
-			}
-			if s != nil && s.templates != nil && m.ProviderID > 0 {
-				p, tpl, err := s.templates.ResolveNotification(ctx, app.InstitutionID, m.ProviderID, m.TemplateID, repository.TemplateSceneLoginCode, providerpkg.CategorySMS)
-				if err != nil || p == nil || tpl == nil {
-					continue
-				}
-				m.TemplateID = tpl.ID
-			}
-		case repository.SigninMethodProvider:
-			if len(app.Providers) == 0 {
-				continue
+	info.MagicLinkTTLSeconds = 600
+	for _, method := range methods {
+		switch method.Name {
+		case repository.SigninMethodMagicLink:
+			if method.TTLSeconds > 0 {
+				info.MagicLinkTTLSeconds = method.TTLSeconds
 			}
 		}
-		out = append(out, normalizeMethodForClient(m))
 	}
-	return out
-}
-
-func normalizeMethodForClient(m repository.SigninMethod) repository.SigninMethod {
-	if m.Name == repository.SigninMethodPassword {
-		m.Identifiers = m.ResolvePasswordIdentifiers()
-	}
-	m.MfaEnabled = m.MFAEnabled()
-	m.MfaRequired = m.MFARequired()
-	if m.MfaProviderIDs == nil {
-		m.MfaProviderIDs = []int64{}
-	}
-	return m
 }
 
 // providerCapabilities 返回组织内可用于验证码登录/邮件的提供商名，以及是否要求人机校验。

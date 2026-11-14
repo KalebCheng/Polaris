@@ -23,6 +23,7 @@ type InstitutionService struct {
 	syncers     repository.SyncerRepository
 	tokens      repository.TokenRepository
 	records     repository.RecordRepository
+	signin      *SigninMethodService
 	audits      *AuditRecorder
 	cipher      *auth.SecretCipher
 }
@@ -41,6 +42,7 @@ type InstitutionDeps struct {
 	Syncers     repository.SyncerRepository
 	Tokens      repository.TokenRepository
 	Records     repository.RecordRepository
+	Signin      *SigninMethodService
 	Audits      *AuditRecorder
 	Cipher      *auth.SecretCipher
 }
@@ -50,7 +52,7 @@ func NewInstitutionService(deps InstitutionDeps) *InstitutionService {
 	return &InstitutionService{
 		orgs: deps.Orgs, users: deps.Users, jobTitles: deps.JobTitles, depts: deps.Depts, jobLevels: deps.JobLevels, roles: deps.Roles,
 		permissions: deps.Permissions, apps: deps.Apps, providers: deps.Providers,
-		syncers: deps.Syncers, tokens: deps.Tokens, records: deps.Records, audits: deps.Audits,
+		syncers: deps.Syncers, tokens: deps.Tokens, records: deps.Records, signin: deps.Signin, audits: deps.Audits,
 		cipher: deps.Cipher,
 	}
 }
@@ -88,6 +90,11 @@ func (s *InstitutionService) Create(ctx context.Context, actor string, org *repo
 	// 默认 TOTP 提供商：承接存量 MFA 用户，并让新建应用无需额外配置即可选择 MFA。
 	if err := s.ensureDefaultMFAProvider(ctx, org); err != nil {
 		return nil, err
+	}
+	if s.signin != nil {
+		if err := s.signin.EnsureDefaultPassword(ctx, org.ID); err != nil {
+			return nil, err
+		}
 	}
 	s.audits.Record(ctx, actor, org.ID, "institutionID.create", org.Name, nil)
 	return org, nil

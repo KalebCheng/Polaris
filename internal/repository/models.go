@@ -237,6 +237,8 @@ const (
 //   - MfaEnabled=true, MfaRequired=false：未绑定用户每次登录提示绑定但可跳过；已绑定用户仍需验证；
 //   - MfaEnabled=true, MfaRequired=true：必须完成绑定与验证。
 type SigninMethod struct {
+	// ID 组织级登录方式主键（应用选择与审计用）。
+	ID          int64  `json:"id,omitempty"`
 	Name        string `json:"name"`
 	DisplayName string `json:"displayName"`
 	Rule        string `json:"rule"`
@@ -247,6 +249,10 @@ type SigninMethod struct {
 	// ProviderID / TemplateID 仅通知类方式使用（同组织 provider 主键 + 场景匹配的模板主键）。
 	ProviderID int64 `json:"providerId,omitempty"`
 	TemplateID int64 `json:"templateId,omitempty"`
+	// TTLSeconds 通知类方式的验证码/链接有效期；Password/Provider 为 0。
+	TTLSeconds int `json:"ttlSeconds,omitempty"`
+	// State 组织方法的启用状态（active/disabled）。
+	State string `json:"state,omitempty"`
 
 	MfaEnabled     bool    `json:"mfaEnabled"`
 	MfaRequired    bool    `json:"mfaRequired"`
@@ -256,6 +262,12 @@ type SigninMethod struct {
 	// 但不能把管理员显式关闭（mfaEnabled=false）误判成"缺失"。
 	mfaEnabledSet  bool
 	mfaRequiredSet bool
+}
+
+// MarkMFAExplicit 标记 MFA 字段来自组织级显式配置，避免旧数据的隐式默认覆盖。
+func (m *SigninMethod) MarkMFAExplicit() {
+	m.mfaEnabledSet = true
+	m.mfaRequiredSet = true
 }
 
 // UnmarshalJSON 记录 MFA 字段是否存在，用于兼容旧 signin_methods JSON。
@@ -313,39 +325,6 @@ func IsPasswordIdentifier(value string) bool {
 	default:
 		return false
 	}
-}
-
-// FindSigninMethod 返回应用启用的登录方式；未配置 signin_methods 的历史应用回退为 Password。
-func (a *Application) FindSigninMethod(name string) (SigninMethod, bool) {
-	if a == nil {
-		return SigninMethod{}, false
-	}
-	if len(a.SigninMethods) == 0 {
-		return SigninMethod{Name: SigninMethodPassword, DisplayName: SigninMethodPassword}, name == SigninMethodPassword
-	}
-	for _, method := range a.SigninMethods {
-		if method.Name == name {
-			return method, true
-		}
-	}
-	return SigninMethod{}, false
-}
-
-// HasSigninMethod 判定应用是否启用了某种登录方式（"配置即生效"的唯一判定入口）。
-// 兜底：signin_methods 为空时视为仅密码（兼容迁移前创建、且未回填的历史数据）。
-func (a *Application) HasSigninMethod(name string) bool {
-	if a == nil {
-		return false
-	}
-	if len(a.SigninMethods) == 0 {
-		return name == SigninMethodPassword
-	}
-	for _, m := range a.SigninMethods {
-		if m.Name == name {
-			return true
-		}
-	}
-	return false
 }
 
 // SignupItem 注册表单字段编排
@@ -407,8 +386,11 @@ type Application struct {
 	SignupURL  string `db:"signup_url" json:"signup_url"`
 	TermsOfUse string `db:"terms_of_use" json:"terms_of_use"`
 
-	// 登录方式（唯一数据源，驱动登录页渲染与后端放行判定）
-	SigninMethods []SigninMethod `db:"signin_methods" json:"signin_methods"`
+	// 登录方式：非持久化字段。定义存于组织级登录方式，应用仅存选择关系；
+	// 这里由服务层装配，供 DTO / 登录页兼容使用。
+	SigninMethods []SigninMethod `db:"-" json:"signin_methods"`
+	// SigninMethodIDs 应用选择的组织登录方式主键（写请求与详情回显）。
+	SigninMethodIDs []int64 `db:"-" json:"signin_method_ids"`
 	// 注册字段编排（驱动托管注册页 /signup 的字段与校验）
 	SignupItems []SignupItem `db:"signup_items" json:"signup_items"`
 
@@ -416,10 +398,10 @@ type Application struct {
 	SelfSignupEnabled bool `db:"self_signup_enabled" json:"self_signup_enabled"`
 	SignupAutoSignin  bool `db:"signup_auto_signin" json:"signup_auto_signin"`
 
-	// 各登录方式的一次性凭据有效期（秒）
-	EmailCodeTTLSeconds int `db:"email_code_ttl_seconds" json:"email_code_ttl_seconds"`
-	SMSCodeTTLSeconds   int `db:"sms_code_ttl_seconds" json:"sms_code_ttl_seconds"`
-	MagicLinkTTLSeconds int `db:"magic_link_ttl_seconds" json:"magic_link_ttl_seconds"`
+	// 历史字段：有效期已上移到组织级登录方式；保留 JSON 兼容，不再持久化。
+	EmailCodeTTLSeconds int `db:"-" json:"email_code_ttl_seconds"`
+	SMSCodeTTLSeconds   int `db:"-" json:"sms_code_ttl_seconds"`
+	MagicLinkTTLSeconds int `db:"-" json:"magic_link_ttl_seconds"`
 
 	// 应用级品牌主题（覆盖组织默认）
 	ThemeData *ThemeData `db:"theme_data" json:"theme_data"`
@@ -441,7 +423,7 @@ type Application struct {
 
 	GrantTypes   []string       `db:"grant_types" json:"grant_types"`
 	RedirectURIs []string       `db:"redirect_uris" json:"redirect_uris"`
-	Providers    []ProviderItem `db:"providers" json:"providers"`
+	Providers    []ProviderItem `db:"-" json:"providers"`
 	Scopes       []ScopeItem    `db:"scopes" json:"scopes"`
 
 	ClientID         string `db:"client_id" json:"client_id"`

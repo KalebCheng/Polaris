@@ -272,6 +272,8 @@ export interface TokenAttribute {
 }
 
 export interface SigninMethod {
+  /** 组织级方法主键 */
+  id?: number
   name: string
   displayName: string
   rule?: string
@@ -284,6 +286,49 @@ export interface SigninMethod {
   mfaEnabled?: boolean
   mfaRequired?: boolean
   mfaProviderIds?: number[]
+  /** 通知类方式的有效期（秒） */
+  ttlSeconds?: number
+  /** active | disabled */
+  state?: string
+}
+
+/** 组织级登录方式（管理端 API，snake_case） */
+export interface InstitutionSigninMethod {
+  id: number
+  institution_id: number
+  name: string
+  display_name: string
+  identifiers: string[]
+  provider_id?: number | null
+  email_template_id?: number | null
+  sms_template_id?: number | null
+  ttl_seconds: number
+  mfa_enabled: boolean
+  mfa_required: boolean
+  mfa_provider_ids: number[]
+  sort_order: number
+  state: 'active' | 'disabled'
+  application_count: number
+  provider_name?: string
+  provider_display_name?: string
+  provider_state?: string
+  template_name?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface InstitutionSigninMethodInput {
+  name: string
+  display_name?: string
+  identifiers?: string[]
+  provider_id?: number | null
+  email_template_id?: number | null
+  sms_template_id?: number | null
+  ttl_seconds?: number
+  mfa_enabled?: boolean
+  mfa_required?: boolean
+  mfa_provider_ids?: number[]
+  sort_order?: number
 }
 
 /** 通知提供商模板（provider_email_templates / provider_sms_templates） */
@@ -386,6 +431,7 @@ export interface Application {
 
   // 登录方式（唯一数据源）与注册编排
   signin_methods?: SigninMethod[]
+  signin_method_ids?: number[]
   signup_items?: SignupItem[]
   self_signup_enabled: boolean
   signup_auto_signin: boolean

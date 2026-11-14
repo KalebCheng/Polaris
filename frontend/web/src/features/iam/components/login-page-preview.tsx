@@ -3,6 +3,7 @@ import { Languages, Moon } from 'lucide-react'
 import { BrandLockup } from '@/shared/components/brand-lockup'
 import { SigninMethodIcon } from '@/shared/components/signin-method-icon'
 import { Button, Input, Label } from '@/shared/ui'
+import { cn } from '@/shared/lib/utils'
 
 interface LoginPagePreviewProps {
   /** 组织/应用 Logo（同时用于页眉品牌与卡片图标） */
@@ -47,6 +48,7 @@ export function LoginPagePreview({
   const hasCode = methods.includes('EmailCode') || methods.includes('SMSCode')
   const hasMagic = methods.includes('MagicLink')
   const hasProvider = methods.includes('Provider')
+  const showSignup = allowSignUp && mode === 'signup'
 
   return (
     <div className="bg-background pointer-events-none relative flex h-[min(62vh,560px)] flex-col overflow-hidden select-none">
@@ -78,33 +80,27 @@ export function LoginPagePreview({
             ) : null}
           </header>
 
-          {/* 登录 / 注册页签（静态还原真实页面） */}
-          <div className="mt-6 flex justify-start gap-6 border-b">
-            <span
-              className="pt-1 pb-2.5 text-sm font-medium"
-              style={
-                mode === 'signin'
-                  ? { color: accent, borderBottom: `2px solid ${accent}` }
-                  : { color: 'var(--muted-foreground)', borderBottom: '2px solid transparent' }
-              }
-            >
-              {t('auth.signIn')}
-            </span>
-            {allowSignUp ? (
-              <span
-                className="pt-1 pb-2.5 text-sm font-medium"
-                style={
-                  mode === 'signup'
-                    ? { color: accent, borderBottom: `2px solid ${accent}` }
-                    : { color: 'var(--muted-foreground)', borderBottom: '2px solid transparent' }
-                }
-              >
-                {t('auth.signUp')}
-              </span>
-            ) : null}
-          </div>
+          {/* 登录 / 注册页签：与真实登录页同一套胶囊分段语言 */}
+          {allowSignUp ? (
+            <div className="bg-muted/70 mt-6 flex w-full items-center gap-1 rounded-full p-1">
+              {[
+                { key: 'signin', label: t('auth.signIn'), selected: !showSignup },
+                { key: 'signup', label: t('auth.signUp'), selected: showSignup },
+              ].map((item) => (
+                <span
+                  key={item.key}
+                  className={cn(
+                    'flex-1 rounded-full px-3 py-1.5 text-center text-[13px] font-medium transition-colors',
+                    item.selected ? 'bg-ink text-ink-foreground shadow-soft' : 'text-muted-foreground',
+                  )}
+                >
+                  {item.label}
+                </span>
+              ))}
+            </div>
+          ) : null}
 
-          {mode === 'signup' ? (
+          {showSignup ? (
             <div className="space-y-4 pt-6">
               <div className="space-y-2">
                 <Label htmlFor="preview-signup-username">{t('auth.username')}</Label>
@@ -131,7 +127,7 @@ export function LoginPagePreview({
                     <Input
                       id="preview-username"
                       readOnly
-                      placeholder={t('auth.usernamePlaceholder')}
+                      placeholder={t('auth.identifierPlaceholder.username')}
                       className="h-10"
                     />
                   </div>

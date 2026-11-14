@@ -152,7 +152,7 @@ func TestApplicationDTOEmptyCollections(t *testing.T) {
 	a := &repository.Application{ID: 1, Code: "app", Name: "App", ClientSecretHash: "keep-me"}
 	b, _ := json.Marshal(toApplicationDTO(a))
 	body := string(b)
-	for _, want := range []string{`"grant_types":[]`, `"redirect_uris":[]`, `"providers":[]`, `"scopes":[]`} {
+	for _, want := range []string{`"grant_types":[]`, `"redirect_uris":[]`, `"signin_method_ids":[]`, `"scopes":[]`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("期望包含 %s，实际 %s", want, body)
 		}

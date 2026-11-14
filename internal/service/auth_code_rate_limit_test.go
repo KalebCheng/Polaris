@@ -47,18 +47,15 @@ func (r *jitUserRepo) Create(_ context.Context, user *repository.User) (int64, e
 	return user.ID, nil
 }
 
-func TestResolveCodeSendAppUsesClientID(t *testing.T) {
+func TestResolveAppContextUsesClientID(t *testing.T) {
 	apps := &clientIDAppRepo{byClientID: map[string]*repository.Application{
 		"client-1": {ID: 2, InstitutionID: 1, Code: "target-app", Name: "Target App"},
 	}}
 	svc := &AuthService{apps: apps}
 
-	app, err := svc.resolveCodeSendApp(context.Background(), CodeSendRequest{
-		Institution: "acme",
-		ClientID:    "client-1",
-	})
+	app, err := svc.resolveAppContext(context.Background(), 1, "acme", "", "client-1")
 	if err != nil {
-		t.Fatalf("resolveCodeSendApp failed: %v", err)
+		t.Fatalf("resolveAppContext failed: %v", err)
 	}
 	if app == nil || app.Code != "target-app" {
 		t.Fatalf("expected client_id application, got %+v", app)
@@ -111,7 +108,7 @@ func TestFindUserByCodeTargetAllowsNilDefaultJobTitle(t *testing.T) {
 		SelfSignupEnabled: true,
 	}
 
-	user, err := svc.findUserByCodeTarget(context.Background(), app, CodeKindSMS, "+8613800000000", "10.0.0.1")
+	user, err := svc.findUserByCodeTarget(context.Background(), 1, app, CodeKindSMS, "+8613800000000", "10.0.0.1")
 	if err != nil {
 		t.Fatalf("JIT signup failed: %v", err)
 	}
@@ -140,10 +137,10 @@ func TestFindUserByCodeTargetRateLimitsJITSignup(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	if _, err := svc.findUserByCodeTarget(ctx, app, CodeKindSMS, "+8613800000000", "10.0.0.1"); err != nil {
+	if _, err := svc.findUserByCodeTarget(ctx, 1, app, CodeKindSMS, "+8613800000000", "10.0.0.1"); err != nil {
 		t.Fatalf("first JIT signup failed: %v", err)
 	}
-	_, err := svc.findUserByCodeTarget(ctx, app, CodeKindSMS, "+8613800000001", "10.0.0.1")
+	_, err := svc.findUserByCodeTarget(ctx, 1, app, CodeKindSMS, "+8613800000001", "10.0.0.1")
 	if !bizerrors.Is(err, bizerrors.CodeVerifyCodeTooMany) {
 		t.Fatalf("second JIT signup should be rate limited, got %v", err)
 	}
@@ -162,7 +159,7 @@ func TestFindUserByCodeTargetPropagatesLookupError(t *testing.T) {
 		SelfSignupEnabled: true,
 	}
 
-	_, err := svc.findUserByCodeTarget(context.Background(), app, CodeKindSMS, "+8613800000000", "10.0.0.1")
+	_, err := svc.findUserByCodeTarget(context.Background(), 1, app, CodeKindSMS, "+8613800000000", "10.0.0.1")
 	if !bizerrors.Is(err, bizerrors.CodeDBError) {
 		t.Fatalf("lookup error should propagate, got %v", err)
 	}

@@ -132,6 +132,10 @@
 | POST | `/applications/:name/reset-secret` | `application:update` |
 | GET/PUT | `/applications/:name/access` | `application:read/update` |
 | GET | `/applications/subject-options?type=user\|job_title\|department&keyword=&parent_id=&offset=&limit=` | `application:read` |
+| GET/POST | `/institutions/:id/signin-methods` | admin |
+| GET | `/institutions/:id/signin-methods/options` | 登录即可（只读摘要） |
+| PUT/DELETE | `/institutions/:id/signin-methods/:methodId` | admin |
+| POST | `/institutions/:id/signin-methods/:methodId/state` | admin |
 | GET/POST | `/providers` · GET/PUT/DELETE `/providers/:id` | `provider:*` |
 | GET | `/providers/catalog` · POST `/providers/:id/test` | `provider:read/update` |
 | GET | `/providers/message-template-scenes` | `provider:read` |
@@ -142,6 +146,10 @@
 | POST | `/tokens/:name/revoke` · DELETE `/tokens/:name` | `token:update/delete` |
 
 **应用字段补充（P4）**：`adapter`（`default`/`custom`）与 `adapter_config`（`{"claimMap": {...}}`），见《OIDC 接入指南》§4.1。
+
+**应用登录方式（组织级定义）**：应用创建/更新提交 `signin_method_ids: number[]`，只表达“允许哪些组织登录方式”；
+provider/template/TTL/MFA 全部在 `/institutions/:id/signin-methods` 维护。新建应用缺省全选组织当前启用方法；
+更新时缺省保留、显式空数组拒绝。公开 `/auth/app-info` 仍下发 effective `signin_methods`（camelCase 形状不变）。
 
 用户、职务与部门成员关系接口统一使用主键数组：`PUT /users/:id/roles` 提交 `{"role_ids":[...]}`，`PUT /users/:id/job-titles` 提交 `{"job_title_ids":[...]}`，`PUT /job-titles/:id/members` 与 `PUT /departments/:id/members` 提交 `{"user_ids":[...]}`。名称字段只用于响应展示。
 

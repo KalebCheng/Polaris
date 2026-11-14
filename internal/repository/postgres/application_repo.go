@@ -3,6 +3,8 @@ package postgres
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5"
+
 	"polaris/internal/repository"
 	"polaris/pkg/dbclient"
 )
@@ -29,13 +31,26 @@ func normalizeApplication(a *repository.Application) {
 
 // Create 创建应用
 func (r *ApplicationRepository) Create(ctx context.Context, a *repository.Application) (int64, error) {
+	return r.CreateWithSigninMethods(ctx, a, nil)
+}
+
+// CreateWithSigninMethods 单事务创建应用并写入登录方式选择。
+func (r *ApplicationRepository) CreateWithSigninMethods(ctx context.Context, a *repository.Application, methodIDs []int64) (int64, error) {
 	normalizeApplication(a)
-	id, err := insertReturningID(ctx, r.db, applicationTable, a)
-	if err != nil {
-		return 0, err
-	}
-	a.ID = id
-	return id, nil
+	var id int64
+	err := r.db.WithTx(ctx, func(tx pgx.Tx) error {
+		next, err := insertReturningID(ctx, tx, applicationTable, a)
+		if err != nil {
+			return err
+		}
+		id = next
+		a.ID = next
+		if len(methodIDs) == 0 {
+			return nil
+		}
+		return replaceApplicationSelectionTx(ctx, tx, a.InstitutionID, next, methodIDs)
+	})
+	return id, err
 }
 
 // GetByID 按 ID 查询
@@ -67,8 +82,21 @@ func (r *ApplicationRepository) GetByClientID(ctx context.Context, clientID stri
 
 // Update 更新应用（组织/名称/client_id 为不可变标识）
 func (r *ApplicationRepository) Update(ctx context.Context, a *repository.Application) error {
+	return r.UpdateWithSigninMethods(ctx, a, nil)
+}
+
+// UpdateWithSigninMethods 单事务更新应用；methodIDs 为 nil 时保留既有选择。
+func (r *ApplicationRepository) UpdateWithSigninMethods(ctx context.Context, a *repository.Application, methodIDs *[]int64) error {
 	normalizeApplication(a)
-	return updateEntity(ctx, r.db, applicationTable, a, "institution_id", "code", "client_id")
+	return r.db.WithTx(ctx, func(tx pgx.Tx) error {
+		if err := updateEntityTx(ctx, tx, applicationTable, a, "institution_id", "code", "client_id"); err != nil {
+			return err
+		}
+		if methodIDs == nil {
+			return nil
+		}
+		return replaceApplicationSelectionTx(ctx, tx, a.InstitutionID, a.ID, *methodIDs)
+	})
 }
 
 // Delete 删除应用

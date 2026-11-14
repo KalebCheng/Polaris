@@ -75,9 +75,9 @@ export function ApplicationCard({
         <p className="text-muted-foreground text-[11px]">{t('applications.enabledMethods')}</p>
         <div className="flex flex-wrap items-center gap-1">
           {methods.slice(0, METHOD_LIMIT).map((method) => (
-            <Badge key={method.name} variant="outline">
+            <Badge key={`${method.id ?? method.name}-${method.providerId ?? ''}`} variant="outline">
               <SigninMethodIcon name={method.name} />
-              {method.name}
+              {method.displayName || method.name}
             </Badge>
           ))}
           {hiddenCount > 0 ? (

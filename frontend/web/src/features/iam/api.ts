@@ -41,6 +41,8 @@ import type {
   ExternalIdentityRef,
   UserIdentity,
   ConnectionCatalog,
+  InstitutionSigninMethod,
+  InstitutionSigninMethodInput,
 } from '@/shared/api/types'
 import { getActiveInstitution } from './active-institution'
 
@@ -103,6 +105,21 @@ export const institutionApi = {
   stats: (id: number) => api.get<InstitutionStats>(`/institutions/${id}/stats`),
   /** 全部组织的资源聚合（总览页按组织聚合） */
   statsAll: () => api.get<{ items: InstitutionStats[] }>('/institutions/stats'),
+}
+
+export const signinMethodApi = {
+  list: (institutionID: number) =>
+    api.get<{ items: InstitutionSigninMethod[] }>(`/institutions/${institutionID}/signin-methods`),
+  options: (institutionID: number) =>
+    api.get<{ items: InstitutionSigninMethod[] }>(`/institutions/${institutionID}/signin-methods/options`),
+  create: (institutionID: number, body: InstitutionSigninMethodInput) =>
+    api.post<InstitutionSigninMethod>(`/institutions/${institutionID}/signin-methods`, body),
+  update: (institutionID: number, methodID: number, body: InstitutionSigninMethodInput) =>
+    api.put<InstitutionSigninMethod>(`/institutions/${institutionID}/signin-methods/${methodID}`, body),
+  setState: (institutionID: number, methodID: number, state: 'active' | 'disabled') =>
+    api.post<void>(`/institutions/${institutionID}/signin-methods/${methodID}/state`, { state }),
+  remove: (institutionID: number, methodID: number) =>
+    api.del<void>(`/institutions/${institutionID}/signin-methods/${methodID}`),
 }
 
 export const storageApi = {
@@ -285,8 +302,11 @@ export const providerApi = {
     api.post<Provider>(`/providers/${id}/state`, { state }, orgQ()),
   /** 通知模板（邮件 / 短信）：选中提供商后再选择 scene 匹配的模板 */
   templateScenes: () => api.get<{ scenes: TemplateSceneInfo[] | null }>('/providers/message-template-scenes'),
-  templates: (id: number, scene?: string) =>
-    api.get<{ items: ProviderTemplate[] | null }>(`/providers/${id}/message-templates`, { ...orgQ(), scene }),
+  templates: (id: number, scene?: string, institution?: string) =>
+    api.get<{ items: ProviderTemplate[] | null }>(`/providers/${id}/message-templates`, {
+      ...orgQ({ institution }),
+      scene,
+    }),
   createTemplate: (id: number, body: ProviderTemplateInput) =>
     api.post<ProviderTemplate>(`/providers/${id}/message-templates`, body, orgQ()),
   updateTemplate: (providerID: number, templateID: number, body: ProviderTemplateInput) =>

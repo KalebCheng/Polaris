@@ -26,7 +26,7 @@ interface NavTarget {
 export function NavSearch({ className }: { className?: string }) {
   const { t } = useTranslation()
   const navigate = useNavigate()
-  const { can } = useAuth()
+  const { can, isAdmin } = useAuth()
   const { institutionId } = useCurrentInstitution()
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -57,7 +57,7 @@ export function NavSearch({ className }: { className?: string }) {
     const workspace: NavTarget[] = institutionId
       ? workspaceSections.flatMap((section) =>
           section.items
-            .filter((item) => !item.resource || can(item.resource, 'read'))
+            .filter((item) => (!item.adminOnly || isAdmin) && (!item.resource || can(item.resource, 'read')))
             .map((item) => ({
               label: t(item.labelKey),
               to: workspacePath(institutionId, item.to),
@@ -66,7 +66,7 @@ export function NavSearch({ className }: { className?: string }) {
         )
       : []
     return [...platform, ...security, ...settings, ...workspace]
-  }, [t, can, institutionId])
+  }, [t, can, isAdmin, institutionId])
 
   const filtered = useMemo(() => {
     const keyword = query.trim().toLowerCase()

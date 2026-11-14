@@ -496,6 +496,10 @@ func (r *stubAppRepo) Create(_ context.Context, app *repository.Application) (in
 	return app.ID, nil
 }
 
+func (r *stubAppRepo) CreateWithSigninMethods(ctx context.Context, app *repository.Application, _ []int64) (int64, error) {
+	return r.Create(ctx, app)
+}
+
 func (r *stubAppRepo) Update(_ context.Context, app *repository.Application) error {
 	key := strconv.FormatInt(app.InstitutionID, 10) + "/" + app.Code
 	if _, ok := r.byName[key]; !ok {
@@ -503,6 +507,10 @@ func (r *stubAppRepo) Update(_ context.Context, app *repository.Application) err
 	}
 	r.byName[key] = app
 	return nil
+}
+
+func (r *stubAppRepo) UpdateWithSigninMethods(ctx context.Context, app *repository.Application, _ *[]int64) error {
+	return r.Update(ctx, app)
 }
 
 func (r *stubAppRepo) GetByClientID(_ context.Context, clientID string) (*repository.Application, error) {
@@ -517,7 +525,7 @@ func (r *stubAppRepo) GetByClientID(_ context.Context, clientID string) (*reposi
 // 新建应用一律"全员可访问"：既不能落空串（违反 CHECK 约束），也不能凭空变成受限。
 func TestApplicationCreateDefaultsAccessModeAll(t *testing.T) {
 	apps := &stubAppRepo{}
-	svc := NewApplicationService(apps, &stubOrgRepo{}, &AuditRecorder{})
+	svc := applicationServiceForTest(apps, &stubOrgRepo{}, &AuditRecorder{})
 	created, err := svc.Create(context.Background(), "admin", &repository.Application{
 		InstitutionID: 1, Code: "app1", RedirectURIs: []string{"https://rp.example.com/cb"},
 	})
@@ -540,7 +548,7 @@ func TestApplicationUpdateKeepsAccessMode(t *testing.T) {
 		RedirectURIs: []string{"https://rp.example.com/cb"},
 	}
 	apps := &stubAppRepo{byName: map[string]*repository.Application{"1/vpn": existing}}
-	svc := NewApplicationService(apps, &stubOrgRepo{}, &AuditRecorder{})
+	svc := applicationServiceForTest(apps, &stubOrgRepo{}, &AuditRecorder{})
 	// 模拟前端表单：只提交名称等字段，**不带** access_mode
 	if err := svc.Update(context.Background(), "admin", &repository.Application{
 		InstitutionID: 1, Code: "vpn", Name: "VPN 2", RedirectURIs: []string{"https://rp.example.com/cb"},

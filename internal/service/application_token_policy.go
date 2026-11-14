@@ -283,13 +283,6 @@ func orDefault(value, fallback string) string {
 	return value
 }
 
-func orEmptyItems(items []repository.ProviderItem) []repository.ProviderItem {
-	if items == nil {
-		return []repository.ProviderItem{}
-	}
-	return items
-}
-
 func orEmptySignupItems(items []repository.SignupItem) []repository.SignupItem {
 	if items == nil {
 		return []repository.SignupItem{}

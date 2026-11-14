@@ -62,9 +62,9 @@ frontend/web/               # 控制台前端
 - **存储按类别拆子表**：`providers` 只保留公共身份与状态；配置落在 `provider_oauth` / `provider_email` /
   `provider_sms` / `provider_captcha` / `provider_storage` / `provider_mfa`，仓库层聚合为 `repository.Provider`。
 - **消息模板按渠道拆表**：`provider_email_templates`（subject/content）与
-  `provider_sms_templates`（template_code/template_params）；应用登录方式与短信 MFA 只引用对应渠道的模板主键。
+  `provider_sms_templates`（template_code/template_params）；组织登录方式与短信 MFA 只引用对应渠道的模板主键。
   模板在**提供商列表的「模板」入口**单独管理（`/providers/:id/templates`），不再放进提供商新增/编辑向导。
-- **MFA 按登录方式配置**：`mfa_enabled` 控制是否进入 MFA，`mfa_required` 控制未绑定用户是否必须完成绑定；
+- **MFA 按组织登录方式配置**：`mfa_enabled` 控制是否进入 MFA，`mfa_required` 控制未绑定用户是否必须完成绑定；
   已绑定用户始终校验，未绑定且非强制时每次登录提示绑定但可跳过。组织级 `mfa_policy` 已移除。
 - 运行时统一经 `provider.Runtime` 取配置（含密钥解密），经 `provider.Resolver` 构造外部 IdP 连接器；
   因此**改配置无需重启**。`configs/app.yaml` 的 `auth.oauth.providers` 仅作启动期种子。
@@ -80,7 +80,7 @@ frontend/web/               # 控制台前端
 - **单例类别**：运行时"取一个用"的类别（`captcha` / `storage`）在同一组织内
   **最多一个启用项**（目录 `CategoryInfo.Singleton` 声明 + 服务层校验 + 迁移 028 的部分唯一索引兜底），
   界面上以「当前生效」徽标 + 一键启用/停用表达；`email` / `sms` / `mfa` / `oauth` 都可并存多个，
-  由应用登录方式或 MFA 提供商显式选择。
+  由组织登录方式与应用选择显式引用，或由 MFA 提供商显式选择。
   动机：历史上多个同类启用项并存时，运行时按 `ORDER BY category, name` 取第一个，界面上完全看不出来。
 
 ## 3. 后端编码规范
@@ -315,7 +315,7 @@ frontend/web/src/
 ```
 PLATFORM            平台级（跨组织）      Dashboard、Organizations、Roles、Permissions、Security、
                                         设置（存储设置 / 任务中心 asyncd / 审计日志）
-<当前组织>          组织内（工作区）      Overview / Users / Groups / Departments /
+<当前组织>          组织内（工作区）      Overview / **基础配置（认证方式）** / Users / Groups / Departments /
                                         Applications（含「账号供给」：策略 / 应用账号 / 同步记录）/
                                         Providers（提供商）/ **Connections（身份连接：入方向同步 + 出方向供给）**
 ACCOUNT             账号级                Portal（/portal/**：应用中心 / 个人资料 / 安全 / 身份绑定 /
@@ -338,7 +338,12 @@ ACCOUNT             账号级                Portal（/portal/**：应用中心 
   创建成功后停留在完成页展示 `client_id` / `client_secret` 与端点。分步向导与表单基元见
   `docs/design-language.md`（`FormWizard` / `FormSection` / `SwitchField` / `TagInput`）。
 - **应用标识是 `code` 不是 `name`**：`applications.code` 进 URL 与外部集成且创建后不可改，
-  `applications.name` 是人类可读名称；登录方式以 `signin_methods` 为唯一数据源（前后端同一套判定）。
+  `applications.name` 是人类可读名称。
+- **登录方式由组织定义、应用只选择**：`institution_signin_methods` 是方法、provider、template、TTL、MFA 的唯一
+  定义处；`application_signin_methods` 只存应用选择。平台登录使用组织方法，应用登录使用“组织启用方法 ∩ 应用选择”；
+  旧 `applications.signin_methods/providers` 仅用于 007 回填，008 删除。**禁止再从应用实体读取登录方式**。
+- **认证方式是组织的基础配置**：入口固定在工作区左侧栏「基础配置 › 认证方式」
+  （`/institutions/:inst/signin-methods`），仅管理员可见；不再挂在组织概览页头，也不在应用表单里重复配置。
 - **资源引用一律下拉选择**：多选用 `MultiSelect`（登录提供方、scope、grant types、令牌字段、字段编排），
   可搜索单选用 `Combobox`（签名证书、默认用户组）；禁止用大段勾选框平铺资源列表。
 - **「设置」是运维能力的归属地，不是一级资源**：`/settings/storage | /settings/tasks | /settings/audit`

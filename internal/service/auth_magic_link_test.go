@@ -2,10 +2,8 @@ package service
 
 import (
 	"testing"
-	"time"
 
 	"polaris/internal/config"
-	"polaris/internal/repository"
 )
 
 // 魔法链接落地地址必须只指向本平台，并携带 token（可选 client_id）。
@@ -26,16 +24,5 @@ func TestMagicLinkURLFallsBackToRequestHost(t *testing.T) {
 	}
 	if got := svc.magicLinkURL("id.example.com", "tok", ""); got != "https://id.example.com/magic?token=tok" {
 		t.Fatalf("非本机应使用 https，实际 %q", got)
-	}
-}
-
-// 有效期取自应用配置，未配置时回退 10 分钟。
-func TestAppMagicLinkTTL(t *testing.T) {
-	if got := appMagicLinkTTL(nil); got != 10*time.Minute {
-		t.Fatalf("空应用应回退 10 分钟，实际 %v", got)
-	}
-	app := &repository.Application{MagicLinkTTLSeconds: 120}
-	if got := appMagicLinkTTL(app); got != 2*time.Minute {
-		t.Fatalf("应按应用配置取 120 秒，实际 %v", got)
 	}
 }

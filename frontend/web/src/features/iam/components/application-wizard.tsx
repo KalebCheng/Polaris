@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ChevronDown, ChevronRight, ChevronUp, Plus, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronUp, ExternalLink, Plus, Trash2 } from 'lucide-react'
 import {
   Badge,
   Button,
@@ -9,8 +9,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
   Input,
   MultiSelect,
@@ -22,7 +20,6 @@ import {
   Textarea,
   type SelectOption,
 } from '@/shared/ui'
-import { cn } from '@/shared/lib/utils'
 import { FormSection } from '@/shared/components/form-section'
 import { FormWizard, type WizardStep } from '@/shared/components/form-wizard'
 import { RepeatableList } from '@/shared/components/repeatable-list'
@@ -30,30 +27,30 @@ import { SigninMethodIcon } from '@/shared/components/signin-method-icon'
 import { TagInput } from '@/shared/components/tag-input'
 import { SwitchField } from '@/shared/components/switch-field'
 import { UploadOrURL } from '@/shared/components/upload-or-url'
-import type { Application, ApplicationAccess, Cert, JobTitle, Provider } from '@/shared/api/types'
+import type {
+  Application,
+  ApplicationAccess,
+  Cert,
+  InstitutionSigninMethod,
+  JobTitle,
+} from '@/shared/api/types'
 import { ApplicationAccessEditor } from './application-access-editor'
 import { TokenFieldEditor } from './token-field-editor'
 import { Field } from './field'
 import {
-  addedMethodKinds,
-  addedProviders,
   applicationCodePattern,
   appTypeOptions,
-  emailDependentMethods,
   formToApplicationValidation,
   grantTypeOptions,
   invalidRedirectURI,
   scopeOptions,
-  signinMethodOptions,
   signupItemOptions,
-  smsDependentMethods,
   type ApplicationAccessFormValue,
   type ApplicationFormValue,
   type ScopeRow,
-  type SigninMethodEntry,
   type SignupFieldRow,
 } from './application-form'
-import { NotificationTemplateFields, OptionChips } from './application-wizard-fields'
+import { OptionChips } from './application-wizard-fields'
 
 /** 四步向导的步骤定义（与步骤内容一一对应） */
 const APP_STEPS: WizardStep[] = [
@@ -72,16 +69,19 @@ const categoryOptions: SelectOption[] = [
   { value: 'desktop', label: 'desktop' },
 ]
 
-const categoryOf = (value: string) => (value ?? '').toLowerCase()
-const methodHasParams = (_entry: SigninMethodEntry) => true
 const signupFieldLabel = (name: string) =>
   signupItemOptions.find((option) => option.value === name)?.label ?? name
 
-const IDENTIFIER_OPTIONS: SelectOption[] = [
-  { value: 'username', label: 'username' },
-  { value: 'email', label: 'email' },
-  { value: 'phone', label: 'phone' },
-]
+function signinMethodSummary(method: InstitutionSigninMethod) {
+  if (method.name === 'Password') {
+    return method.identifiers?.length ? method.identifiers.join(' / ') : 'username'
+  }
+  if (method.name === 'Provider') {
+    return method.provider_display_name || method.provider_name || method.display_name || 'Provider'
+  }
+  const channel = method.template_name || method.provider_display_name || method.provider_name || ''
+  return [channel, method.ttl_seconds ? `${method.ttl_seconds}s` : ''].filter(Boolean).join(' · ')
+}
 
 interface ApplicationWizardProps {
   form: ApplicationFormValue
@@ -89,8 +89,10 @@ interface ApplicationWizardProps {
   editing: Application | null
   /** 当前工作区组织（上传资源要落到该组织的存储提供商） */
   institution?: string
-  /** 当前组织内的可选资源（用于下拉选择） */
-  providers: Provider[]
+  /** 组织级登录方式（应用只勾选，不配置参数） */
+  signinMethods: InstitutionSigninMethod[]
+  /** 组织登录方式配置页（仅管理员可见） */
+  signinMethodsHref?: string
   certs: Cert[]
   jobTitles: JobTitle[]
   pending?: boolean
@@ -113,7 +115,8 @@ export function ApplicationWizard({
   onChange,
   editing,
   institution,
-  providers,
+  signinMethods,
+  signinMethodsHref,
   certs,
   jobTitles,
   pending,
@@ -136,82 +139,6 @@ export function ApplicationWizard({
   }))
 
   const [current, setCurrent] = useState(0)
-  // 登录方式卡片默认收起（避免参数堆成一面墙）；刚添加的那张自动展开，便于立即配置
-  const [expandedMethods, setExpandedMethods] = useState<string[]>([])
-  const toggleMethod = (id: string) =>
-    setExpandedMethods((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]))
-  const hasEmailProvider = providers.some((p) => categoryOf(p.category) === 'email' && p.state === 'active')
-  const hasSMSProvider = providers.some((p) => categoryOf(p.category) === 'sms' && p.state === 'active')
-  const mfaProviders = useMemo(
-    () => providers.filter((p) => categoryOf(p.category) === 'mfa' && p.state === 'active'),
-    [providers],
-  )
-  const mfaProviderOptions = useMemo(
-    () => mfaProviders.map((p) => ({ value: String(p.id), label: p.display_name || p.name })),
-    [mfaProviders],
-  )
-
-  const addedKinds = addedMethodKinds(form)
-  const addedProviderNames = addedProviders(form)
-
-  /** "添加登录方式"菜单里的基础方式：已添加 / 缺组织能力 → 置灰并说明原因 */
-  const basicMethodOptions = signinMethodOptions
-    .filter((option) => option.value !== 'Provider')
-    .map((option) => {
-      if (addedKinds.has(option.value)) {
-        return { ...option, disabled: true, reason: t('applications.methodAdded') }
-      }
-      if (emailDependentMethods.includes(option.value) && !hasEmailProvider) {
-        return { ...option, disabled: true, reason: t('applications.methodNeedsEmailProvider') }
-      }
-      if (smsDependentMethods.includes(option.value) && !hasSMSProvider) {
-        return { ...option, disabled: true, reason: t('applications.methodNeedsSMSProvider') }
-      }
-      return { ...option, disabled: false, reason: option.hint ? t(option.hint) : undefined }
-    })
-
-  /** 添加一张登录方式卡片（第三方按提供方去重） */
-  const addMethod = (kind: string, provider?: string) => {
-    const id = provider ? `provider-${provider}` : `method-${kind}`
-    if (form.methods.some((entry) => entry.id === id)) return
-    onChange({
-      ...form,
-      methods: [
-        ...form.methods,
-        {
-          id,
-          kind,
-          provider,
-          autoSignUp: provider ? true : undefined,
-          allowUnlink: provider ? true : undefined,
-          identifiers: kind === 'Password' ? ['username'] : [],
-          mfaEnabled: kind === 'Password',
-          mfaRequired: false,
-          mfaProviderIds: [],
-        },
-      ],
-    })
-    setExpandedMethods((prev) => [...prev, id])
-  }
-
-  const removeMethod = (id: string) =>
-    onChange({ ...form, methods: form.methods.filter((entry) => entry.id !== id) })
-
-  const updateMethod = (id: string, patch: Partial<SigninMethodEntry>) =>
-    onChange({
-      ...form,
-      methods: form.methods.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry)),
-    })
-
-  const methodTitle = (entry: SigninMethodEntry) =>
-    entry.kind === 'Provider'
-      ? providers.find((item) => item.name === entry.provider)?.display_name || entry.provider || ''
-      : t(`applications.method.${entry.kind}Section`)
-
-  const methodDescription = (entry: SigninMethodEntry) =>
-    entry.kind === 'Provider'
-      ? t('applications.providerSignInAllowed')
-      : t(`applications.method.${entry.kind}Hint`)
 
   const addScope = () =>
     onChange({ ...form, scopes: [...form.scopes, { name: '', displayName: '', description: '' }] })
@@ -231,171 +158,11 @@ export function ApplicationWizard({
     onChange({ ...form, scopes: next })
   }
 
-  /** 该登录方式是否有可配置参数（无参数的方式不折叠，直接一行展示） */
-
-  /** 收起状态下的一行参数摘要（改哪看哪：不展开也能确认配置） */
-  const methodSummary = (entry: SigninMethodEntry): string => {
-    switch (entry.kind) {
-      case 'Password':
-        return (
-          (entry.identifiers.length > 0
-            ? entry.identifiers.join(' / ')
-            : t('applications.identifierRequired')) +
-          (entry.mfaEnabled ? ` · MFA${entry.mfaRequired ? ' *' : ''}` : '')
-        )
-      case 'EmailCode':
-        return `${t('applications.ttlSummary', { seconds: form.email_code_ttl_seconds })}${entry.mfaEnabled ? ' · MFA' : ''}`
-      case 'SMSCode':
-        return `${t('applications.ttlSummary', { seconds: form.sms_code_ttl_seconds })}${entry.mfaEnabled ? ' · MFA' : ''}`
-      case 'MagicLink':
-        return `${t('applications.ttlSummary', { seconds: form.magic_link_ttl_seconds })}${entry.mfaEnabled ? ' · MFA' : ''}`
-      case 'Provider': {
-        const flags: string[] = []
-        if (entry.autoSignUp) flags.push(t('applications.providerAutoSignUp'))
-        if (entry.allowUnlink) flags.push(t('applications.providerAllowUnlink'))
-        return flags.length > 0 ? flags.join(' · ') : t('applications.providerSignInOnly')
-      }
-      default:
-        return ''
-    }
-  }
-
   const stepGate = (step: number): boolean => {
     if (step === 0) return applicationCodePattern.test(form.code.trim())
-    if (step === 1) {
-      if (form.methods.length === 0) return false
-      if (form.methods.some((entry) => entry.kind === 'Provider' && !entry.provider)) return false
-      return true
-    }
+    if (step === 1) return form.signin_method_ids.length > 0
     if (step === 3) return formToApplicationValidation(form).ok
     return true
-  }
-
-  const renderMethodFields = (entry: SigninMethodEntry) => {
-    const mfaDefaults =
-      entry.mfaProviderIds.length > 0
-        ? entry.mfaProviderIds
-        : mfaProviders.find((p) => p.name === 'default-totp')
-          ? [mfaProviders.find((p) => p.name === 'default-totp')!.id]
-          : []
-    const mfaInvalid = entry.mfaEnabled && entry.mfaProviderIds.length === 0 && mfaDefaults.length === 0
-    return (
-      <div className="space-y-4">
-        {entry.kind === 'Password' ? (
-          <Field
-            id={`method-${entry.id}-identifiers`}
-            labelKey="applications.passwordIdentifiers"
-            hint={t('applications.passwordIdentifiersHint')}
-          >
-            <MultiSelect
-              value={entry.identifiers}
-              onChange={(next) =>
-                updateMethod(entry.id, { identifiers: next.length > 0 ? next : ['username'] })
-              }
-              options={IDENTIFIER_OPTIONS.map((option) => ({
-                ...option,
-                label: t(`applications.identifier.${option.value}`),
-              }))}
-              placeholder={t('common.selectPlaceholder')}
-            />
-          </Field>
-        ) : null}
-
-        {entry.kind === 'EmailCode' ? (
-          <NotificationTemplateFields
-            entry={entry}
-            providers={providers}
-            ttl={form.email_code_ttl_seconds}
-            onTtlChange={(value) => set('email_code_ttl_seconds', value)}
-            update={(patch) => updateMethod(entry.id, patch)}
-          />
-        ) : null}
-        {entry.kind === 'SMSCode' ? (
-          <NotificationTemplateFields
-            entry={entry}
-            providers={providers}
-            ttl={form.sms_code_ttl_seconds}
-            onTtlChange={(value) => set('sms_code_ttl_seconds', value)}
-            update={(patch) => updateMethod(entry.id, patch)}
-          />
-        ) : null}
-        {entry.kind === 'MagicLink' ? (
-          <NotificationTemplateFields
-            entry={entry}
-            providers={providers}
-            ttl={form.magic_link_ttl_seconds}
-            onTtlChange={(value) => set('magic_link_ttl_seconds', value)}
-            update={(patch) => updateMethod(entry.id, patch)}
-          />
-        ) : null}
-
-        {entry.kind === 'Provider' ? (
-          <div className="grid gap-3 sm:grid-cols-2">
-            <SwitchField
-              labelKey="applications.providerAutoSignUp"
-              descriptionKey="applications.desc.providerAutoSignUp"
-              checked={Boolean(entry.autoSignUp)}
-              onCheckedChange={(checked) => updateMethod(entry.id, { autoSignUp: checked })}
-            />
-            <SwitchField
-              labelKey="applications.providerAllowUnlink"
-              descriptionKey="applications.desc.providerAllowUnlink"
-              checked={Boolean(entry.allowUnlink)}
-              onCheckedChange={(checked) => updateMethod(entry.id, { allowUnlink: checked })}
-            />
-          </div>
-        ) : null}
-
-        <div className="border-border/70 space-y-3 rounded-xl border p-3">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <SwitchField
-              labelKey="applications.mfaEnabled"
-              descriptionKey="applications.desc.mfaEnabled"
-              checked={entry.mfaEnabled}
-              onCheckedChange={(checked) =>
-                updateMethod(entry.id, {
-                  mfaEnabled: checked,
-                  mfaRequired: checked ? entry.mfaRequired : false,
-                  mfaProviderIds:
-                    checked && entry.mfaProviderIds.length === 0 ? mfaDefaults : entry.mfaProviderIds,
-                })
-              }
-            />
-            <SwitchField
-              labelKey="applications.mfaRequired"
-              descriptionKey="applications.desc.mfaRequired"
-              checked={entry.mfaRequired}
-              disabled={!entry.mfaEnabled}
-              onCheckedChange={(checked) =>
-                updateMethod(entry.id, {
-                  mfaEnabled: checked ? true : entry.mfaEnabled,
-                  mfaRequired: checked,
-                })
-              }
-            />
-          </div>
-          {entry.mfaEnabled ? (
-            <>
-              <Field
-                id={`method-${entry.id}-mfa-providers`}
-                labelKey="applications.mfaProviders"
-                hint={t('applications.mfaProvidersHint')}
-              >
-                <MultiSelect
-                  value={entry.mfaProviderIds.map(String)}
-                  onChange={(next) => updateMethod(entry.id, { mfaProviderIds: next.map(Number) })}
-                  options={mfaProviderOptions}
-                  placeholder={t('applications.mfaProvidersPlaceholder')}
-                />
-              </Field>
-              {mfaInvalid ? (
-                <p className="text-destructive text-xs">{t('applications.mfaProviderMissing')}</p>
-              ) : null}
-            </>
-          ) : null}
-        </div>
-      </div>
-    )
   }
 
   /** 尚未添加的注册字段候选（内置字段始终已在列，故不在候选内） */
@@ -424,6 +191,13 @@ export function ApplicationWizard({
     const [row] = next.splice(index, 1)
     next.splice(target, 0, row)
     onChange({ ...form, signup_fields: next })
+  }
+
+  const toggleSigninMethod = (id: number, checked: boolean) => {
+    const ids = checked
+      ? [...form.signin_method_ids, id]
+      : form.signin_method_ids.filter((item) => item !== id)
+    onChange({ ...form, signin_method_ids: Array.from(new Set(ids)) })
   }
 
   return (
@@ -604,130 +378,66 @@ export function ApplicationWizard({
             titleKey="applications.sectionMethods"
             descriptionKey="applications.sectionMethodsHint"
           >
-            {form.methods.length === 0 ? (
-              <p className="text-muted-foreground text-xs">{t('applications.noMethodsYet')}</p>
+            {signinMethods.length === 0 ? (
+              <div className="space-y-3 text-sm">
+                <p className="text-muted-foreground">{t('applications.noMethodsYet')}</p>
+                {signinMethodsHref ? (
+                  <Button asChild variant="outline">
+                    <a href={signinMethodsHref}>
+                      <ExternalLink className="size-4" />
+                      {t('applications.configureSigninMethods')}
+                    </a>
+                  </Button>
+                ) : null}
+              </div>
             ) : (
               <div className="space-y-3">
-                {form.methods.map((entry) => {
-                  // 仅"有参数"的方式可折叠；无参数的方式（密码）直接一行，避免出现空抽屉
-                  const hasParams = methodHasParams(entry)
-                  const open = hasParams && expandedMethods.includes(entry.id)
+                {signinMethods.map((method) => {
+                  const checked = form.signin_method_ids.includes(method.id)
                   return (
-                    <div key={entry.id} className="rounded-lg border">
-                      <div className="flex items-center gap-2 px-3 py-2.5">
-                        {hasParams ? (
-                          <button
-                            type="button"
-                            className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                            aria-expanded={open}
-                            onClick={() => toggleMethod(entry.id)}
-                          >
-                            <ChevronRight
-                              className={cn(
-                                'text-muted-foreground size-4 shrink-0 transition-transform',
-                                open && 'rotate-90',
-                              )}
-                              aria-hidden="true"
-                            />
-                            <SigninMethodIcon name={entry.kind} className="size-4 shrink-0" />
-                            <span className="min-w-0">
-                              <span className="block truncate text-[13px] font-medium">
-                                {methodTitle(entry)}
-                              </span>
-                              {!open ? (
-                                <span className="text-muted-foreground block truncate text-xs">
-                                  {methodSummary(entry)}
-                                </span>
-                              ) : null}
-                            </span>
-                          </button>
-                        ) : (
-                          <div className="flex min-w-0 flex-1 items-center gap-2 pl-6">
-                            <SigninMethodIcon name={entry.kind} className="size-4 shrink-0" />
-                            <span className="min-w-0">
-                              <span className="block truncate text-[13px] font-medium">
-                                {methodTitle(entry)}
-                              </span>
-                              <span className="text-muted-foreground block truncate text-xs">
-                                {methodDescription(entry)}
-                              </span>
-                            </span>
-                          </div>
-                        )}
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          aria-label={t('applications.removeMethod')}
-                          onClick={() => removeMethod(entry.id)}
-                        >
-                          <Trash2 className="size-4" />
-                        </Button>
-                      </div>
-                      {open ? (
-                        <div className="space-y-3 border-t px-4 py-3.5">
-                          <p className="text-muted-foreground text-xs">{methodDescription(entry)}</p>
-                          {renderMethodFields(entry)}
-                        </div>
+                    <label
+                      key={method.id}
+                      className="hover:bg-muted/40 flex cursor-pointer items-start gap-3 rounded-lg border px-3.5 py-3 transition-colors"
+                    >
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={(value) => toggleSigninMethod(method.id, Boolean(value))}
+                        className="mt-0.5"
+                      />
+                      <SigninMethodIcon name={method.name} className="mt-0.5 size-4 shrink-0" />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-medium">{method.display_name || method.name}</span>
+                          {method.mfa_enabled ? (
+                            <Badge variant="secondary">
+                              {method.mfa_required
+                                ? t('applications.mfaRequiredBadge')
+                                : t('applications.mfaEnabledBadge')}
+                            </Badge>
+                          ) : null}
+                        </span>
+                        <span className="text-muted-foreground mt-0.5 block truncate text-xs">
+                          {signinMethodSummary(method)}
+                        </span>
+                      </span>
+                      {method.state === 'disabled' ? (
+                        <Badge variant="outline">{t('common.disabled')}</Badge>
                       ) : null}
-                    </div>
+                    </label>
                   )
                 })}
+                {signinMethodsHref ? (
+                  <div className="pt-1">
+                    <Button asChild variant="ghost" size="sm" className="px-0">
+                      <a href={signinMethodsHref}>
+                        <ExternalLink className="size-4" />
+                        {t('applications.configureSigninMethods')}
+                      </a>
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             )}
-
-            <div className="pt-1">
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button type="button" variant="outline">
-                    <Plus className="size-4" />
-                    {t('applications.addMethod')}
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="w-72">
-                  <DropdownMenuLabel>{t('applications.addMethodTypes')}</DropdownMenuLabel>
-                  {basicMethodOptions.map((option) => (
-                    <DropdownMenuItem
-                      key={option.value}
-                      disabled={option.disabled}
-                      onSelect={() => addMethod(option.value)}
-                    >
-                      <SigninMethodIcon name={option.value} className="size-4 shrink-0" />
-                      <span className="flex min-w-0 flex-col">
-                        <span>{option.label}</span>
-                        {option.reason ? (
-                          <span className="text-muted-foreground text-xs">{option.reason}</span>
-                        ) : null}
-                      </span>
-                    </DropdownMenuItem>
-                  ))}
-                  <DropdownMenuSeparator />
-                  <DropdownMenuLabel>{t('applications.addMethodProviders')}</DropdownMenuLabel>
-                  {providers.length === 0 ? (
-                    <DropdownMenuItem disabled>{t('applications.providerNoAvailable')}</DropdownMenuItem>
-                  ) : (
-                    providers.map((provider) => {
-                      const added = addedProviderNames.has(provider.name)
-                      return (
-                        <DropdownMenuItem
-                          key={provider.name}
-                          disabled={added}
-                          onSelect={() => addMethod('Provider', provider.name)}
-                        >
-                          <SigninMethodIcon name="Provider" className="size-4 shrink-0" />
-                          <span className="flex min-w-0 flex-col">
-                            <span>{provider.display_name || provider.name}</span>
-                            <span className="text-muted-foreground text-xs">
-                              {added ? t('applications.methodAdded') : provider.category}
-                            </span>
-                          </span>
-                        </DropdownMenuItem>
-                      )
-                    })
-                  )}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
           </FormSection>
 
           <FormSection

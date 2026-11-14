@@ -220,7 +220,7 @@ describe('登录请求的组织参数', () => {
     expect(await screen.findByText('Net Bird')).toBeInTheDocument()
 
     // 标签词条按当前界面语言取（测试环境为英文）
-    await userEvent.type(screen.getByLabelText(i18n.t('auth.username')), 'testlogin')
+    await userEvent.type(screen.getByLabelText(i18n.t('auth.identifier.username')), 'testlogin')
     await userEvent.type(screen.getByLabelText(i18n.t('auth.password')), 'test123456')
     await userEvent.click(screen.getByRole('button', { name: i18n.t('auth.signIn') }))
 
@@ -230,6 +230,32 @@ describe('登录请求的组织参数', () => {
     // 应用驱动入口必须带上应用上下文（client_id）：否则后端按"组织默认应用"解析，
     // 应用的准入判定与登录方式都会落空——典型的"配了不生效"
     expect(lastLoginPayload).toMatchObject({ client_id: 'f555cd666d51f1066d6b' })
+  })
+
+  it('账号类型作为账号字段的子切换：切到邮箱后按邮箱标识登录', async () => {
+    lastLoginPayload = null
+    render(
+      <I18nextProvider i18n={i18n}>
+        <MemoryRouter initialEntries={['/login?client_id=f555cd666d51f1066d6b']}>
+          <AuthProvider>
+            <LoginPage />
+          </AuthProvider>
+        </MemoryRouter>
+      </I18nextProvider>,
+    )
+    expect(await screen.findByText('Net Bird')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('tab', { name: i18n.t('auth.identifier.email') }))
+    await userEvent.type(screen.getByLabelText(i18n.t('auth.identifier.email')), 'u@example.com')
+    await userEvent.type(screen.getByLabelText(i18n.t('auth.password')), 'secret')
+    await userEvent.click(screen.getByRole('button', { name: i18n.t('auth.signIn') }))
+
+    await waitFor(() => expect(lastLoginPayload).not.toBeNull())
+    expect(lastLoginPayload).toMatchObject({
+      client_id: 'f555cd666d51f1066d6b',
+      username: 'u@example.com',
+      identifier_type: 'email',
+    })
   })
 
   it('应用驱动登录的验证码通道同样携带 client_id（发码 + 登录）', async () => {
@@ -250,7 +276,8 @@ describe('登录请求的组织参数', () => {
       expect(await screen.findByText('Net Bird')).toBeInTheDocument()
 
       await userEvent.click(screen.getByRole('tab', { name: i18n.t('auth.codeTab') }))
-      await userEvent.type(screen.getByLabelText(i18n.t('auth.codeTarget')), 'u@example.com')
+      // 只启用 EmailCode 时字段标签收敛为「邮箱」，不再显示“邮箱或手机号”这种泛化文案
+      await userEvent.type(screen.getByLabelText(i18n.t('auth.email')), 'u@example.com')
       await userEvent.click(screen.getByRole('button', { name: i18n.t('auth.sendCode') }))
       await waitFor(() => expect(lastSendCodePayload).not.toBeNull())
       expect(lastSendCodePayload).toMatchObject({ client_id: 'f555cd666d51f1066d6b' })
@@ -259,6 +286,37 @@ describe('登录请求的组织参数', () => {
       await userEvent.click(screen.getByRole('button', { name: i18n.t('auth.codeSignIn') }))
       await waitFor(() => expect(lastCodeLoginPayload).not.toBeNull())
       expect(lastCodeLoginPayload).toMatchObject({ client_id: 'f555cd666d51f1066d6b', code: '123456' })
+    } finally {
+      resetSigninMethods()
+    }
+  })
+
+  it('验证码渠道作为目标字段的子切换：切到短信后按手机号发码', async () => {
+    appSigninMethods = [{ name: 'Password' }, { name: 'EmailCode' }, { name: 'SMSCode' }]
+    lastSendCodePayload = null
+    try {
+      render(
+        <I18nextProvider i18n={i18n}>
+          <MemoryRouter initialEntries={['/login?client_id=f555cd666d51f1066d6b']}>
+            <AuthProvider>
+              <LoginPage />
+            </AuthProvider>
+          </MemoryRouter>
+        </I18nextProvider>,
+      )
+      expect(await screen.findByText('Net Bird')).toBeInTheDocument()
+
+      await userEvent.click(screen.getByRole('tab', { name: i18n.t('auth.codeTab') }))
+      await userEvent.click(screen.getByRole('tab', { name: i18n.t('auth.codeChannelSms') }))
+      await userEvent.type(screen.getByLabelText(i18n.t('auth.phone')), '13800000000')
+      await userEvent.click(screen.getByRole('button', { name: i18n.t('auth.sendCode') }))
+
+      await waitFor(() => expect(lastSendCodePayload).not.toBeNull())
+      expect(lastSendCodePayload).toMatchObject({
+        client_id: 'f555cd666d51f1066d6b',
+        kind: 'sms',
+        target: '13800000000',
+      })
     } finally {
       resetSigninMethods()
     }
@@ -284,7 +342,7 @@ describe('二次验证绑定页', () => {
       )
       expect(await screen.findByText('Net Bird')).toBeInTheDocument()
 
-      await userEvent.type(screen.getByLabelText(i18n.t('auth.username')), 'testlogin')
+      await userEvent.type(screen.getByLabelText(i18n.t('auth.identifier.username')), 'testlogin')
       await userEvent.type(screen.getByLabelText(i18n.t('auth.password')), 'test123456')
       await userEvent.click(screen.getByRole('button', { name: i18n.t('auth.signIn') }))
 
@@ -325,7 +383,7 @@ describe('登录第二因子', () => {
       )
       expect(await screen.findByText('Net Bird')).toBeInTheDocument()
 
-      await userEvent.type(screen.getByLabelText(i18n.t('auth.username')), 'ceshi')
+      await userEvent.type(screen.getByLabelText(i18n.t('auth.identifier.username')), 'ceshi')
       await userEvent.type(screen.getByLabelText(i18n.t('auth.password')), 'test123456')
       await userEvent.click(screen.getByRole('button', { name: i18n.t('auth.signIn') }))
 
@@ -366,7 +424,7 @@ describe('登录第二因子', () => {
         </I18nextProvider>,
       )
       expect(await screen.findByText('Net Bird')).toBeInTheDocument()
-      await userEvent.type(screen.getByLabelText(i18n.t('auth.username')), 'ceshi')
+      await userEvent.type(screen.getByLabelText(i18n.t('auth.identifier.username')), 'ceshi')
       await userEvent.type(screen.getByLabelText(i18n.t('auth.password')), 'test123456')
       await userEvent.click(screen.getByRole('button', { name: i18n.t('auth.signIn') }))
       expect(await screen.findByText(i18n.t('auth.mfaStepTitle'))).toBeInTheDocument()
@@ -590,7 +648,7 @@ describe('登录后强制改密', () => {
         </I18nextProvider>,
       )
 
-      await userEvent.type(screen.getByLabelText(i18n.t('auth.username')), 'testlogin')
+      await userEvent.type(screen.getByLabelText(i18n.t('auth.identifier.username')), 'testlogin')
       await userEvent.type(screen.getByLabelText(i18n.t('auth.password')), 'test123456')
       await userEvent.click(screen.getByRole('button', { name: i18n.t('auth.signIn') }))
 

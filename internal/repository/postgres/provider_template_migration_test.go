@@ -6,18 +6,36 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"polaris/internal/repository"
 	"polaris/pkg/migrator"
 )
+
+// rollbackFrom 回滚到指定版本之前，避免测试写死“只回滚 1 步”而被后续迁移破坏。
+func rollbackFrom(t *testing.T, pool *pgxpool.Pool, dir string, version int64) {
+	t.Helper()
+	migrations, err := migrator.LoadDir(dir)
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	steps := 0
+	for _, item := range migrations {
+		if item.Version >= version {
+			steps++
+		}
+	}
+	if _, err := migrator.Down(context.Background(), pool, dir, steps); err != nil {
+		t.Fatalf("rollback to before %d: %v", version, err)
+	}
+}
 
 // 回归：006 必须把存量 text[] 平台变量名转换为同名 JSONB 映射，并且 down 能还原。
 func TestProviderTemplateParamMappingMigration(t *testing.T) {
 	client, pool := integrationClient(t)
 	ctx := context.Background()
 	dir := filepath.Join("..", "..", "..", "migrations")
-	if _, err := migrator.Down(ctx, pool, dir, 1); err != nil {
-		t.Fatalf("rollback 006: %v", err)
-	}
+	rollbackFrom(t, pool, dir, 6)
 
 	var columnType string
 	if err := pool.QueryRow(ctx, `SELECT data_type FROM information_schema.columns
@@ -70,9 +88,7 @@ func TestProviderTemplateParamMappingMigration(t *testing.T) {
 		t.Fatalf("migrated params = %+v", params)
 	}
 
-	if _, err := migrator.Down(ctx, pool, dir, 1); err != nil {
-		t.Fatalf("rollback 006 again: %v", err)
-	}
+	rollbackFrom(t, pool, dir, 6)
 	pool.Reset()
 	var legacy []string
 	if err := pool.QueryRow(ctx, `SELECT template_params FROM provider_sms_templates WHERE id=$1`, templateID).Scan(&legacy); err != nil {

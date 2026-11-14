@@ -45,6 +45,8 @@ func seed(ctx context.Context, db *dbclient.Client, cipher *auth.SecretCipher) e
 	deptRepo := postgres.NewDepartmentRepository(db)
 	userRepo := postgres.NewUserRepository(db)
 	appRepo := postgres.NewApplicationRepository(db)
+	signinRepo := postgres.NewInstitutionSigninMethodRepository(db)
+	providerRepo := postgres.NewProviderRepository(db)
 	certRepo := postgres.NewCertRepository(db)
 	roleRepo := postgres.NewRoleRepository(db)
 	permRepo := postgres.NewPermissionRepository(db)
@@ -81,6 +83,26 @@ func seed(ctx context.Context, db *dbclient.Client, cipher *auth.SecretCipher) e
 		return err
 	}
 
+	// 1.2) 默认 MFA 提供商与 Password 登录方式
+	mfaProvider := &repository.Provider{
+		InstitutionID: orgID, Name: "default-totp", DisplayName: "虚拟 MFA",
+		Category: "mfa", Type: "totp", State: "active",
+		MfaIssuer: builtInInstitutionName, MfaDigits: 6, MfaPeriod: 30, MfaAlgorithm: "SHA1",
+		MfaCodeTTLSeconds: 300, MfaRememberHours: 0,
+	}
+	if _, err := providerRepo.Create(ctx, mfaProvider); err != nil {
+		return err
+	}
+	passwordMethodID, err := signinRepo.Create(ctx, &repository.InstitutionSigninMethod{
+		InstitutionID: orgID, Name: repository.SigninMethodPassword, DisplayName: "Password",
+		Identifiers: []string{repository.PasswordIdentifierUsername},
+		MfaEnabled:  false, MfaRequired: false, MfaProviderIDs: []int64{},
+		SortOrder: 10, State: "active",
+	})
+	if err != nil {
+		return err
+	}
+
 	// 2) 内置证书（IdP 签名）
 	certPEM, keyPEM, _, err := oidc.GenerateCert(2048, 10)
 	if err != nil {
@@ -107,20 +129,12 @@ func seed(ctx context.Context, db *dbclient.Client, cipher *auth.SecretCipher) e
 		"http://127.0.0.1:5173/sso/callback",
 		"http://localhost:8000/sso/callback",
 	}
-	builtInAppID, err := appRepo.Create(ctx, &repository.Application{
+	builtInAppID, err := appRepo.CreateWithSigninMethods(ctx, &repository.Application{
 		InstitutionID: orgID, Code: builtInApp, Name: "内置应用",
 		Category: "default", Type: "oidc", CertID: &builtInCertRecord.ID,
 		// access_mode 从 031 起有 CHECK 约束（all | restricted）；缺省零值空串会直接违反约束
 		AccessMode:        repository.AccessModeAll,
 		SelfSignupEnabled: true, SignupAutoSignin: true, MaxSessions: 5,
-		EmailCodeTTLSeconds: 300, SMSCodeTTLSeconds: 300, MagicLinkTTLSeconds: 600,
-		SigninMethods: []repository.SigninMethod{
-			{
-				Name: repository.SigninMethodPassword, DisplayName: "Password", Rule: "All",
-				Identifiers: []string{repository.PasswordIdentifierUsername},
-				MfaEnabled:  true, MfaRequired: false, MfaProviderIDs: []int64{},
-			},
-		},
 		GrantTypes:       []string{"authorization_code", "password", "refresh_token", "client_credentials"},
 		RedirectURIs:     redirects,
 		ClientID:         "polaris-built-in-client",
@@ -134,7 +148,7 @@ func seed(ctx context.Context, db *dbclient.Client, cipher *auth.SecretCipher) e
 			{Name: "phone", DisplayName: "Phone"},
 		},
 		State: "active",
-	})
+	}, []int64{passwordMethodID})
 	if err != nil {
 		return err
 	}

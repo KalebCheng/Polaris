@@ -31,6 +31,7 @@ type AuthService struct {
 	// providerRuntime / oauthResolver：外部身份提供方的运行时读取与连接器解析（见 internal/service/provider）
 	providerRuntime *providerpkg.Runtime
 	oauthResolver   *providerpkg.Resolver
+	signinPolicy    *SigninPolicyResolver
 	states          repository.StateStore
 	rateLimiter     repository.RateLimitRepository
 	audits          *AuditRecorder
@@ -65,6 +66,7 @@ func NewAuthService(
 	jobTitles repository.JobTitleRepository,
 	providerRuntime *providerpkg.Runtime,
 	oauthResolver *providerpkg.Resolver,
+	signinPolicy *SigninPolicyResolver,
 	captcha *CaptchaService,
 	mfa *MFAService,
 	templates *TemplateService,
@@ -84,7 +86,8 @@ func NewAuthService(
 	return &AuthService{
 		orgs: orgs, users: users, tokens: tokens, apps: apps, jobTitles: jobTitles,
 		providerRuntime: providerRuntime, oauthResolver: oauthResolver,
-		captcha: captcha, mfa: mfa, templates: templates, codes: codes, magicLinks: magicLinks,
+		signinPolicy: signinPolicy,
+		captcha:      captcha, mfa: mfa, templates: templates, codes: codes, magicLinks: magicLinks,
 		userService: userService, sessions: sessions, jwt: jwt,
 		states: states, rateLimiter: rateLimiter, audits: audits,
 		provisioning: provisioning, backchannel: backchannel, access: access,
@@ -141,7 +144,11 @@ func (s *AuthService) Login(ctx context.Context, req auth.LoginRequest, host, ip
 	if err := s.enforceSigninPolicy(app, ip); err != nil {
 		return nil, "", err
 	}
-	if app != nil && !app.HasSigninMethod(repository.SigninMethodPassword) {
+	passwordMethod, passwordEnabled, err := s.findSigninMethod(ctx, org.ID, app, repository.SigninMethodPassword)
+	if err != nil {
+		return nil, "", err
+	}
+	if !passwordEnabled {
 		return nil, "", bizerrors.New(bizerrors.CodeForbidden, "password sign-in is disabled for this application")
 	}
 	// 人机校验（组织启用 Captcha 提供商时强制；未启用则直接放行）
@@ -164,7 +171,6 @@ func (s *AuthService) Login(ctx context.Context, req auth.LoginRequest, host, ip
 		}
 	}
 
-	passwordMethod, _ := app.FindSigninMethod(repository.SigninMethodPassword)
 	user, err := s.findUser(ctx, org, req.Username, passwordMethod.ResolvePasswordIdentifiers(), req.IdentifierType)
 	if err != nil {
 		s.countFailure(ctx, rateKey, maxFailures, retryWait)
@@ -212,7 +218,7 @@ func (s *AuthService) Login(ctx context.Context, req auth.LoginRequest, host, ip
 	if s.rateLimiter != nil {
 		_ = s.rateLimiter.Reset(ctx, rateKey)
 	}
-	mfaChallenge, mfaTrustToken, mfaTrustMaxAge, err = s.applyMFA(ctx, session, app, repository.SigninMethodPassword, user, req.MfaTrust, req.MfaCode, req.RememberMfa)
+	mfaChallenge, mfaTrustToken, mfaTrustMaxAge, err = s.applyMFA(ctx, session, passwordMethod, user, req.MfaTrust, req.MfaCode, req.RememberMfa)
 	if err != nil {
 		_ = s.sessions.Delete(ctx, session)
 		return nil, "", err
@@ -280,13 +286,38 @@ func (s *AuthService) ClearMfaPending(ctx context.Context, sessionID string) err
 	return s.sessions.SetMfaPending(ctx, sessionID, false)
 }
 
-// PasswordIdentifiers 返回密码登录允许的标识类型（登录页展示）。
-func (s *AuthService) PasswordIdentifiers(app *repository.Application) []string {
-	method, ok := app.FindSigninMethod(repository.SigninMethodPassword)
-	if !ok {
-		return []string{repository.PasswordIdentifierUsername, repository.PasswordIdentifierEmail}
+// findSigninMethod 从组织/应用 effective methods 中按 kind 查找。
+func (s *AuthService) findSigninMethod(ctx context.Context, institutionID int64, app *repository.Application, name string) (repository.SigninMethod, bool, error) {
+	if s.signinPolicy == nil {
+		return repository.SigninMethod{}, false, nil
 	}
-	return method.ResolvePasswordIdentifiers()
+	methods, err := s.signinPolicy.Methods(ctx, institutionID, app)
+	if err != nil {
+		return repository.SigninMethod{}, false, err
+	}
+	for _, method := range methods {
+		if method.Name == name {
+			return method, true, nil
+		}
+	}
+	return repository.SigninMethod{}, false, nil
+}
+
+// findProviderMethod 按具体 OAuth 提供商查找 effective Provider 方法。
+func (s *AuthService) findProviderMethod(ctx context.Context, institutionID int64, app *repository.Application, providerID int64) (repository.SigninMethod, bool, error) {
+	if s.signinPolicy == nil || providerID <= 0 {
+		return repository.SigninMethod{}, false, nil
+	}
+	methods, err := s.signinPolicy.Methods(ctx, institutionID, app)
+	if err != nil {
+		return repository.SigninMethod{}, false, err
+	}
+	for _, method := range methods {
+		if method.Name == repository.SigninMethodProvider && method.ProviderID == providerID {
+			return method, true, nil
+		}
+	}
+	return repository.SigninMethod{}, false, nil
 }
 
 func (s *AuthService) loginResponse(user *repository.User, session *auth.Session, from string) *auth.LoginResponse {
@@ -353,13 +384,12 @@ func (s *AuthService) findUserByIdentifier(ctx context.Context, institutionID in
 func (s *AuthService) applyMFA(
 	ctx context.Context,
 	session *auth.Session,
-	app *repository.Application,
-	methodName string,
+	method repository.SigninMethod,
 	user *repository.User,
 	trustToken, legacyCode string,
 	remember bool,
 ) (*auth.MfaChallenge, string, int, error) {
-	enabled, required, providerIDs, err := s.mfaSettings(ctx, user.InstitutionID, app, methodName)
+	enabled, required, providerIDs, err := s.mfaSettings(ctx, user.InstitutionID, method)
 	if err != nil {
 		return nil, "", 0, err
 	}
@@ -421,14 +451,14 @@ func (s *AuthService) applyMFA(
 	}
 	canSkip := len(active) == 0 && !required
 	mustVerify := len(active) > 0 || required
-	if err := s.sessions.SetMfaChallenge(ctx, session.ID, providerIDs, mustVerify, canSkip, methodName, remember); err != nil {
+	if err := s.sessions.SetMfaChallenge(ctx, session.ID, providerIDs, mustVerify, canSkip, method.Name, remember); err != nil {
 		return nil, "", 0, err
 	}
 	session.MfaPending = true
 	session.MfaProviderIDs = append([]int64(nil), providerIDs...)
 	session.MfaRequired = mustVerify
 	session.MfaCanSkip = canSkip
-	session.MfaMethod = methodName
+	session.MfaMethod = method.Name
 	session.MfaRemember = remember
 	return &auth.MfaChallenge{
 		Required: mustVerify, Enroll: len(active) == 0, CanSkip: canSkip,
@@ -436,28 +466,16 @@ func (s *AuthService) applyMFA(
 	}, "", 0, nil
 }
 
-// mfaSettings 解析登录方式的 MFA 配置，并在旧数据缺少 provider 列表时回落到默认 TOTP。
-func (s *AuthService) mfaSettings(ctx context.Context, institutionID int64, app *repository.Application, methodName string) (bool, bool, []int64, error) {
+// mfaSettings 解析组织级登录方式的 MFA 配置；MFA 提供商列表为空时回落到默认 TOTP。
+func (s *AuthService) mfaSettings(ctx context.Context, institutionID int64, method repository.SigninMethod) (bool, bool, []int64, error) {
 	if s.mfa == nil {
 		return false, false, nil, nil
 	}
-	enabled, required := false, false
-	providerIDs := []int64{}
-	if app == nil {
-		if methodName != repository.SigninMethodPassword {
-			return false, false, nil, nil
-		}
-		enabled = true
-	} else if method, ok := app.FindSigninMethod(methodName); ok {
-		enabled = method.MFAEnabled()
-		required = method.MFARequired()
-		providerIDs = append(providerIDs, method.MfaProviderIDs...)
-	} else {
+	if !method.MFAEnabled() {
 		return false, false, nil, nil
 	}
-	if !enabled {
-		return false, false, nil, nil
-	}
+	required := method.MFARequired()
+	providerIDs := dedupeInt64(method.MfaProviderIDs)
 	if len(providerIDs) > 0 {
 		return true, required, dedupeInt64(providerIDs), nil
 	}

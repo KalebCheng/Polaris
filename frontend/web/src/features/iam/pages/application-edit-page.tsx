@@ -25,11 +25,11 @@ import type {
   ApplicationAccess,
   ApplicationCreated,
   Cert,
+  InstitutionSigninMethod,
   JobTitle,
-  Provider,
 } from '@/shared/api/types'
-import { applicationApi, certApi, jobTitleApi, providerApi } from '../api'
-import { useWorkspaceInstitution } from '../institution-context'
+import { applicationApi, certApi, jobTitleApi, signinMethodApi } from '../api'
+import { useWorkspaceInstitution, useWorkspaceInstitutionId } from '../institution-context'
 import { useMutation } from '../hooks/use-mutation'
 import { useAuth } from '@/shared/auth/auth-context'
 import { buildAuthorizeUrl } from '../lib/authorize-url'
@@ -43,7 +43,7 @@ import {
   emptyApplicationForm,
   formToApplication,
   formToApplicationValidation,
-  signinMethodKinds,
+  selectedSigninMethodKinds,
   type ApplicationAccessFormValue,
   type ApplicationFormValue,
 } from '../components/application-form'
@@ -57,8 +57,9 @@ import {
  */
 export default function ApplicationEditPage() {
   const { t } = useTranslation()
-  const { can } = useAuth()
+  const { can, isAdmin } = useAuth()
   const institution = useWorkspaceInstitution()
+  const institutionID = useWorkspaceInstitutionId()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const { id = '' } = useParams()
@@ -68,13 +69,13 @@ export default function ApplicationEditPage() {
   const { pending, run } = useMutation()
   const [form, setForm] = useState<ApplicationFormValue>(() => ({
     ...emptyApplicationForm,
-    institution_id: Number(institution),
+    institution_id: Number(institutionID) || 0,
   }))
   const [editing, setEditing] = useState<Application | null>(null)
   const [created, setCreated] = useState<ApplicationCreated | null>(null)
   const [loading, setLoading] = useState(!isCreate)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
-  const [providers, setProviders] = useState<Provider[]>([])
+  const [signinMethods, setSigninMethods] = useState<InstitutionSigninMethod[]>([])
   const [certs, setCerts] = useState<Cert[]>([])
   const [jobTitles, setJobTitles] = useState<JobTitle[]>([])
   // 访问授权（谁能使用该应用）：独立端点读写，与主表单一起参与「未保存修改」判定
@@ -98,7 +99,7 @@ export default function ApplicationEditPage() {
   // 脏值基线：用于「未保存修改」拦截（授权与主表单都是本页的未保存内容）
   const baseline = useRef<string>(
     JSON.stringify({
-      form: { ...emptyApplicationForm, institution_id: Number(institution) },
+      form: { ...emptyApplicationForm, institution_id: Number(institutionID) || 0 },
       access: emptyApplicationAccess,
     }),
   )
@@ -109,21 +110,32 @@ export default function ApplicationEditPage() {
     if (!institution) return
     let cancelled = false
     void (async () => {
-      const [providerList, certList, groupList] = await Promise.all([
-        // 应用向导同时需要 oauth（第三方登录）、email/sms（通知渠道）与 mfa（二次验证）提供商。
-        providerApi.list({ institution, size: 200 }).catch(() => ({ items: [] as Provider[] })),
+      const [methodList, certList, groupList] = await Promise.all([
+        signinMethodApi.options(Number(institutionID)).catch(() => ({ items: [] })),
         certApi.list({ institution, size: 200 }).catch(() => ({ items: [] as Cert[] })),
         jobTitleApi.list({ institution, size: 200 }).catch(() => ({ items: [] as JobTitle[] })),
       ])
       if (cancelled) return
-      setProviders(providerList.items ?? [])
+      setSigninMethods(methodList.items ?? [])
       setCerts(certList.items ?? [])
       setJobTitles(groupList.items ?? [])
     })()
     return () => {
       cancelled = true
     }
-  }, [institution])
+  }, [institution, institutionID])
+
+  // 新建应用默认全选组织当前启用方法（只在首次加载时应用，避免用户取消后被重新勾上）。
+  const signinDefaultsApplied = useRef(false)
+  useEffect(() => {
+    if (!isCreate || signinDefaultsApplied.current || signinMethods.length === 0) return
+    signinDefaultsApplied.current = true
+    setForm((prev) =>
+      prev.signin_method_ids.length > 0
+        ? prev
+        : { ...prev, signin_method_ids: signinMethods.map((method) => method.id) },
+    )
+  }, [isCreate, signinMethods])
 
   useEffect(() => {
     if (isCreate || appID <= 0 || !institution) return
@@ -172,7 +184,7 @@ export default function ApplicationEditPage() {
       toast.error(t(check.reason ?? 'applications.invalidForm'))
       return
     }
-    const payload = formToApplication({ ...form, institution_id: Number(institution) })
+    const payload = formToApplication({ ...form, institution_id: Number(institutionID) || 0 })
     // 访问授权是独立资源（访问模式 + 三类名单，后端单事务写入）。
     // 空名单是合法输入（= 该应用暂时无人可访问），前端不做拦截，只给警示。
     const accessPayload = {
@@ -202,7 +214,7 @@ export default function ApplicationEditPage() {
     if (result) setCreated(result)
     // 依赖里**必须**有 access：漏掉它会闭包住初始值（全员可访问 + 空名单），
     // 表现为"选了一批用户、保存后回来看还是全员可访问"——后端收到的是旧值。
-  }, [form, access, institution, editing, run, navigate, backToList, t])
+  }, [form, access, institutionID, editing, run, navigate, backToList, t])
 
   const requestCancel = useCallback(() => {
     if (dirty) {
@@ -260,14 +272,14 @@ export default function ApplicationEditPage() {
             description={form.description}
             cardLogo={form.logo}
             accentColor={form.theme_enabled ? form.color_primary : ''}
-            methods={signinMethodKinds(form)}
+            methods={selectedSigninMethodKinds(form, signinMethods)}
             mode={previewMode}
             allowSignUp={form.self_signup_enabled}
           />
         </DialogContent>
       </Dialog>
     ),
-    [previewOpen, previewMode, form, t],
+    [previewOpen, previewMode, form, signinMethods, t],
   )
 
   if (created) {
@@ -380,10 +392,11 @@ export default function ApplicationEditPage() {
                   variant="ghost"
                   onClick={() => {
                     setCreated(null)
-                    setForm({ ...emptyApplicationForm, institution_id: Number(institution) })
+                    signinDefaultsApplied.current = false
+                    setForm({ ...emptyApplicationForm, institution_id: Number(institutionID) || 0 })
                     baseline.current = JSON.stringify({
                       ...emptyApplicationForm,
-                      institution_id: Number(institution),
+                      institution_id: Number(institutionID) || 0,
                     })
                   }}
                 >
@@ -438,7 +451,8 @@ export default function ApplicationEditPage() {
           onChange={setForm}
           editing={editing}
           institution={institution}
-          providers={providers}
+          signinMethods={signinMethods}
+          signinMethodsHref={isAdmin ? `/institutions/${institutionID}/signin-methods` : undefined}
           certs={certs}
           jobTitles={jobTitles}
           pending={pending}

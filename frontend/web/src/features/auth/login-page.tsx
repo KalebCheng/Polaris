@@ -237,6 +237,15 @@ export default function LoginPage() {
         const enabled = new Set(info.providers.filter((item) => item.canSignIn).map((item) => item.name))
         setProviders((current) => current.filter((provider) => enabled.has(provider.name)))
       }
+      // 平台登录没有 client_id，initial providers 请求可能还没有组织；app-info 已解析出组织时补一次，
+      // 否则组织级 SSO 按钮会一直为空。
+      if (!appDriven && providerSigninEnabled && info.institution_id) {
+        const full = await authApi.providers(info.institution_id)
+        const enabled = new Set(
+          (info.providers ?? []).filter((item) => item.canSignIn).map((item) => item.name),
+        )
+        setProviders((full.providers ?? []).filter((provider) => enabled.has(provider.name)))
+      }
       if (info.captcha_required) {
         const challenge = await authApi.captcha(info.institution_id || institutionIDRef.current || undefined)
         setCaptcha(challenge)
@@ -759,26 +768,27 @@ export default function LoginPage() {
   const methodNames = (appInfo?.signin_methods ?? []).map((item) => item.name)
   // app-info 尚未返回时保守放行密码，避免首帧闪现"无可用登录方式"
   const passwordAvailable = appInfo == null || methodNames.includes('Password')
-  const codeAvailable = methodNames.includes('EmailCode') || methodNames.includes('SMSCode')
+  const emailAvailable = methodNames.includes('EmailCode')
+  const smsAvailable = methodNames.includes('SMSCode')
+  const codeAvailable = emailAvailable || smsAvailable
   const magicAvailable = methodNames.includes('MagicLink')
   const signupAvailable = Boolean(appInfo?.self_signup_enabled)
-  const magicTtlMinutes = Math.max(1, Math.round((appInfo?.magic_link_ttl_seconds ?? 600) / 60))
+  const magicMethod = appInfo?.signin_methods?.find((item) => item.name === 'MagicLink')
+  const magicTtlMinutes = Math.max(
+    1,
+    Math.round((magicMethod?.ttlSeconds ?? appInfo?.magic_link_ttl_seconds ?? 600) / 60),
+  )
   // 注册入口：应用可外链到自己的注册页（signup_url）；未配置则用平台托管的 /signup
   const configuredSignupUrl = appInfo?.signup_url?.trim() ?? ''
   const signupHref =
     configuredSignupUrl || (clientId ? `/signup?client_id=${encodeURIComponent(clientId)}` : '/signup')
   const signupIsExternal = configuredSignupUrl !== '' && !configuredSignupUrl.startsWith('/')
-  const emailAvailable = (appInfo?.email_providers?.length ?? 0) > 0
-  const smsAvailable = (appInfo?.sms_providers?.length ?? 0) > 0
+  const noSigninMethods = appInfo != null && methodNames.length === 0
 
   useEffect(() => {
     if (!emailAvailable && smsAvailable) setCodeKind('sms')
     if (emailAvailable && !smsAvailable) setCodeKind('email')
   }, [emailAvailable, smsAvailable])
-
-  // 下划线式标签：去掉默认的胶囊底色，用主色文字与底线区分选中态（与系统主色一致）
-  const tabTriggerClass =
-    'text-muted-foreground hover:text-foreground flex-none justify-start rounded-none border-b-2 border-transparent bg-transparent px-0 pt-1 pb-2.5 text-sm font-medium transition-colors data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none'
 
   // 登录页品牌文案取值（与向导实时预览保持一致）：
   //   大标题 = 应用驱动的「显示名称」→「应用标题」→ 通用欢迎语；
@@ -892,366 +902,385 @@ export default function LoginPage() {
             </div>
           ) : null}
 
-          <Tabs value={mode} onValueChange={(value) => setMode(value as 'password' | 'code')}>
-            {/* 仅一种登录方式时不必渲染切换条，避免出现只有一个标签的空壳 */}
-            {step !== 'password-change' &&
-            [passwordAvailable, codeAvailable, magicAvailable].filter(Boolean).length > 1 ? (
-              <TabsList
-                variant="plain"
-                className="h-auto w-full justify-start gap-6 rounded-none border-b bg-transparent p-0"
-              >
-                {passwordAvailable ? (
-                  <TabsTrigger value="password" className={tabTriggerClass}>
-                    <SigninMethodIcon name="Password" className="size-3.5" />
-                    {t('auth.passwordTab')}
-                  </TabsTrigger>
-                ) : null}
-                {codeAvailable ? (
-                  <TabsTrigger value="code" className={tabTriggerClass}>
-                    <SigninMethodIcon name={emailAvailable ? 'EmailCode' : 'SMSCode'} className="size-3.5" />
-                    {t('auth.codeTab')}
-                  </TabsTrigger>
-                ) : null}
-                {magicAvailable ? (
-                  <TabsTrigger value="magic" className={tabTriggerClass}>
-                    <SigninMethodIcon name="MagicLink" className="size-3.5" />
-                    {t('auth.magicTab')}
-                  </TabsTrigger>
-                ) : null}
-              </TabsList>
-            ) : null}
+          {passwordAvailable || codeAvailable || magicAvailable ? (
+            <Tabs value={mode} onValueChange={(value) => setMode(value as 'password' | 'code')}>
+              {/* 仅一种登录方式时不必渲染切换条，避免出现只有一个标签的空壳 */}
+              {step !== 'password-change' &&
+              [passwordAvailable, codeAvailable, magicAvailable].filter(Boolean).length > 1 ? (
+                <TabsList variant="pill" className="w-full" aria-label={t('auth.signInMethod')}>
+                  {passwordAvailable ? (
+                    <TabsTrigger value="password" className="px-2.5">
+                      <SigninMethodIcon name="Password" />
+                      {t('auth.passwordTab')}
+                    </TabsTrigger>
+                  ) : null}
+                  {codeAvailable ? (
+                    <TabsTrigger value="code" className="px-2.5">
+                      <SigninMethodIcon name={emailAvailable ? 'EmailCode' : 'SMSCode'} />
+                      {t('auth.codeTab')}
+                    </TabsTrigger>
+                  ) : null}
+                  {magicAvailable ? (
+                    <TabsTrigger value="magic" className="px-2.5">
+                      <SigninMethodIcon name="MagicLink" />
+                      {t('auth.magicTab')}
+                    </TabsTrigger>
+                  ) : null}
+                </TabsList>
+              ) : null}
 
-            <TabsContent value="password" className="pt-6">
-              {step === 'password-change' ? (
-                <form className="space-y-4" onSubmit={(event) => void submitRequiredPasswordChange(event)}>
-                  <div className="space-y-2 text-center">
-                    <h2 className="text-lg font-semibold tracking-tight">{t('auth.passwordChangeTitle')}</h2>
-                    <p className="text-muted-foreground text-sm leading-relaxed">
-                      {t('auth.passwordChangeHint')}
-                    </p>
-                  </div>
-                  {changeRequiresOldPassword ? (
+              <TabsContent value="password" className="pt-5">
+                {step === 'password-change' ? (
+                  <form className="space-y-4" onSubmit={(event) => void submitRequiredPasswordChange(event)}>
+                    <div className="space-y-2 text-center">
+                      <h2 className="text-lg font-semibold tracking-tight">
+                        {t('auth.passwordChangeTitle')}
+                      </h2>
+                      <p className="text-muted-foreground text-sm leading-relaxed">
+                        {t('auth.passwordChangeHint')}
+                      </p>
+                    </div>
+                    {changeRequiresOldPassword ? (
+                      <div className="space-y-2">
+                        <Label htmlFor="change-current-password">{t('auth.currentPassword')}</Label>
+                        <Input
+                          id="change-current-password"
+                          type="password"
+                          autoComplete="current-password"
+                          value={changeCurrentPassword}
+                          onChange={(event) => setChangeCurrentPassword(event.target.value)}
+                          required
+                        />
+                      </div>
+                    ) : null}
                     <div className="space-y-2">
-                      <Label htmlFor="change-current-password">{t('auth.currentPassword')}</Label>
+                      <Label htmlFor="change-new-password">{t('auth.newPassword')}</Label>
                       <Input
-                        id="change-current-password"
+                        id="change-new-password"
                         type="password"
-                        autoComplete="current-password"
-                        value={changeCurrentPassword}
-                        onChange={(event) => setChangeCurrentPassword(event.target.value)}
+                        autoComplete="new-password"
+                        value={changeNewPassword}
+                        onChange={(event) => setChangeNewPassword(event.target.value)}
                         required
                       />
                     </div>
-                  ) : null}
-                  <div className="space-y-2">
-                    <Label htmlFor="change-new-password">{t('auth.newPassword')}</Label>
-                    <Input
-                      id="change-new-password"
-                      type="password"
-                      autoComplete="new-password"
-                      value={changeNewPassword}
-                      onChange={(event) => setChangeNewPassword(event.target.value)}
-                      required
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="change-confirm-password">{t('auth.confirmPassword')}</Label>
-                    <Input
-                      id="change-confirm-password"
-                      type="password"
-                      autoComplete="new-password"
-                      value={changeConfirmPassword}
-                      onChange={(event) => setChangeConfirmPassword(event.target.value)}
-                      required
-                    />
-                  </div>
-                  <SubmitButton pending={submitting}>{t('auth.changeAndContinue')}</SubmitButton>
-                </form>
-              ) : step === 'mfa' ? (
-                /* 第二因子：独立一屏；凭据已保存，只补动态码 */
-                <MfaVerifyStep
-                  rememberHours={mfaRememberHours}
-                  pending={submitting}
-                  allowRecovery={
-                    mfaOptions?.bound?.find((item) => item.provider_id === mfaProviderID)?.type !== 'sms'
-                  }
-                  onSubmit={(mfaCode, remember) => void submitMfaCode(mfaCode, remember)}
-                  onBack={() => void backToCredentials()}
-                >
-                  {(mfaOptions?.bound ?? []).length > 1 ? (
                     <div className="space-y-2">
-                      <Label htmlFor="mfa-provider">{t('auth.mfaProvider')}</Label>
-                      <Select
-                        value={mfaProviderID ? String(mfaProviderID) : ''}
-                        onValueChange={(value) => setMfaProviderID(Number(value))}
-                      >
-                        <SelectTrigger id="mfa-provider">
-                          <SelectValue placeholder={t('auth.mfaProviderPlaceholder')} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {(mfaOptions?.bound ?? []).map((provider) => (
-                            <SelectItem key={provider.provider_id} value={String(provider.provider_id)}>
-                              {provider.display_name || provider.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  ) : null}
-                  {captchaBlock}
-                </MfaVerifyStep>
-              ) : step === 'enroll' ? (
-                /* 登录方式要求二次验证：独立绑定屏（扫码为主 + 手动兜底） */
-                <MfaEnrollStep
-                  secret={enrollResult?.secret ?? ''}
-                  url={enrollResult?.url ?? ''}
-                  pending={submitting || mfaResending}
-                  phone={enrollResult?.phone}
-                  onResend={
-                    enrollResult?.type === 'sms' && mfaProviderID
-                      ? async () => {
-                          if (!mfaProviderID) return
-                          setMfaResending(true)
-                          try {
-                            await authApi.mfaResendEnroll(mfaProviderID)
-                            toast.success(t('auth.codeSent'))
-                          } catch (error) {
-                            toast.error(describeError(error, t))
-                          } finally {
-                            setMfaResending(false)
-                          }
-                        }
-                      : undefined
-                  }
-                  canSkip={Boolean(mfaOptions?.can_skip)}
-                  onSkip={() => void skipMfa()}
-                  onSubmit={(mfaCode) => void submitMfaEnroll(mfaCode)}
-                  onBack={() => void backToCredentials()}
-                >
-                  {(mfaOptions?.providers ?? []).length > 1 ? (
-                    <div className="space-y-2">
-                      <Label htmlFor="mfa-enroll-provider">{t('auth.mfaProvider')}</Label>
-                      <Select
-                        value={mfaProviderID ? String(mfaProviderID) : ''}
-                        onValueChange={(value) => void startEnrollment(Number(value))}
-                      >
-                        <SelectTrigger id="mfa-enroll-provider">
-                          <SelectValue placeholder={t('auth.mfaProviderPlaceholder')} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {(mfaOptions?.providers ?? []).map((provider) => (
-                            <SelectItem key={provider.id} value={String(provider.id)}>
-                              {provider.display_name || provider.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  ) : null}
-                </MfaEnrollStep>
-              ) : (
-                <form className="space-y-4" noValidate onSubmit={submitPassword}>
-                  {passwordIdentifiers.length > 1 ? (
-                    <div className="space-y-2">
-                      <p className="text-sm font-medium">{t('auth.identifierType')}</p>
-                      <Tabs
-                        value={identifierType}
-                        onValueChange={(value) => setIdentifierType(value as typeof identifierType)}
-                      >
-                        <TabsList variant="pill" className="w-full" aria-label={t('auth.identifierType')}>
-                          {passwordIdentifiers.map((kind) => (
-                            <TabsTrigger key={kind} value={kind}>
-                              {t(`auth.identifier.${kind}`)}
-                            </TabsTrigger>
-                          ))}
-                        </TabsList>
-                      </Tabs>
-                    </div>
-                  ) : null}
-                  <div className="space-y-2">
-                    <Label htmlFor="username">
-                      {selectedIdentifier === 'username'
-                        ? t('auth.username')
-                        : t(`auth.identifier.${selectedIdentifier}`)}
-                    </Label>
-                    <Input
-                      id="username"
-                      value={username}
-                      aria-invalid={invalidFields.username || undefined}
-                      aria-describedby={invalidFields.username ? 'username-error' : undefined}
-                      onChange={(event) => {
-                        setUsername(event.target.value)
-                        clearInvalid('username')
-                      }}
-                      placeholder={
-                        selectedIdentifier === 'username'
-                          ? t('auth.usernamePlaceholder')
-                          : t(`auth.identifierPlaceholder.${selectedIdentifier}`)
-                      }
-                      autoComplete={
-                        selectedIdentifier === 'email'
-                          ? 'email'
-                          : selectedIdentifier === 'phone'
-                            ? 'tel'
-                            : 'username'
-                      }
-                      className="h-10"
-                      required
-                    />
-                    {invalidFields.username ? (
-                      <p id="username-error" role="alert" className="text-destructive text-xs">
-                        {t('auth.fieldRequired')}
-                      </p>
-                    ) : null}
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="password">{t('auth.password')}</Label>
-                    <Input
-                      id="password"
-                      type="password"
-                      value={password}
-                      aria-invalid={invalidFields.password || undefined}
-                      aria-describedby={invalidFields.password ? 'password-error' : undefined}
-                      onChange={(event) => {
-                        setPassword(event.target.value)
-                        clearInvalid('password')
-                      }}
-                      autoComplete="current-password"
-                      className="h-10"
-                      required
-                    />
-                    {invalidFields.password ? (
-                      <p id="password-error" role="alert" className="text-destructive text-xs">
-                        {t('auth.fieldRequired')}
-                      </p>
-                    ) : null}
-                  </div>
-
-                  {captchaBlock}
-
-                  <SubmitButton pending={submitting}>{t('auth.signIn')}</SubmitButton>
-                  {showInstitutionSelector && !institution ? (
-                    <p className="text-muted-foreground text-xs">{t('auth.institutionRequired')}</p>
-                  ) : null}
-                </form>
-              )}
-            </TabsContent>
-
-            {codeAvailable ? (
-              <TabsContent value="code" className="pt-6">
-                <form className="space-y-4" noValidate onSubmit={submitCode}>
-                  <div className="space-y-2">
-                    <Label htmlFor="code-kind">{t('auth.codeKind')}</Label>
-                    <Select value={codeKind} onValueChange={(value) => setCodeKind(value as 'email' | 'sms')}>
-                      <SelectTrigger id="code-kind" className="h-10 w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {emailAvailable ? <SelectItem value="email">{t('auth.codeEmail')}</SelectItem> : null}
-                        {smsAvailable ? <SelectItem value="sms">{t('auth.codeSms')}</SelectItem> : null}
-                        {!emailAvailable && !smsAvailable ? (
-                          <SelectItem value="email">{t('auth.codeEmail')}</SelectItem>
-                        ) : null}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="code-target">{t('auth.codeTarget')}</Label>
-                    <div className="flex items-center gap-2">
+                      <Label htmlFor="change-confirm-password">{t('auth.confirmPassword')}</Label>
                       <Input
-                        id="code-target"
-                        value={codeTarget}
-                        aria-invalid={invalidFields.codeTarget || undefined}
-                        aria-describedby={invalidFields.codeTarget ? 'code-target-error' : undefined}
+                        id="change-confirm-password"
+                        type="password"
+                        autoComplete="new-password"
+                        value={changeConfirmPassword}
+                        onChange={(event) => setChangeConfirmPassword(event.target.value)}
+                        required
+                      />
+                    </div>
+                    <SubmitButton pending={submitting}>{t('auth.changeAndContinue')}</SubmitButton>
+                  </form>
+                ) : step === 'mfa' ? (
+                  /* 第二因子：独立一屏；凭据已保存，只补动态码 */
+                  <MfaVerifyStep
+                    rememberHours={mfaRememberHours}
+                    pending={submitting}
+                    allowRecovery={
+                      mfaOptions?.bound?.find((item) => item.provider_id === mfaProviderID)?.type !== 'sms'
+                    }
+                    onSubmit={(mfaCode, remember) => void submitMfaCode(mfaCode, remember)}
+                    onBack={() => void backToCredentials()}
+                  >
+                    {(mfaOptions?.bound ?? []).length > 1 ? (
+                      <div className="space-y-2">
+                        <Label htmlFor="mfa-provider">{t('auth.mfaProvider')}</Label>
+                        <Select
+                          value={mfaProviderID ? String(mfaProviderID) : ''}
+                          onValueChange={(value) => setMfaProviderID(Number(value))}
+                        >
+                          <SelectTrigger id="mfa-provider">
+                            <SelectValue placeholder={t('auth.mfaProviderPlaceholder')} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {(mfaOptions?.bound ?? []).map((provider) => (
+                              <SelectItem key={provider.provider_id} value={String(provider.provider_id)}>
+                                {provider.display_name || provider.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    ) : null}
+                    {captchaBlock}
+                  </MfaVerifyStep>
+                ) : step === 'enroll' ? (
+                  /* 登录方式要求二次验证：独立绑定屏（扫码为主 + 手动兜底） */
+                  <MfaEnrollStep
+                    secret={enrollResult?.secret ?? ''}
+                    url={enrollResult?.url ?? ''}
+                    pending={submitting || mfaResending}
+                    phone={enrollResult?.phone}
+                    onResend={
+                      enrollResult?.type === 'sms' && mfaProviderID
+                        ? async () => {
+                            if (!mfaProviderID) return
+                            setMfaResending(true)
+                            try {
+                              await authApi.mfaResendEnroll(mfaProviderID)
+                              toast.success(t('auth.codeSent'))
+                            } catch (error) {
+                              toast.error(describeError(error, t))
+                            } finally {
+                              setMfaResending(false)
+                            }
+                          }
+                        : undefined
+                    }
+                    canSkip={Boolean(mfaOptions?.can_skip)}
+                    onSkip={() => void skipMfa()}
+                    onSubmit={(mfaCode) => void submitMfaEnroll(mfaCode)}
+                    onBack={() => void backToCredentials()}
+                  >
+                    {(mfaOptions?.providers ?? []).length > 1 ? (
+                      <div className="space-y-2">
+                        <Label htmlFor="mfa-enroll-provider">{t('auth.mfaProvider')}</Label>
+                        <Select
+                          value={mfaProviderID ? String(mfaProviderID) : ''}
+                          onValueChange={(value) => void startEnrollment(Number(value))}
+                        >
+                          <SelectTrigger id="mfa-enroll-provider">
+                            <SelectValue placeholder={t('auth.mfaProviderPlaceholder')} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {(mfaOptions?.providers ?? []).map((provider) => (
+                              <SelectItem key={provider.id} value={String(provider.id)}>
+                                {provider.display_name || provider.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    ) : null}
+                  </MfaEnrollStep>
+                ) : (
+                  <form className="space-y-4" noValidate onSubmit={submitPassword}>
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <Label htmlFor="username">{t(`auth.identifier.${selectedIdentifier}`)}</Label>
+                        {passwordIdentifiers.length > 1 ? (
+                          <Tabs
+                            value={identifierType}
+                            onValueChange={(value) => setIdentifierType(value as typeof identifierType)}
+                          >
+                            <TabsList
+                              variant="pill"
+                              className="h-7 w-auto p-0.5"
+                              aria-label={t('auth.identifierType')}
+                            >
+                              {passwordIdentifiers.map((kind) => (
+                                <TabsTrigger
+                                  key={kind}
+                                  value={kind}
+                                  className="h-6 flex-none px-2.5 py-0 text-xs"
+                                >
+                                  {t(`auth.identifier.${kind}`)}
+                                </TabsTrigger>
+                              ))}
+                            </TabsList>
+                          </Tabs>
+                        ) : null}
+                      </div>
+                      <Input
+                        id="username"
+                        value={username}
+                        aria-invalid={invalidFields.username || undefined}
+                        aria-describedby={invalidFields.username ? 'username-error' : undefined}
                         onChange={(event) => {
-                          setCodeTarget(event.target.value)
-                          clearInvalid('codeTarget')
+                          setUsername(event.target.value)
+                          clearInvalid('username')
                         }}
-                        placeholder={codeKind === 'email' ? 'you@example.com' : '13800000000'}
+                        placeholder={t(`auth.identifierPlaceholder.${selectedIdentifier}`)}
+                        autoComplete={
+                          selectedIdentifier === 'email'
+                            ? 'email'
+                            : selectedIdentifier === 'phone'
+                              ? 'tel'
+                              : 'username'
+                        }
                         className="h-10"
                         required
                       />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="h-10 shrink-0"
-                        disabled={sending || countdown > 0 || !codeTarget}
-                        onClick={() => void sendCode()}
-                      >
-                        {countdown > 0 ? `${countdown}s` : t('auth.sendCode')}
-                      </Button>
+                      {invalidFields.username ? (
+                        <p id="username-error" role="alert" className="text-destructive text-xs">
+                          {t('auth.fieldRequired')}
+                        </p>
+                      ) : null}
                     </div>
-                    {invalidFields.codeTarget ? (
-                      <p id="code-target-error" role="alert" className="text-destructive text-xs">
-                        {t('auth.fieldRequired')}
-                      </p>
-                    ) : null}
-                  </div>
-                  {captchaBlock}
-                  <div className="space-y-2">
-                    <Label htmlFor="code-value">{t('auth.codeValue')}</Label>
-                    <Input
-                      id="code-value"
-                      value={code}
-                      aria-invalid={invalidFields.code || undefined}
-                      aria-describedby={invalidFields.code ? 'code-value-error' : undefined}
-                      onChange={(event) => {
-                        setCode(event.target.value)
-                        clearInvalid('code')
-                      }}
-                      inputMode="numeric"
-                      maxLength={8}
-                      autoComplete="one-time-code"
-                      className="h-10"
-                      required
-                    />
-                    {invalidFields.code ? (
-                      <p id="code-value-error" role="alert" className="text-destructive text-xs">
-                        {t('auth.fieldRequired')}
-                      </p>
-                    ) : null}
-                  </div>
-                  <SubmitButton pending={submitting}>{t('auth.codeSignIn')}</SubmitButton>
-                </form>
-              </TabsContent>
-            ) : null}
+                    <div className="space-y-2">
+                      <Label htmlFor="password">{t('auth.password')}</Label>
+                      <Input
+                        id="password"
+                        type="password"
+                        value={password}
+                        aria-invalid={invalidFields.password || undefined}
+                        aria-describedby={invalidFields.password ? 'password-error' : undefined}
+                        onChange={(event) => {
+                          setPassword(event.target.value)
+                          clearInvalid('password')
+                        }}
+                        autoComplete="current-password"
+                        className="h-10"
+                        required
+                      />
+                      {invalidFields.password ? (
+                        <p id="password-error" role="alert" className="text-destructive text-xs">
+                          {t('auth.fieldRequired')}
+                        </p>
+                      ) : null}
+                    </div>
 
-            {magicAvailable ? (
-              <TabsContent value="magic" className="pt-6">
-                <form className="space-y-4" noValidate onSubmit={submitMagicLink}>
-                  <div className="space-y-2">
-                    <Label htmlFor="magic-email">{t('auth.email')}</Label>
-                    <Input
-                      id="magic-email"
-                      type="email"
-                      value={magicEmail}
-                      aria-invalid={invalidFields.magicEmail || undefined}
-                      aria-describedby={invalidFields.magicEmail ? 'magic-email-error' : undefined}
-                      onChange={(event) => {
-                        setMagicEmail(event.target.value)
-                        clearInvalid('magicEmail')
-                      }}
-                      placeholder="you@example.com"
-                      autoComplete="email"
-                      className="h-10"
-                      required
-                    />
-                    {invalidFields.magicEmail ? (
-                      <p id="magic-email-error" role="alert" className="text-destructive text-xs">
-                        {t('auth.fieldRequired')}
-                      </p>
+                    {captchaBlock}
+
+                    <SubmitButton pending={submitting}>{t('auth.signIn')}</SubmitButton>
+                    {showInstitutionSelector && !institution ? (
+                      <p className="text-muted-foreground text-xs">{t('auth.institutionRequired')}</p>
                     ) : null}
-                    <p className="text-muted-foreground text-xs">
-                      {t('auth.magicHint', { minutes: magicTtlMinutes })}
-                    </p>
-                  </div>
-                  {captchaBlock}
-                  {magicSent ? <p className="text-muted-foreground text-sm">{t('auth.magicSent')}</p> : null}
-                  <SubmitButton pending={magicSending}>{t('auth.magicSubmit')}</SubmitButton>
-                </form>
+                  </form>
+                )}
               </TabsContent>
-            ) : null}
-          </Tabs>
+
+              {codeAvailable ? (
+                <TabsContent value="code" className="pt-5">
+                  <form className="space-y-4" noValidate onSubmit={submitCode}>
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <Label htmlFor="code-target">
+                          {codeKind === 'email' ? t('auth.email') : t('auth.phone')}
+                        </Label>
+                        {emailAvailable && smsAvailable ? (
+                          <Tabs
+                            value={codeKind}
+                            onValueChange={(value) => setCodeKind(value as 'email' | 'sms')}
+                          >
+                            <TabsList
+                              variant="pill"
+                              className="h-7 w-auto p-0.5"
+                              aria-label={t('auth.codeKind')}
+                            >
+                              <TabsTrigger value="email" className="h-6 flex-none px-2.5 py-0 text-xs">
+                                {t('auth.codeChannelEmail')}
+                              </TabsTrigger>
+                              <TabsTrigger value="sms" className="h-6 flex-none px-2.5 py-0 text-xs">
+                                {t('auth.codeChannelSms')}
+                              </TabsTrigger>
+                            </TabsList>
+                          </Tabs>
+                        ) : null}
+                      </div>
+                      <div className="relative">
+                        <Input
+                          id="code-target"
+                          type={codeKind === 'email' ? 'email' : 'tel'}
+                          inputMode={codeKind === 'email' ? 'email' : 'tel'}
+                          autoComplete={codeKind === 'email' ? 'email' : 'tel'}
+                          value={codeTarget}
+                          aria-invalid={invalidFields.codeTarget || undefined}
+                          aria-describedby={invalidFields.codeTarget ? 'code-target-error' : undefined}
+                          onChange={(event) => {
+                            setCodeTarget(event.target.value)
+                            clearInvalid('codeTarget')
+                          }}
+                          placeholder={codeKind === 'email' ? 'you@example.com' : '13800000000'}
+                          className="h-10 pr-28"
+                          required
+                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="text-primary hover:text-primary absolute top-1 right-1 h-8 px-2.5 text-xs font-medium disabled:text-muted-foreground"
+                          disabled={sending || countdown > 0 || !codeTarget}
+                          onClick={() => void sendCode()}
+                        >
+                          {countdown > 0 ? `${countdown}s` : t('auth.sendCode')}
+                        </Button>
+                      </div>
+                      {invalidFields.codeTarget ? (
+                        <p id="code-target-error" role="alert" className="text-destructive text-xs">
+                          {t('auth.fieldRequired')}
+                        </p>
+                      ) : null}
+                    </div>
+                    {captchaBlock}
+                    <div className="space-y-2">
+                      <Label htmlFor="code-value">{t('auth.codeValue')}</Label>
+                      <Input
+                        id="code-value"
+                        value={code}
+                        aria-invalid={invalidFields.code || undefined}
+                        aria-describedby={invalidFields.code ? 'code-value-error' : undefined}
+                        onChange={(event) => {
+                          setCode(event.target.value)
+                          clearInvalid('code')
+                        }}
+                        inputMode="numeric"
+                        maxLength={8}
+                        autoComplete="one-time-code"
+                        placeholder={t('auth.codePlaceholder')}
+                        className="placeholder:font-sans placeholder:tracking-normal h-10 text-center font-mono text-[15px] tracking-[0.3em] placeholder:text-[13px]"
+                        required
+                      />
+                      {invalidFields.code ? (
+                        <p id="code-value-error" role="alert" className="text-destructive text-xs">
+                          {t('auth.fieldRequired')}
+                        </p>
+                      ) : null}
+                    </div>
+                    <SubmitButton pending={submitting}>{t('auth.codeSignIn')}</SubmitButton>
+                  </form>
+                </TabsContent>
+              ) : null}
+
+              {magicAvailable ? (
+                <TabsContent value="magic" className="pt-5">
+                  <form className="space-y-4" noValidate onSubmit={submitMagicLink}>
+                    <div className="space-y-2">
+                      <Label htmlFor="magic-email">{t('auth.email')}</Label>
+                      <Input
+                        id="magic-email"
+                        type="email"
+                        value={magicEmail}
+                        aria-invalid={invalidFields.magicEmail || undefined}
+                        aria-describedby={invalidFields.magicEmail ? 'magic-email-error' : undefined}
+                        onChange={(event) => {
+                          setMagicEmail(event.target.value)
+                          clearInvalid('magicEmail')
+                        }}
+                        placeholder="you@example.com"
+                        autoComplete="email"
+                        className="h-10"
+                        required
+                      />
+                      {invalidFields.magicEmail ? (
+                        <p id="magic-email-error" role="alert" className="text-destructive text-xs">
+                          {t('auth.fieldRequired')}
+                        </p>
+                      ) : null}
+                      <p className="text-muted-foreground text-xs">
+                        {t('auth.magicHint', { minutes: magicTtlMinutes })}
+                      </p>
+                    </div>
+                    {captchaBlock}
+                    {magicSent ? (
+                      <p className="text-muted-foreground text-sm">{t('auth.magicSent')}</p>
+                    ) : null}
+                    <SubmitButton pending={magicSending}>{t('auth.magicSubmit')}</SubmitButton>
+                  </form>
+                </TabsContent>
+              ) : null}
+            </Tabs>
+          ) : noSigninMethods ? (
+            <p className="text-muted-foreground border-border rounded-xl border border-dashed px-4 py-6 text-center text-sm leading-relaxed">
+              {t('auth.noSigninMethods')}
+            </p>
+          ) : null}
 
           {/* 第三方登录入口只在**凭据屏**显示：进入第二因子 / 绑定屏后，当前流程是"补完这一因子"，
             再摆一排第三方位容易让人误以为可以绕开二次验证 */}

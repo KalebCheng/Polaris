@@ -80,7 +80,7 @@ func TestResolveApplicationOptionalNoApps(t *testing.T) {
 
 func TestAppInfoWithoutApplicationReturnsPlatformInfo(t *testing.T) {
 	apps := &stubAppRepo{all: []*repository.Application{
-		{InstitutionID: 1, Code: "new-app", Name: "New App", SigninMethods: []repository.SigninMethod{{Name: repository.SigninMethodMagicLink}}},
+		{InstitutionID: 1, Code: "new-app", Name: "New App"},
 	}}
 	orgs := &stubOrgRepo{byName: map[string]*repository.Institution{
 		repository.BuiltInInstitution: {ID: 1, Name: repository.BuiltInInstitution, DisplayName: "Polaris"},
@@ -97,8 +97,8 @@ func TestAppInfoWithoutApplicationReturnsPlatformInfo(t *testing.T) {
 	if info.Institution != repository.BuiltInInstitution || info.OrgDisplayName != "Polaris" {
 		t.Fatalf("organization info = %+v", info)
 	}
-	if len(info.SigninMethods) != 1 || info.SigninMethods[0].Name != repository.SigninMethodPassword {
-		t.Fatalf("platform signin methods = %+v", info.SigninMethods)
+	if len(info.SigninMethods) != 0 {
+		t.Fatalf("没有 resolver 时平台信息不应臆造登录方式: %+v", info.SigninMethods)
 	}
 }
 
@@ -163,67 +163,6 @@ func TestBuildAppInfoCarriesOrgDisplayNameAndDescription(t *testing.T) {
 	}
 }
 
-// 配置即生效：signin_methods 为空时仅密码可用（兼容未回填的历史数据）。
-func TestHasSigninMethodFallsBackToPassword(t *testing.T) {
-	app := &repository.Application{}
-	if !app.HasSigninMethod(repository.SigninMethodPassword) {
-		t.Fatal("空登录方式应兜底为仅密码可用")
-	}
-	if app.HasSigninMethod(repository.SigninMethodMagicLink) {
-		t.Fatal("空登录方式不应放行魔法链接")
-	}
-}
-
-// 能力降级：组织缺邮件提供商时，邮箱验证码与魔法链接不下发给登录页。
-func TestAvailableSigninMethodsFiltersByOrgCapability(t *testing.T) {
-	app := &repository.Application{
-		SigninMethods: []repository.SigninMethod{
-			{Name: repository.SigninMethodPassword},
-			{Name: repository.SigninMethodEmailCode},
-			{Name: repository.SigninMethodMagicLink},
-			{Name: repository.SigninMethodSMSCode},
-			{Name: repository.SigninMethodProvider},
-			{Name: repository.SigninMethodGuest},
-		},
-	}
-	// 无任何提供商：只剩密码（访客未实现运行时，会被过滤）
-	got := availableSigninMethods(app, nil, nil)
-	if len(got) != 1 || got[0].Name != repository.SigninMethodPassword {
-		t.Fatalf("缺提供商时应仅保留密码，实际 %+v", got)
-	}
-	// 有邮件与短信提供商：邮箱验证码、短信验证码与魔法链接恢复
-	got = availableSigninMethods(app, []string{"mail-1"}, []string{"sms-1"})
-	if len(got) != 4 {
-		t.Fatalf("具备邮件/短信能力时应保留 4 种（第三方仍需应用配置提供方），实际 %+v", got)
-	}
-	// 应用配置了提供方后第三方登录可用
-	app.Providers = []repository.ProviderItem{{Name: "dingtalk", CanSignIn: true}}
-	got = availableSigninMethods(app, []string{"mail-1"}, []string{"sms-1"})
-	if len(got) != 5 {
-		t.Fatalf("配置提供方后应保留 5 种，实际 %+v", got)
-	}
-	// 访客登录尚未实现运行时：即便被写入配置也不会下发
-	app.SigninMethods = append(app.SigninMethods, repository.SigninMethod{Name: repository.SigninMethodGuest})
-	got = availableSigninMethods(app, []string{"mail-1"}, []string{"sms-1"})
-	for _, m := range got {
-		if m.Name == repository.SigninMethodGuest {
-			t.Fatalf("未实现的登录方式不应下发: %+v", got)
-		}
-	}
-}
-
-// 空 signin_methods 的历史应用：下发与判定都要兜底为"仅密码"，两边语义必须一致。
-func TestAvailableSigninMethodsFallsBackToPasswordWhenEmpty(t *testing.T) {
-	app := &repository.Application{}
-	got := availableSigninMethods(app, nil, nil)
-	if len(got) != 1 || got[0].Name != repository.SigninMethodPassword {
-		t.Fatalf("空登录方式应兜底为仅密码，实际 %+v", got)
-	}
-	if !app.HasSigninMethod(repository.SigninMethodPassword) {
-		t.Fatal("后端判定也应放行密码登录（与下发结果一致）")
-	}
-}
-
 // 回归：max_sessions = 0 表示"不限制"，不得在保存时被改写为 1（曾导致界面上填 0 实际变成独占）。
 func TestNormalizeApplicationKeepsZeroMaxSessions(t *testing.T) {
 	app := &repository.Application{
@@ -236,40 +175,6 @@ func TestNormalizeApplicationKeepsZeroMaxSessions(t *testing.T) {
 	}
 	if app.MaxSessions != 0 {
 		t.Fatalf("max_sessions = 0 应保留为不限制，实际 %d", app.MaxSessions)
-	}
-}
-
-// 登录方式校验：未实现的方式、以及"第三方登录却没有提供方"都必须被拒绝。
-func TestValidateApplicationSigninMethods(t *testing.T) {
-	base := func() *repository.Application {
-		return &repository.Application{
-			Code:          "app",
-			SigninMethods: []repository.SigninMethod{{Name: repository.SigninMethodPassword}},
-		}
-	}
-	if err := validateApplication(base()); err != nil {
-		t.Fatalf("单密码方式应通过: %v", err)
-	}
-
-	bad := base()
-	bad.SigninMethods = append(bad.SigninMethods, repository.SigninMethod{Name: repository.SigninMethodGuest})
-	if err := validateApplication(bad); err == nil {
-		t.Fatal("未实现运行时的 Guest 方式应被拒绝")
-	}
-
-	noProvider := base()
-	noProvider.SigninMethods = append(noProvider.SigninMethods,
-		repository.SigninMethod{Name: repository.SigninMethodProvider})
-	if err := validateApplication(noProvider); err == nil {
-		t.Fatal("第三方登录缺少提供方应被拒绝")
-	}
-
-	withProvider := base()
-	withProvider.SigninMethods = append(withProvider.SigninMethods,
-		repository.SigninMethod{Name: repository.SigninMethodProvider})
-	withProvider.Providers = []repository.ProviderItem{{Name: "dingtalk", CanSignIn: true}}
-	if err := validateApplication(withProvider); err != nil {
-		t.Fatalf("带提供方的第三方登录应通过: %v", err)
 	}
 }
 
@@ -356,8 +261,7 @@ func TestTokenExtraDefaults(t *testing.T) {
 func TestValidateApplicationTokenFormat(t *testing.T) {
 	base := func(format string) *repository.Application {
 		return &repository.Application{
-			TokenFormat:   format,
-			SigninMethods: []repository.SigninMethod{{Name: repository.SigninMethodPassword}},
+			TokenFormat: format,
 		}
 	}
 
@@ -379,7 +283,6 @@ func TestValidateApplicationTokenFormat(t *testing.T) {
 // 未知字段必须在落库前拒绝，而不是静默丢弃。
 func TestValidateApplicationRejectsUnknownTokenField(t *testing.T) {
 	app := &repository.Application{
-		SigninMethods: []repository.SigninMethod{{Name: repository.SigninMethodPassword}},
 		TokenAttributes: []repository.TokenAttribute{
 			{Name: "username", Category: TokenAttributeCategoryExisting, Value: "username"},
 			{Name: "bad", Category: TokenAttributeCategoryExisting, Value: "department_names_typo"},

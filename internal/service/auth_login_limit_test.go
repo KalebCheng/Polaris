@@ -166,6 +166,7 @@ func newLoginLimitService(app repository.Application) (*AuthService, *fakeLimite
 	apps := &stubAppRepo{byName: map[string]*repository.Application{"1/" + app.Code: &app}}
 	orgs := &stubOrgRepo{byName: map[string]*repository.Institution{"acme": {ID: 1, Name: "acme"}}}
 	svc := newPolicyService(apps, orgs, "built-in")
+	svc.signinPolicy = testPasswordPolicy()
 	svc.users = &stubUserRepo{}
 	limiter := newFakeLimiter()
 	svc.rateLimiter = limiter

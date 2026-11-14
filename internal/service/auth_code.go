@@ -34,7 +34,6 @@ type codeChannelStrategy struct {
 	signinMethod string
 	scene        string
 	normalize    func(string) (string, error)
-	ttl          func(*repository.Application) time.Duration
 	findUser     func(context.Context, *AuthService, int64, string) (*repository.User, error)
 	setIdentity  func(*repository.User, string)
 }
@@ -50,7 +49,6 @@ var codeChannelStrategies = map[CodeKind]codeChannelStrategy{
 			}
 			return target, nil
 		},
-		ttl: func(app *repository.Application) time.Duration { return durationFromSeconds(app.EmailCodeTTLSeconds) },
 		findUser: func(ctx context.Context, s *AuthService, institutionID int64, target string) (*repository.User, error) {
 			return s.users.GetByEmail(ctx, institutionID, target)
 		},
@@ -63,7 +61,6 @@ var codeChannelStrategies = map[CodeKind]codeChannelStrategy{
 		category: providerpkg.CategorySMS, signinMethod: repository.SigninMethodSMSCode,
 		scene:     repository.TemplateSceneLoginCode,
 		normalize: normalizePhone,
-		ttl:       func(app *repository.Application) time.Duration { return durationFromSeconds(app.SMSCodeTTLSeconds) },
 		findUser: func(ctx context.Context, s *AuthService, institutionID int64, target string) (*repository.User, error) {
 			return s.findUserByPhone(ctx, institutionID, target)
 		},
@@ -127,7 +124,11 @@ func (s *AuthService) SendLoginCode(ctx context.Context, req CodeSendRequest, ho
 		return err
 	}
 	req.Institution = resolvedOrg
-	app, err := s.resolveCodeSendApp(ctx, req)
+	org, err := s.orgs.GetByName(ctx, resolvedOrg)
+	if err != nil {
+		return bizerrors.ErrNotFound.WithDetail("institution_id", resolvedOrg)
+	}
+	app, err := s.resolveAppContext(ctx, org.ID, req.Institution, req.Application, req.ClientID)
 	if err != nil {
 		return err
 	}
@@ -139,8 +140,11 @@ func (s *AuthService) SendLoginCode(ctx context.Context, req CodeSendRequest, ho
 		return err
 	}
 	channel := codeChannelStrategies[kind]
-	// 配置即生效：该类型验证码登录必须是应用已启用的登录方式
-	if !app.HasSigninMethod(channel.signinMethod) {
+	method, ok, err := s.findSigninMethod(ctx, org.ID, app, channel.signinMethod)
+	if err != nil {
+		return err
+	}
+	if !ok || method.ProviderID == 0 {
 		return bizerrors.New(bizerrors.CodeForbidden, "code sign-in is disabled for this application")
 	}
 	target, err := channel.normalize(rawTarget)
@@ -155,11 +159,7 @@ func (s *AuthService) SendLoginCode(ctx context.Context, req CodeSendRequest, ho
 		}
 	}
 
-	method, ok := app.FindSigninMethod(channel.signinMethod)
-	if !ok || method.ProviderID == 0 {
-		return bizerrors.ErrProviderUnavailable.WithDetail("provider", "login_code")
-	}
-	provider, tpl, err := s.templates.ResolveNotification(ctx, app.InstitutionID, method.ProviderID, method.TemplateID,
+	provider, tpl, err := s.templates.ResolveNotification(ctx, org.ID, method.ProviderID, method.TemplateID,
 		channel.scene, channel.category)
 	if err != nil {
 		return err
@@ -179,11 +179,12 @@ func (s *AuthService) SendLoginCode(ctx context.Context, req CodeSendRequest, ho
 	if s.codes == nil {
 		return bizerrors.ErrProviderUnavailable.WithDetail("reason", "code store not configured")
 	}
-	if err := s.codes.Save(ctx, verifyCodeKey(req.Institution, kind, provider.ID, target), code, channel.ttl(app)); err != nil {
+	ttl := durationFromSeconds(method.TTLSeconds)
+	if err := s.codes.Save(ctx, verifyCodeKey(req.Institution, kind, provider.ID, target), code, ttl); err != nil {
 		return err
 	}
 	// 模板变量的取值来源：验证码 / 有效期 / 接收号码 / 组织与应用名（阿里云只装配模板声明过的那些）
-	ttlMinutes := strconv.Itoa(int(channel.ttl(app).Minutes()))
+	ttlMinutes := strconv.Itoa(int(ttl.Minutes()))
 	if ttlMinutes == "0" {
 		ttlMinutes = "1"
 	}
@@ -200,28 +201,14 @@ func (s *AuthService) SendLoginCode(ctx context.Context, req CodeSendRequest, ho
 			providerpkg.TemplateVarMinutes:     ttlMinutes,
 			providerpkg.TemplateVarPhone:       deliveryTarget,
 			providerpkg.TemplateVarInstitution: req.Institution,
-			providerpkg.TemplateVarApplication: orDefault(app.Name, app.Code),
+			providerpkg.TemplateVarApplication: applicationDisplayName(app, org),
 		},
 	}
 	if err := sender.Send(ctx, msg); err != nil {
 		return bizerrors.Wrap(bizerrors.CodeProviderUnavailable, "send notification failed", err)
 	}
-	s.audits.Record(ctx, target, app.InstitutionID, "auth.send_code", target, map[string]interface{}{"kind": kind})
+	s.audits.Record(ctx, target, org.ID, "auth.send_code", target, map[string]interface{}{"kind": kind})
 	return nil
-}
-
-// resolveCodeSendApp mirrors the application-context rules used by CodeLogin.
-// A client_id-driven login page must resolve the same application when sending a code;
-// otherwise the code is stored under a different provider and cannot be verified.
-func (s *AuthService) resolveCodeSendApp(ctx context.Context, req CodeSendRequest) (*repository.Application, error) {
-	app, err := s.resolveAppContext(ctx, req.InstitutionID, req.Institution, req.Application, req.ClientID)
-	if err != nil {
-		return nil, err
-	}
-	if app != nil {
-		return app, nil
-	}
-	return s.resolveApplication(ctx, req.Institution, "")
 }
 
 func (s *AuthService) enforceCodeSendLimits(
@@ -327,32 +314,32 @@ func (s *AuthService) CodeLogin(ctx context.Context, req CodeLoginRequest, host,
 		return nil, "", err
 	}
 	req.Institution = resolvedOrg
+	org, err := s.orgs.GetByName(ctx, resolvedOrg)
+	if err != nil {
+		return nil, "", bizerrors.ErrNotFound.WithDetail("institution_id", resolvedOrg)
+	}
 	target, err := channel.normalize(rawTarget)
 	if err != nil {
 		return nil, "", err
 	}
-	// 应用上下文：显式携带时以它为准（准入判定据此生效）；未携带时按既有语义回退默认应用，
-	// 但**不做准入判定**（Spec FR-3 作用域：平台登录不判定）。
+	// 应用上下文：只有显式携带时才生效；平台登录使用组织级登录方式，不再回退默认应用。
 	appCtx, err := s.resolveAppContext(ctx, req.InstitutionID, req.Institution, req.Application, req.ClientID)
 	if err != nil {
 		return nil, "", err
 	}
 	app := appCtx
-	if app == nil {
-		app, err = s.resolveApplication(ctx, req.Institution, "")
-		if err != nil {
-			return nil, "", err
-		}
-	}
 	if err := s.enforceSigninPolicy(app, ip); err != nil {
 		return nil, "", err
 	}
 	methodName := channel.signinMethod
-	method, ok := app.FindSigninMethod(methodName)
+	method, ok, err := s.findSigninMethod(ctx, org.ID, app, methodName)
+	if err != nil {
+		return nil, "", err
+	}
 	if !ok || method.ProviderID == 0 {
 		return nil, "", bizerrors.New(bizerrors.CodeForbidden, "code sign-in is disabled for this application")
 	}
-	provider, _, err := s.templates.ResolveNotification(ctx, app.InstitutionID, method.ProviderID, method.TemplateID,
+	provider, _, err := s.templates.ResolveNotification(ctx, org.ID, method.ProviderID, method.TemplateID,
 		channel.scene, channel.category)
 	if err != nil {
 		return nil, "", err
@@ -380,7 +367,7 @@ func (s *AuthService) CodeLogin(ctx context.Context, req CodeLoginRequest, host,
 		return nil, "", bizerrors.ErrVerifyCodeInvalid
 	}
 
-	user, err := s.findUserByCodeTarget(ctx, app, kind, target, ip)
+	user, err := s.findUserByCodeTarget(ctx, org.ID, app, kind, target, ip)
 	if err != nil {
 		return nil, "", err
 	}
@@ -388,12 +375,12 @@ func (s *AuthService) CodeLogin(ctx context.Context, req CodeLoginRequest, host,
 	if err := s.enforceAppAccess(ctx, appCtx, user); err != nil {
 		return nil, "", err
 	}
-	s.applyPasswordChangeRequirement(ctx, app.InstitutionID, user)
-	session, err := s.sessions.Create(ctx, user, app.Code, ip, userAgent)
+	s.applyPasswordChangeRequirement(ctx, org.ID, user)
+	session, err := s.sessions.Create(ctx, user, applicationCode(app), ip, userAgent)
 	if err != nil {
 		return nil, "", err
 	}
-	challenge, _, _, err := s.applyMFA(ctx, session, app, signinMethodForCodeKind(kind), user, "", "", false)
+	challenge, _, _, err := s.applyMFA(ctx, session, method, user, "", "", false)
 	if err != nil {
 		_ = s.sessions.Delete(ctx, session)
 		return nil, "", err
@@ -403,7 +390,7 @@ func (s *AuthService) CodeLogin(ctx context.Context, req CodeLoginRequest, host,
 		_ = s.users.UpdateLastSignin(ctx, user.ID, time.Now(), ip)
 		s.audits.Record(ctx, user.Name, user.InstitutionID, "auth.code_login", user.Name, map[string]interface{}{"kind": kind})
 		// 登录成功：触发 JIT 建号（与密码登录一致）
-		if s.provisioning != nil {
+		if s.provisioning != nil && app != nil {
 			s.provisioning.TriggerJIT(ctx, user.InstitutionID, app.Code, user.Name)
 		}
 	}
@@ -417,12 +404,13 @@ func (s *AuthService) CodeLogin(ctx context.Context, req CodeLoginRequest, host,
 // findUserByCodeTarget 按邮箱/手机号定位用户，必要时 JIT 建号。
 func (s *AuthService) findUserByCodeTarget(
 	ctx context.Context,
+	institutionID int64,
 	app *repository.Application,
 	kind CodeKind,
 	target, ip string,
 ) (*repository.User, error) {
 	channel := codeChannelStrategies[kind]
-	user, lookupErr := channel.findUser(ctx, s, app.InstitutionID, target)
+	user, lookupErr := channel.findUser(ctx, s, institutionID, target)
 	if lookupErr == nil {
 		return user, nil
 	}
@@ -430,11 +418,11 @@ func (s *AuthService) findUserByCodeTarget(
 		return nil, lookupErr
 	}
 
-	if !app.SelfSignupEnabled {
+	if app == nil || !app.SelfSignupEnabled {
 		return nil, bizerrors.ErrIdentityNotBound.WithDetail("target", target)
 	}
 	if err := enforceRateLimitRules(ctx, s.rateLimiter, rateLimitRule{
-		key:    codeJITSignupRateKey(strconv.FormatInt(app.InstitutionID, 10), ip),
+		key:    codeJITSignupRateKey(strconv.FormatInt(institutionID, 10), ip),
 		window: time.Hour,
 		max:    s.codeLimits.withDefaults().JITSignupIPHourlyMax,
 		scope:  "signup",
@@ -444,10 +432,10 @@ func (s *AuthService) findUserByCodeTarget(
 	}); err != nil {
 		return nil, err
 	}
-	name := s.derivedUserName(ctx, app.InstitutionID, target)
+	name := s.derivedUserName(ctx, institutionID, target)
 	user = &repository.User{
 		UID:            uuid.NewString(),
-		InstitutionID:  app.InstitutionID,
+		InstitutionID:  institutionID,
 		Name:           name,
 		Type:           "normal",
 		RegisterType:   "code",
@@ -462,9 +450,9 @@ func (s *AuthService) findUserByCodeTarget(
 		return nil, err
 	}
 	if app.DefaultJobTitleID != nil {
-		s.addDefaultJobTitle(ctx, app.InstitutionID, *app.DefaultJobTitleID, user.Name)
+		s.addDefaultJobTitle(ctx, institutionID, *app.DefaultJobTitleID, user.Name)
 	}
-	s.audits.Record(ctx, name, app.InstitutionID, "user.provision_code", name, map[string]interface{}{"kind": kind})
+	s.audits.Record(ctx, name, institutionID, "user.provision_code", name, map[string]interface{}{"kind": kind})
 	// 新建用户：触发"创建即建号"的账号策略（与管理员建号一致）
 	if s.provisioning != nil {
 		s.provisioning.TriggerUserProvisioning(ctx, user.InstitutionID, user.Name)
@@ -499,16 +487,21 @@ func normalizeCodeKind(kind string) (CodeKind, error) {
 	}
 }
 
-// signinMethodForCodeKind 把验证码类型映射到登录方式名（"配置即生效"的判定入口）。
-func signinMethodForCodeKind(kind CodeKind) string {
-	return codeChannelStrategies[kind].signinMethod
-}
-
 func durationFromSeconds(seconds int) time.Duration {
 	if seconds <= 0 {
 		return codeTTL
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+func applicationDisplayName(app *repository.Application, org *repository.Institution) string {
+	if app != nil {
+		return orDefault(app.Name, app.Code)
+	}
+	if org != nil {
+		return orDefault(org.DisplayName, org.Name)
+	}
+	return ""
 }
 
 func verifyCodeKey(institution string, kind CodeKind, providerID int64, target string) string {

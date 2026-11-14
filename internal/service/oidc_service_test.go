@@ -443,10 +443,14 @@ func (r *createAppRepo) Create(_ context.Context, app *repository.Application) (
 	return 1, nil
 }
 
+func (r *createAppRepo) CreateWithSigninMethods(ctx context.Context, app *repository.Application, _ []int64) (int64, error) {
+	return r.Create(ctx, app)
+}
+
 func TestApplicationCreateStoresClientSecretHashAndReturnsPlainOnce(t *testing.T) {
 	apps := &createAppRepo{}
 	orgs := &stubOrgRepo{byName: map[string]*repository.Institution{"built-in": {ID: 1, Name: "built-in"}}}
-	svc := NewApplicationService(apps, orgs, nil)
+	svc := applicationServiceForTest(apps, orgs, nil)
 
 	app, err := svc.Create(context.Background(), "admin", &repository.Application{
 		InstitutionID: 1,
