@@ -30,6 +30,8 @@ type OIDCService struct {
 	sessions  *auth.SessionManager
 	// access 应用访问授权（可选；装配阶段注入）：作为 IdP 的链路一律带应用上下文，因此恒判定。
 	access *ApplicationAccessService
+	// signinPolicy 组织/应用登录方式解析（password grant 的唯一判定入口）。
+	signinPolicy *SigninPolicyResolver
 }
 
 // enforceAccess 应用准入判定（令牌链路：应用上下文恒存在，故无"是否判定"的分支）。
@@ -70,11 +72,13 @@ func NewOIDCService(
 	audits *AuditRecorder,
 	sessions *auth.SessionManager,
 	access *ApplicationAccessService,
+	signinPolicy *SigninPolicyResolver,
 ) *OIDCService {
 	return &OIDCService{
 		apps: apps, users: users, orgs: orgs, roles: roles, groups: groups,
 		userDepts: userDepts, depts: depts,
 		tokens: tokens, issuer: issuer, audits: audits, sessions: sessions, access: access,
+		signinPolicy: signinPolicy,
 	}
 }
 
@@ -361,7 +365,11 @@ func (s *OIDCService) grantPassword(ctx context.Context, app *repository.Applica
 	if !contains(app.GrantTypes, "password") {
 		return nil, bizerrors.ErrOAuthInvalidGrant.WithDetail("reason", "grant_not_allowed")
 	}
-	if !app.HasSigninMethod(repository.SigninMethodPassword) {
+	_, ok, err := s.signinPolicy.FindApplicationMethod(ctx, app, repository.SigninMethodPassword)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
 		return nil, bizerrors.ErrOAuthInvalidGrant.WithDetail("reason", "password_login_disabled")
 	}
 	if err := validateAppScopes(app, req.Scope); err != nil {

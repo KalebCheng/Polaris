@@ -15,7 +15,7 @@ Polaris 是一个统一身份认证与访问管理平台（IAM / IdP）：以 **
 |----|------|
 | 身份目录 | 组织（多租户）、用户、用户组、外部身份绑定 |
 | 访问控制 | 角色（支持嵌套继承）、权限（资源-动作，Allow/Deny，支持 `*` 通配）、鉴权测试 |
-| 应用接入 | 应用（OAuth2 / OIDC 客户端）+ 完整运行策略：登录方式开关、会话数量、IP 白名单、登录失败次数限制与重试等待时间、字段编排、令牌有效期/轮换/字段白名单、应用级品牌主题、跳转地址 |
+| 应用接入 | 应用（OAuth2 / OIDC 客户端）+ 完整运行策略：从组织登录方式中选择允许项、会话数量、IP 白名单、登录失败次数限制与重试等待时间、字段编排、令牌有效期/轮换/字段白名单、应用级品牌主题、跳转地址 |
 | 提供商 | **六类提供商**（**统一在控制台「提供商」中管理，改完即生效、无需重启**）：外部身份提供方（第三方登录：钉钉/微信/飞书/Lark，标准 OIDC：discovery 或自定义端点 + PKCE）、邮件 SMTP、短信（阿里云 / 通用 HTTP）、人机校验（本地图形 / hCaptcha / reCAPTCHA / Turnstile）、存储（本地目录 / S3·MinIO）、MFA（TOTP / 短信） |
 | 作为 IdP | OIDC discovery / JWKS / authorize / token / userinfo / introspect / logout |
 | 令牌签发 | authorization_code（含 PKCE）、refresh_token（轮换）、password、client_credentials |
@@ -171,7 +171,7 @@ client_secret、default_password 和证书私钥。这与本次 `003`/`004` 是�
 
 ```
 PLATFORM   Dashboard（跨组织总览）  Organizations（组织列表 → 组织概览）
-<组织>      Overview / Users / Groups / Applications / Providers（提供商）/
+<组织>      Overview / 基础配置（认证方式）/ Users / Groups / Applications / Providers（提供商）/
            External sources / Roles / Permissions / Certificates / Tokens / Sessions / Audit logs
 ACCOUNT    左下角用户区（头像/姓名/邮箱 → 语言、主题、个人资料弹窗、退出登录）
 ```
@@ -287,7 +287,7 @@ GET    /readyz                          # 就绪探针（含依赖状态）
 - **邮件富文本**：邮件正文按 HTML 落库，服务端清洗脚本 / 事件属性 / 非安全协议后再发送；
   发送使用 `multipart/alternative`（HTML + 纯文本替代），历史纯文本模板自动转换为段落。
 - **单例类别**：`captcha` / `storage` 在**同一组织内最多一个启用项**；`email` / `sms` / `mfa` / `oauth`
-  可并存多个，由应用登录方式或 MFA 提供商显式选择。
+  可并存多个，由组织登录方式与应用选择显式引用，或由 MFA 提供商显式选择。
 - **外部身份提供方**：`category=oauth`（钉钉 / 微信 / 飞书 / Lark / 标准 OIDC）。改配置**无需重启**即生效；
   OIDC 走 discovery（或自定义授权/令牌端点）+ 可选 PKCE（S256）。
 - **SSO 信任策略**：`auto_create`、`match_type`、`match_local_field`、`match_syncer_id` + `match_syncer_field`、`match_provider_field`、`allowed_domains`、`redirect_uri`（回调覆盖）；身份链接匹配固定到一条入方向连接，唯一命中才自动绑定；

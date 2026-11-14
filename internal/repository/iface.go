@@ -174,13 +174,36 @@ type UserImportRepository interface {
 // 存储: PostgreSQL（applications）
 type ApplicationRepository interface {
 	Create(ctx context.Context, app *Application) (int64, error)
+	// CreateWithSigninMethods 单事务创建应用并写入组织登录方式选择。
+	CreateWithSigninMethods(ctx context.Context, app *Application, methodIDs []int64) (int64, error)
 	GetByID(ctx context.Context, id int64) (*Application, error)
 	GetByCode(ctx context.Context, institutionID int64, code string) (*Application, error)
 	GetByClientID(ctx context.Context, clientID string) (*Application, error)
 	Update(ctx context.Context, app *Application) error
+	// UpdateWithSigninMethods 单事务更新应用；methodIDs 为 nil 时保留既有选择。
+	UpdateWithSigninMethods(ctx context.Context, app *Application, methodIDs *[]int64) error
 	Delete(ctx context.Context, id int64) error
 	List(ctx context.Context, q ListQuery) ([]*Application, error)
 	Count(ctx context.Context, q ListQuery) (int64, error)
+}
+
+// InstitutionSigninMethodRepository 组织级登录方式仓库接口。
+// 存储: PostgreSQL（institution_signin_methods / application_signin_methods）。
+type InstitutionSigninMethodRepository interface {
+	Create(ctx context.Context, method *InstitutionSigninMethod) (int64, error)
+	GetByID(ctx context.Context, institutionID, id int64) (*InstitutionSigninMethod, error)
+	List(ctx context.Context, institutionID int64) ([]*InstitutionSigninMethod, error)
+	ListActive(ctx context.Context, institutionID int64) ([]*InstitutionSigninMethod, error)
+	ListByIDs(ctx context.Context, institutionID int64, ids []int64) ([]*InstitutionSigninMethod, error)
+	ListByApplication(ctx context.Context, institutionID, applicationID int64) ([]*InstitutionSigninMethod, error)
+	ListByApplications(ctx context.Context, institutionID int64, applicationIDs []int64) (map[int64][]*InstitutionSigninMethod, error)
+	Update(ctx context.Context, method *InstitutionSigninMethod) error
+	SetState(ctx context.Context, institutionID, id int64, state string) error
+	Delete(ctx context.Context, institutionID, id int64) error
+	ReplaceApplicationSelection(ctx context.Context, institutionID, applicationID int64, methodIDs []int64) error
+	CountApplications(ctx context.Context, institutionID, methodID int64) (int, error)
+	CountApplicationsByMethod(ctx context.Context, institutionID int64) (map[int64]int, error)
+	ListApplicationsByMethod(ctx context.Context, institutionID, methodID int64) ([]*Application, error)
 }
 
 // ApplicationSubjectRepository 应用授权主体仓库接口（应用准入名单）

@@ -1,33 +1,5 @@
 import type { SelectOption } from '@/shared/ui'
-import type { Application, ApplicationAccess, SigninMethod, TokenAttribute } from '@/shared/api/types'
-
-/**
- * 登录方式条目：**一条 = 一张卡片**（逐个添加、各自配参数）。
- * 第三方按提供方拆条——钉钉一条、微信一条，各自配置"是否允许自动注册/解绑"。
- */
-export interface SigninMethodEntry {
-  /** 前端稳定 id（React key / 增删用） */
-  id: string
-  /** 方式类型：Password | EmailCode | SMSCode | MagicLink | Provider */
-  kind: string
-  /** kind = Provider 时：具体提供方名（providers.name） */
-  provider?: string
-  /** 第三方专有：首次登录自动建号 */
-  autoSignUp?: boolean
-  /** 第三方专有：允许用户解绑 */
-  allowUnlink?: boolean
-
-  /** Password：允许的账号标识类型 */
-  identifiers: string[]
-  /** EmailCode / SMSCode / MagicLink：显式选择的提供商与模板 */
-  notifyProviderId?: number
-  notifyTemplateId?: number
-
-  /** 是否启用 MFA 与是否强制（enabled 但非 required：未绑定用户可跳过提示） */
-  mfaEnabled: boolean
-  mfaRequired: boolean
-  mfaProviderIds: number[]
-}
+import type { Application, ApplicationAccess, TokenAttribute } from '@/shared/api/types'
 
 /**
  * 可申请的 scope 行（一行一个 scope，顺序即授权时的推荐顺序）。
@@ -80,11 +52,8 @@ export interface ApplicationFormValue {
   /** 用户协议链接（注册页渲染） */
   terms_of_use: string
 
-  // 登录方式（唯一数据源）：逐个添加的卡片列表，顺序即登录页展示顺序
-  methods: SigninMethodEntry[]
-  email_code_ttl_seconds: number
-  sms_code_ttl_seconds: number
-  magic_link_ttl_seconds: number
+  // 登录方式：只保存组织级方法主键，方法参数全部在组织配置页维护
+  signin_method_ids: number[]
 
   // 自助注册
   self_signup_enabled: boolean
@@ -143,19 +112,7 @@ export const emptyApplicationForm: ApplicationFormValue = {
   signup_url: '',
   terms_of_use: '',
 
-  methods: [
-    {
-      id: 'method-Password',
-      kind: 'Password',
-      identifiers: ['username'],
-      mfaEnabled: true,
-      mfaRequired: false,
-      mfaProviderIds: [],
-    },
-  ],
-  email_code_ttl_seconds: 300,
-  sms_code_ttl_seconds: 300,
-  magic_link_ttl_seconds: 600,
+  signin_method_ids: [],
 
   self_signup_enabled: false,
   signup_auto_signin: true,
@@ -195,20 +152,6 @@ export const emptyApplicationForm: ApplicationFormValue = {
 
   state: 'active',
 }
-
-/** 已实现运行时的登录方式（Guest/匿名会话尚未实现，不提供配置入口） */
-export const signinMethodOptions: SelectOption[] = [
-  { value: 'Password', label: 'Password', hint: 'applications.method.passwordHint' },
-  { value: 'EmailCode', label: 'Email code', hint: 'applications.method.emailCodeHint' },
-  { value: 'SMSCode', label: 'SMS code', hint: 'applications.method.smsCodeHint' },
-  { value: 'MagicLink', label: 'Magic link', hint: 'applications.method.magicLinkHint' },
-  { value: 'Provider', label: 'Third-party', hint: 'applications.method.providerHint' },
-]
-
-/** 需要组织邮件提供商支撑的登录方式 */
-export const emailDependentMethods = ['EmailCode', 'MagicLink']
-/** 需要组织短信提供商支撑的登录方式 */
-export const smsDependentMethods = ['SMSCode']
 
 /** 可申请的 scope 候选（与 OIDC 发现文档保持一致） */
 export const scopeOptions: SelectOption[] = [
@@ -334,10 +277,11 @@ export function applicationToForm(app: Application): ApplicationFormValue {
     signup_url: app.signup_url ?? '',
     terms_of_use: app.terms_of_use ?? '',
 
-    methods: methodsFromApplication(app),
-    email_code_ttl_seconds: app.email_code_ttl_seconds ?? 300,
-    sms_code_ttl_seconds: app.sms_code_ttl_seconds ?? 300,
-    magic_link_ttl_seconds: app.magic_link_ttl_seconds ?? 600,
+    signin_method_ids:
+      app.signin_method_ids ??
+      (app.signin_methods ?? [])
+        .map((method) => method.id)
+        .filter((id): id is number => typeof id === 'number'),
 
     self_signup_enabled: app.self_signup_enabled ?? false,
     signup_auto_signin: app.signup_auto_signin ?? true,
@@ -379,22 +323,7 @@ export function applicationToForm(app: Application): ApplicationFormValue {
 
 /** 表单 → 提交载荷（与后端实体字段一一对应；不含 client_id / client_secret） */
 export function formToApplication(form: ApplicationFormValue) {
-  const kinds = signinMethodKinds(form)
   const claimMap = textToClaimMap(form.claim_map)
-  const methods: SigninMethod[] = kinds.map((name) => {
-    const entry = form.methods.find((item) => item.kind === name)
-    return {
-      name,
-      displayName: signinMethodOptions.find((option) => option.value === name)?.label ?? name,
-      rule: 'All',
-      identifiers: name === 'Password' ? (entry?.identifiers ?? ['username']) : undefined,
-      providerId: entry?.notifyProviderId,
-      templateId: entry?.notifyTemplateId,
-      mfaEnabled: Boolean(entry?.mfaEnabled),
-      mfaRequired: Boolean(entry?.mfaEnabled && entry?.mfaRequired),
-      mfaProviderIds: entry?.mfaEnabled ? (entry?.mfaProviderIds ?? []) : [],
-    }
-  })
   return {
     institution_id: Number(form.institution_id) || 0,
     code: form.code.trim(),
@@ -416,15 +345,7 @@ export function formToApplication(form: ApplicationFormValue) {
     signup_url: form.signup_url,
     terms_of_use: form.terms_of_use,
 
-    signin_methods: methods,
-    providers: form.methods
-      .filter((entry) => entry.kind === 'Provider' && entry.provider)
-      .map((entry) => ({
-        name: entry.provider as string,
-        canSignIn: true,
-        canSignUp: Boolean(entry.autoSignUp),
-        canUnlink: Boolean(entry.allowUnlink),
-      })),
+    signin_method_ids: form.signin_method_ids,
 
     self_signup_enabled: form.self_signup_enabled,
     signup_auto_signin: form.signup_auto_signin,
@@ -433,10 +354,6 @@ export function formToApplication(form: ApplicationFormValue) {
       visible: true,
       required: row.required,
     })),
-
-    email_code_ttl_seconds: Number(form.email_code_ttl_seconds) || 300,
-    sms_code_ttl_seconds: Number(form.sms_code_ttl_seconds) || 300,
-    magic_link_ttl_seconds: Number(form.magic_link_ttl_seconds) || 600,
 
     max_sessions: Number(form.max_sessions) || 0,
     // 0 保持 0（= 沿用平台默认），负数由校验拦下
@@ -484,26 +401,8 @@ export function formToApplicationValidation(form: ApplicationFormValue): {
   if (!applicationCodePattern.test(form.code.trim())) {
     return { ok: false, reason: 'applications.codeInvalid' }
   }
-  if (form.methods.length === 0) {
+  if (form.signin_method_ids.length === 0) {
     return { ok: false, reason: 'applications.methodsEmpty' }
-  }
-  if (form.methods.some((entry) => entry.kind === 'Provider' && !entry.provider)) {
-    return { ok: false, reason: 'applications.providerRequired' }
-  }
-  if (form.methods.some((entry) => entry.kind === 'Password' && entry.identifiers.length === 0)) {
-    return { ok: false, reason: 'applications.identifierRequired' }
-  }
-  if (
-    form.methods.some(
-      (entry) =>
-        ['EmailCode', 'SMSCode', 'MagicLink'].includes(entry.kind) &&
-        (!entry.notifyProviderId || !entry.notifyTemplateId),
-    )
-  ) {
-    return { ok: false, reason: 'applications.notificationTemplateRequired' }
-  }
-  if (form.methods.some((entry) => entry.mfaRequired && !entry.mfaEnabled)) {
-    return { ok: false, reason: 'applications.mfaRequiredNeedsEnabled' }
   }
   // scope：填了显示名/描述却没填名称 → 提示；名称重复 → 拒绝
   if (
@@ -533,94 +432,13 @@ export function formToApplicationValidation(form: ApplicationFormValue): {
   return { ok: true }
 }
 
-/** 表单里出现的登录方式类型（去重、保持顺序）——供后端 signin_methods 与登录页预览使用 */
-export function signinMethodKinds(form: ApplicationFormValue): string[] {
-  const seen: string[] = []
-  for (const entry of form.methods) {
-    if (!seen.includes(entry.kind)) seen.push(entry.kind)
-  }
-  return seen
-}
-
-/** 已添加的方式类型集合（用于"添加登录方式"里置灰已添加项） */
-export function addedMethodKinds(form: ApplicationFormValue): Set<string> {
-  return new Set(form.methods.map((entry) => entry.kind))
-}
-
-/** 已添加的提供方集合 */
-export function addedProviders(form: ApplicationFormValue): Set<string> {
-  return new Set(
-    form.methods.filter((entry) => entry.kind === 'Provider').map((entry) => entry.provider ?? ''),
-  )
-}
-
-/**
- * Application -> 登录方式条目列表。
- * 顺序遵循 signin_methods；遇到 Provider 时就地展开为该应用已启用的全部提供方
- * （每个提供方一条，各自携带 canSignUp / canUnlink）。
- */
-function methodsFromApplication(app: Application): SigninMethodEntry[] {
-  const entries: SigninMethodEntry[] = []
-  const providers = app.providers ?? []
-  const usedProviders = new Set<string>()
-  for (const method of app.signin_methods ?? []) {
-    if (method.name === 'Provider') {
-      for (const provider of providers) {
-        if (usedProviders.has(provider.name)) continue
-        usedProviders.add(provider.name)
-        entries.push({
-          id: `provider-${provider.name}`,
-          kind: 'Provider',
-          provider: provider.name,
-          autoSignUp: Boolean(provider.canSignUp),
-          allowUnlink: Boolean(provider.canUnlink),
-          identifiers: [],
-          mfaEnabled: method.mfaEnabled ?? false,
-          mfaRequired: method.mfaRequired ?? false,
-          mfaProviderIds: method.mfaProviderIds ?? [],
-        })
-      }
-      continue
-    }
-    entries.push({
-      id: `method-${method.name}`,
-      kind: method.name,
-      identifiers: method.identifiers ?? (method.name === 'Password' ? ['username', 'email'] : []),
-      notifyProviderId: method.providerId,
-      notifyTemplateId: method.templateId,
-      mfaEnabled: method.mfaEnabled ?? method.name === 'Password',
-      mfaRequired: method.mfaRequired ?? false,
-      mfaProviderIds: method.mfaProviderIds ?? [],
-    })
-  }
-  // 兜底：配置了提供方但 signin_methods 里没有 Provider（历史数据）
-  for (const provider of providers) {
-    if (usedProviders.has(provider.name)) continue
-    usedProviders.add(provider.name)
-    entries.push({
-      id: `provider-${provider.name}`,
-      kind: 'Provider',
-      provider: provider.name,
-      autoSignUp: Boolean(provider.canSignUp),
-      allowUnlink: Boolean(provider.canUnlink),
-      identifiers: [],
-      mfaEnabled: false,
-      mfaRequired: false,
-      mfaProviderIds: [],
-    })
-  }
-  return entries.length > 0
-    ? entries
-    : [
-        {
-          id: 'method-Password',
-          kind: 'Password',
-          identifiers: ['username', 'email'],
-          mfaEnabled: true,
-          mfaRequired: false,
-          mfaProviderIds: [],
-        },
-      ]
+/** 预览用：按组织方法顺序返回应用已选中的方式类型。 */
+export function selectedSigninMethodKinds(
+  form: ApplicationFormValue,
+  methods: { id: number; name: string }[],
+): string[] {
+  const selected = new Set(form.signin_method_ids)
+  return methods.filter((method) => selected.has(method.id)).map((method) => method.name)
 }
 
 /**

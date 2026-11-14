@@ -24,6 +24,10 @@ func (r *fakeApplicationRepo) Create(_ context.Context, app *repository.Applicat
 	return app.ID, nil
 }
 
+func (r *fakeApplicationRepo) CreateWithSigninMethods(ctx context.Context, app *repository.Application, _ []int64) (int64, error) {
+	return r.Create(ctx, app)
+}
+
 func (r *fakeApplicationRepo) GetByID(_ context.Context, id int64) (*repository.Application, error) {
 	item, ok := r.items[id]
 	if !ok {
@@ -60,6 +64,10 @@ func (r *fakeApplicationRepo) Update(_ context.Context, app *repository.Applicat
 	clone := *app
 	r.items[app.ID] = &clone
 	return nil
+}
+
+func (r *fakeApplicationRepo) UpdateWithSigninMethods(ctx context.Context, app *repository.Application, _ *[]int64) error {
+	return r.Update(ctx, app)
 }
 
 func (r *fakeApplicationRepo) Delete(_ context.Context, id int64) error {

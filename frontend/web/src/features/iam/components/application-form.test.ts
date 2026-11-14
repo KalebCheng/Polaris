@@ -15,7 +15,7 @@ function app(over: Partial<Application>): Application {
 }
 
 /** 可提交的最小表单（含合法标识，避免先被其他校验拦下） */
-const baseForm = { ...emptyApplicationForm, code: 'portal', name: 'Portal' }
+const baseForm = { ...emptyApplicationForm, code: 'portal', name: 'Portal', signin_method_ids: [1] }
 
 describe('登录失败限制字段', () => {
   it('新应用默认对齐 Casdoor：5 次 / 15 分钟', () => {
@@ -46,6 +46,19 @@ describe('登录失败限制字段', () => {
     expect(negative).toEqual({ ok: false, reason: 'applications.signinLimitNegative' })
     const negativeWait = formToApplicationValidation({ ...baseForm, signin_retry_wait_minutes: -5 })
     expect(negativeWait).toEqual({ ok: false, reason: 'applications.signinLimitNegative' })
+  })
+})
+
+describe('应用登录方式选择', () => {
+  it('编辑回显组织方法主键，提交只带选择列表', () => {
+    const form = applicationToForm(
+      app({ signin_methods: [{ id: 7, name: 'Password', displayName: 'Password' }] }),
+    )
+    expect(form.signin_method_ids).toEqual([7])
+    const payload = formToApplication(form)
+    expect(payload.signin_method_ids).toEqual([7])
+    expect(payload).not.toHaveProperty('signin_methods')
+    expect(payload).not.toHaveProperty('providers')
   })
 })
 

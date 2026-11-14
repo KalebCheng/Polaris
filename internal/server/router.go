@@ -8,28 +8,29 @@ import (
 
 // Handlers 全部 HTTP 处理器
 type Handlers struct {
-	Auth        *handler.AuthHandler
-	OIDC        *handler.OIDCHandler
-	Health      *handler.HealthHandler
-	User        *handler.UserHandler
-	Institution *handler.InstitutionHandler
-	Department  *handler.DepartmentHandler
-	Application *handler.ApplicationHandler
-	Provider    *handler.ProviderHandler
-	Role        *handler.RoleHandler
-	Permission  *handler.PermissionHandler
-	JobTitle    *handler.JobTitleHandler
-	JobLevel    *handler.JobLevelHandler
-	Cert        *handler.CertHandler
-	Token       *handler.TokenHandler
-	Session     *handler.SessionHandler
-	Record      *handler.RecordHandler
-	Syncer      *handler.SyncerHandler
-	Provision   *handler.ProvisioningHandler
-	Connection  *handler.ConnectionHandler
-	Asyncd      *handler.AsyncdHandler
-	UserImport  *handler.UserImportHandler
-	Storage     *handler.StorageHandler
+	Auth         *handler.AuthHandler
+	OIDC         *handler.OIDCHandler
+	Health       *handler.HealthHandler
+	User         *handler.UserHandler
+	Institution  *handler.InstitutionHandler
+	SigninMethod *handler.SigninMethodHandler
+	Department   *handler.DepartmentHandler
+	Application  *handler.ApplicationHandler
+	Provider     *handler.ProviderHandler
+	Role         *handler.RoleHandler
+	Permission   *handler.PermissionHandler
+	JobTitle     *handler.JobTitleHandler
+	JobLevel     *handler.JobLevelHandler
+	Cert         *handler.CertHandler
+	Token        *handler.TokenHandler
+	Session      *handler.SessionHandler
+	Record       *handler.RecordHandler
+	Syncer       *handler.SyncerHandler
+	Provision    *handler.ProvisioningHandler
+	Connection   *handler.ConnectionHandler
+	Asyncd       *handler.AsyncdHandler
+	UserImport   *handler.UserImportHandler
+	Storage      *handler.StorageHandler
 }
 
 // RegisterRoutes 注册全部路由。
@@ -108,6 +109,13 @@ func RegisterRoutes(engine *gin.Engine, mw *Middleware, h *Handlers) {
 	org.GET("/stats", h.Institution.StatsAll)
 	org.PUT("/:id", mw.RequireAdmin(), h.Institution.Update)
 	org.DELETE("/:id", mw.RequireAdmin(), h.Institution.Delete)
+	// 组织级登录方式：定义由管理员维护，应用只做选择。
+	org.GET("/:id/signin-methods", mw.RequireAdmin(), h.SigninMethod.List)
+	org.GET("/:id/signin-methods/options", h.SigninMethod.Options)
+	org.POST("/:id/signin-methods", mw.RequireAdmin(), h.SigninMethod.Create)
+	org.PUT("/:id/signin-methods/:methodId", mw.RequireAdmin(), h.SigninMethod.Update)
+	org.POST("/:id/signin-methods/:methodId/state", mw.RequireAdmin(), h.SigninMethod.SetState)
+	org.DELETE("/:id/signin-methods/:methodId", mw.RequireAdmin(), h.SigninMethod.Delete)
 
 	// 部门（租户内的部门树；仅用于用户归属与筛选）
 	depts := authGroup.Group("/departments")

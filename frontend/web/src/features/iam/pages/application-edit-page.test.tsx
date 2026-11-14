@@ -14,7 +14,7 @@ vi.mock('../institution-context', () => ({
 }))
 
 vi.mock('@/shared/auth/auth-context', () => ({
-  useAuth: () => ({ can: () => true }),
+  useAuth: () => ({ can: () => true, isAdmin: false }),
 }))
 
 /** 已存在的应用（带合法回跳地址，保证主表单校验能过） */
@@ -40,7 +40,8 @@ const app = {
   access_mode: 'restricted',
   state: 'active',
   client_id: 'client-7',
-  signin_methods: [{ name: 'Password', displayName: 'Password' }],
+  signin_methods: [{ id: 1, name: 'Password', displayName: 'Password' }],
+  signin_method_ids: [1],
   created_at: '2026-10-15T02:00:00Z',
   updated_at: '2026-10-15T02:00:00Z',
 } as unknown as Application
@@ -53,7 +54,26 @@ const accessDetail: ApplicationAccess = {
 }
 
 const setAccess = vi.fn(async () => accessDetail)
-const listProviders = vi.fn(async () => ({ items: [] }))
+const listSigninMethods = vi.fn(async () => ({
+  items: [
+    {
+      id: 1,
+      institution_id: 1,
+      name: 'Password',
+      display_name: 'Password',
+      identifiers: ['username'],
+      ttl_seconds: 0,
+      mfa_enabled: false,
+      mfa_required: false,
+      mfa_provider_ids: [],
+      sort_order: 10,
+      state: 'active',
+      application_count: 1,
+      created_at: '',
+      updated_at: '',
+    },
+  ],
+}))
 
 vi.mock('../api', () => ({
   applicationApi: {
@@ -69,7 +89,7 @@ vi.mock('../api', () => ({
         ? { items: [{ id: 102, name: 'lisi', display_name: '李四' }], total: 1 }
         : { items: [], total: 0 },
   },
-  providerApi: { list: (...args: unknown[]) => listProviders(...(args as [])) },
+  signinMethodApi: { options: (...args: unknown[]) => listSigninMethods(...(args as [])) },
   certApi: { list: async () => ({ items: [] }) },
   jobTitleApi: { list: async () => ({ items: [] }) },
   accountStrategyApi: {
@@ -115,11 +135,10 @@ describe('ApplicationEditPage 保存访问授权', () => {
   it('回显已保存的受限名单，并在保存时把"新增后"的最新名单提交上去', async () => {
     const user = userEvent.setup()
     setAccess.mockClear()
-    listProviders.mockClear()
+    listSigninMethods.mockClear()
     renderPage()
 
-    // 应用向导同时使用 oauth/email/sms/mfa；不能只加载 oauth，否则 MFA 选项为空。
-    await waitFor(() => expect(listProviders).toHaveBeenCalledWith({ institution: '1', size: 200 }))
+    await waitFor(() => expect(listSigninMethods).toHaveBeenCalledWith(1))
 
     // 等应用加载完（第 1 步的标识回填），再点步骤条最后一步「授权与访问」
     await waitFor(() => expect(screen.getByDisplayValue('portal')).toBeInTheDocument())

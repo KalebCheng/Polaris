@@ -146,7 +146,12 @@ func (s *AuthService) Signup(ctx context.Context, req SignupRequest, ip, userAge
 	if err != nil {
 		return created, nil, nil, nil // 注册已成功，自动登录失败不阻断
 	}
-	challenge, _, _, mfaErr := s.applyMFA(ctx, session, app, repository.SigninMethodPassword, created, "", "", false)
+	passwordMethod, ok, methodErr := s.findSigninMethod(ctx, org.ID, app, repository.SigninMethodPassword)
+	if methodErr != nil || !ok {
+		_ = s.sessions.Delete(ctx, session)
+		return created, nil, nil, nil
+	}
+	challenge, _, _, mfaErr := s.applyMFA(ctx, session, passwordMethod, created, "", "", false)
 	if mfaErr != nil {
 		_ = s.sessions.Delete(ctx, session)
 		return created, nil, nil, nil

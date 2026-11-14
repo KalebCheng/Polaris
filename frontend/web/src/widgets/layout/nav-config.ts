@@ -5,6 +5,7 @@ import {
   Network,
   PlugZap,
   ScrollText,
+  ShieldCheck,
   Timer,
   Users,
   UsersRound,
@@ -133,6 +134,8 @@ export interface NavItem {
   icon: LucideIcon
   /** 需要的读取权限资源；为空表示不校验 */
   resource?: string
+  /** 仅管理员可见（认证方式接口本身也要求 admin） */
+  adminOnly?: boolean
 }
 
 export interface NavSection {
@@ -149,6 +152,10 @@ export const workspaceSections: NavSection[] = [
   {
     labelKey: 'nav.groupOverview',
     items: [{ to: '', labelKey: 'nav.overview', icon: LayoutDashboard }],
+  },
+  {
+    labelKey: 'nav.groupConfig',
+    items: [{ to: '/signin-methods', labelKey: 'nav.authentication', icon: ShieldCheck, adminOnly: true }],
   },
   {
     labelKey: 'nav.directory',

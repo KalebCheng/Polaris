@@ -42,16 +42,13 @@ TEST_PROVIDERS=""
 # 资源路径参数统一用数字主键 id（创建后从响应里取）
 USER_ID=""; SIGNUP_USER_ID=""; ROLE_ID=""; DEPT_ID=""; DEPT_CHILD_ID=""
 USER5_ID=""; DEPT5_ID=""; GROUP5_ID=""; ADMIN_ID=""
-BUILTIN_APP_ID=""; TEST_APP_ID=""; STORAGE_ID=""; CAPTCHA_ID=""; EMAIL_ID=""
+BUILTIN_APP_ID=""; TEST_APP_ID=""; LOGIN_APP_ID=""; STORAGE_ID=""; CAPTCHA_ID=""; EMAIL_ID=""
 CONNECTOR_ID=""; STRATEGY_ID=""; ORG_ID=""
 REDIRECT_URI="${REDIRECT_URI:-http://localhost:5173/oauth/callback}"
 
 # 退出时清理测试资源（含失败场景）：残留的 Captcha 提供商会让后续登录要求验证码
 cleanup() {
   if [ -n "${JAR:-}" ] && [ -f "$JAR" ]; then
-    for PID in ${TEST_PROVIDERS:-}; do
-      curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/providers/$PID" >/dev/null 2>&1 || true
-    done
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/users/${USER_ID:-0}" >/dev/null 2>&1 || true
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/users/${SIGNUP_USER_ID:-0}" >/dev/null 2>&1 || true
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/job-titles/${GROUP5_ID:-0}" >/dev/null 2>&1 || true
@@ -64,6 +61,11 @@ cleanup() {
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/connectors/${CONNECTOR_ID:-0}" >/dev/null 2>&1 || true
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/account-strategies/${STRATEGY_ID:-0}" >/dev/null 2>&1 || true
     curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/applications/${TEST_APP_ID:-0}" >/dev/null 2>&1 || true
+    curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/applications/${LOGIN_APP_ID:-0}" >/dev/null 2>&1 || true
+    curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/institutions/${ORG_ID:-0}/signin-methods/${SIGNIN_OIDC_ID:-0}" >/dev/null 2>&1 || true
+    for PID in ${TEST_PROVIDERS:-}; do
+      curl -sS -b "$JAR" -X DELETE "$BASE/api/v1/providers/$PID" >/dev/null 2>&1 || true
+    done
   fi
 }
 trap cleanup EXIT
@@ -528,6 +530,17 @@ green "PASS  移动后层级 = $MOVED_LEVEL"
 expect_code 200 "$(code -b "$JAR" -X DELETE "$BASE/api/v1/departments/$DEPT_CHILD_ID")" "删除子部门 → 200"
 expect_code 200 "$(code -b "$JAR" -X DELETE "$BASE/api/v1/departments/$DEPT_ID")" "删除部门 → 200"
 
+step "11c. 组织级登录方式（应用只选择）"
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/institutions/$ORG_ID/signin-methods")" "GET 组织登录方式列表 → 200"
+SIGNIN_PASSWORD_ID="$(python3 -c "import json
+d=json.load(open('/tmp/polaris-smoke-body'))['data']['items']
+print(next((i['id'] for i in d if i.get('name') == 'Password'), ''))")"
+if [ -z "$SIGNIN_PASSWORD_ID" ]; then red "FAIL  未取得 Password 登录方式 id"; exit 1; fi
+green "PASS  组织 Password 登录方式 id=$SIGNIN_PASSWORD_ID"
+expect_code 409 "$(code -b "$JAR" -X POST "$BASE/api/v1/institutions/$ORG_ID/signin-methods" -H 'Content-Type: application/json' \
+  --data-raw '{"name":"Password","identifiers":["username"]}')" "重复 Password 登录方式 → 409"
+expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/institutions/$ORG_ID/signin-methods/options")" "GET 应用向导登录方式候选 → 200"
+
 step "12. 应用与密钥（标识 code + 自动生成凭据 + 登录方式）"
 expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/applications?institution=$ORG_ID&size=200")" "GET /applications（定位内置应用）→ 200"
 BUILTIN_APP_ID="$(list_id code "$APP")"
@@ -535,7 +548,7 @@ if [ -z "$BUILTIN_APP_ID" ]; then red "FAIL  未找到内置应用 id"; exit 1; 
 expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/applications/$BUILTIN_APP_ID")" "查询内置应用（按 id）→ 200"
 # 客户端 ID / 密钥不再由调用方传入：请求体只给 code / name / 登录方式等策略字段
 expect_code 201 "$(code -b "$JAR" -X POST "$BASE/api/v1/applications" -H 'Content-Type: application/json' \
-  --data-raw "$(printf '{"institution_id":%s,"code":"%s","name":"冒烟应用","signin_methods":[{"name":"Password","identifiers":["username"],"mfaEnabled":false,"mfaProviderIds":[]}],"self_signup_enabled":true,"signup_auto_signin":true,"grant_types":["authorization_code","refresh_token","password"],"redirect_uris":["%s"],"cert_id":null}' "$ORG_ID" "$TEST_APP" "$REDIRECT_URI")")" \
+  --data-raw "$(printf '{"institution_id":%s,"code":"%s","name":"冒烟应用","signin_method_ids":[%s],"self_signup_enabled":true,"signup_auto_signin":true,"grant_types":["authorization_code","refresh_token","password"],"redirect_uris":["%s"],"cert_id":null}' "$ORG_ID" "$TEST_APP" "$SIGNIN_PASSWORD_ID" "$REDIRECT_URI")")" \
   "创建测试应用 → 201"
 TEST_APP_ID="$(json_field id)"
 CLIENT_ID="$(json_field client_id)"
@@ -556,7 +569,7 @@ green "PASS  详情接口未下发密钥明文"
 # 回归：应用是"标识(code)与名称(name)分离"的资源，保存时名称不得被标识覆盖。
 # 历史 bug：handler 把路径 id 解析出的标识写进了 Name，导致每次保存都把「名称」变成标识。
 expect_code 200 "$(code -b "$JAR" -X PUT "$BASE/api/v1/applications/$TEST_APP_ID" -H 'Content-Type: application/json' \
-  --data-raw "$(printf '{"name":"Net Bird Smoke","signin_methods":[{"name":"Password","identifiers":["username"],"mfaEnabled":false,"mfaProviderIds":[]}],"self_signup_enabled":true,"signup_auto_signin":true,"grant_types":["authorization_code","refresh_token","password"],"redirect_uris":["%s"]}' "$REDIRECT_URI")")" \
+  --data-raw "$(printf '{"name":"Net Bird Smoke","signin_method_ids":[%s],"self_signup_enabled":true,"signup_auto_signin":true,"grant_types":["authorization_code","refresh_token","password"],"redirect_uris":["%s"]}' "$SIGNIN_PASSWORD_ID" "$REDIRECT_URI")")" \
   "更新应用名称 → 200"
 expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/applications/$TEST_APP_ID")" "回读应用 → 200"
 UPDATED_NAME="$(json_field name)"
@@ -604,7 +617,7 @@ expect_code 201 "$(code -X POST "$BASE/api/v1/auth/signup" -H 'Content-Type: app
   "自助注册 → 201"
 # 关闭自助注册后必须立刻拒绝（配置即生效）
 expect_code 200 "$(code -b "$JAR" -X PUT "$BASE/api/v1/applications/$TEST_APP_ID" -H 'Content-Type: application/json' \
-  --data-raw "$(printf '{"institution_id":%s,"code":"%s","name":"冒烟应用","signin_methods":[{"name":"Password","identifiers":["username"],"mfaEnabled":false,"mfaProviderIds":[]}],"self_signup_enabled":false,"grant_types":["authorization_code","refresh_token","password"],"redirect_uris":["%s"]}' "$ORG_ID" "$TEST_APP" "$REDIRECT_URI")")" \
+  --data-raw "$(printf '{"institution_id":%s,"code":"%s","name":"冒烟应用","signin_method_ids":[%s],"self_signup_enabled":false,"grant_types":["authorization_code","refresh_token","password"],"redirect_uris":["%s"]}' "$ORG_ID" "$TEST_APP" "$SIGNIN_PASSWORD_ID" "$REDIRECT_URI")")" \
   "关闭自助注册 → 200"
 expect_code 403 "$(code -X POST "$BASE/api/v1/auth/signup" -H 'Content-Type: application/json' \
   --data-raw "$(printf '{"institution":"%s","application":"%s","name":"%s-b","email":"%s-b@example.com","password":"Smoke-pass-123"}' "$ORG" "$TEST_APP" "$TEST_SIGNUP_USER" "$TEST_SIGNUP_USER")")" \
@@ -616,7 +629,7 @@ expect_code 200 "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/${SIGNUP_USER_ID
 step "12d. 配置即生效：应用级登录失败限制"
 # 应用级覆盖平台默认（5 次 / 5 分钟）：限制 2 次失败、等待 1 分钟
 expect_code 200 "$(code -b "$JAR" -X PUT "$BASE/api/v1/applications/$TEST_APP_ID" -H 'Content-Type: application/json' \
-  --data-raw "$(printf '{"institution_id":%s,"code":"%s","name":"冒烟应用","signin_methods":[{"name":"Password","identifiers":["username"],"mfaEnabled":false,"mfaProviderIds":[]}],"self_signup_enabled":false,"grant_types":["authorization_code","refresh_token","password"],"redirect_uris":["%s"],"signin_error_limit":2,"signin_retry_wait_minutes":1}' "$ORG_ID" "$TEST_APP" "$REDIRECT_URI")")" \
+  --data-raw "$(printf '{"institution_id":%s,"code":"%s","name":"冒烟应用","signin_method_ids":[%s],"self_signup_enabled":false,"grant_types":["authorization_code","refresh_token","password"],"redirect_uris":["%s"],"signin_error_limit":2,"signin_retry_wait_minutes":1}' "$ORG_ID" "$TEST_APP" "$SIGNIN_PASSWORD_ID" "$REDIRECT_URI")")" \
   "配置应用级登录失败限制（2 次 / 1 分钟）→ 200"
 expect_code 401 "$(code -X POST "$BASE/api/v1/auth/login" -H 'Content-Type: application/json' \
   --data-raw "$(login_body "$ORG" "$ADMIN" 'wrong-password' "$TEST_APP")")" "第 1 次错误密码 → 401"
@@ -626,7 +639,7 @@ expect_code 429 "$(code -X POST "$BASE/api/v1/auth/login" -H 'Content-Type: appl
   --data-raw "$(login_body "$ORG" "$ADMIN" 'wrong-password' "$TEST_APP")")" "达到应用级上限（2 次）→ 429"
 # 复位为 0 = 沿用平台默认（随后用例不再受该阈值影响；计数键按「组织+应用+账号+IP」隔离）
 expect_code 200 "$(code -b "$JAR" -X PUT "$BASE/api/v1/applications/$TEST_APP_ID" -H 'Content-Type: application/json' \
-  --data-raw "$(printf '{"institution_id":%s,"code":"%s","name":"冒烟应用","signin_methods":[{"name":"Password","identifiers":["username"],"mfaEnabled":false,"mfaProviderIds":[]}],"self_signup_enabled":false,"grant_types":["authorization_code","refresh_token","password"],"redirect_uris":["%s"],"signin_error_limit":0,"signin_retry_wait_minutes":0}' "$ORG_ID" "$TEST_APP" "$REDIRECT_URI")")" \
+  --data-raw "$(printf '{"institution_id":%s,"code":"%s","name":"冒烟应用","signin_method_ids":[%s],"self_signup_enabled":false,"grant_types":["authorization_code","refresh_token","password"],"redirect_uris":["%s"],"signin_error_limit":0,"signin_retry_wait_minutes":0}' "$ORG_ID" "$TEST_APP" "$SIGNIN_PASSWORD_ID" "$REDIRECT_URI")")" \
   "复位登录失败限制（0 = 平台默认）→ 200"
 
 step "12e. 应用访问授权（谁能使用该应用）"
@@ -713,7 +726,7 @@ expect_code 200 "$(code -X POST "$BASE/api/v1/auth/login" -H 'Content-Type: appl
 
 # 回归：应用主表单是整行 UPDATE，**不得**重置访问模式（否则受限被静默放宽成全员可访问）
 expect_code 200 "$(code -b "$JAR" -X PUT "$BASE/api/v1/applications/$TEST_APP_ID" -H 'Content-Type: application/json' \
-  --data-raw "$(printf '{"name":"Net Bird Smoke","signin_methods":[{"name":"Password","identifiers":["username"],"mfaEnabled":false,"mfaProviderIds":[]}],"self_signup_enabled":true,"signup_auto_signin":true,"grant_types":["authorization_code","refresh_token","password"],"redirect_uris":["%s"]}' "$REDIRECT_URI")")" \
+  --data-raw "$(printf '{"name":"Net Bird Smoke","signin_method_ids":[%s],"self_signup_enabled":true,"signup_auto_signin":true,"grant_types":["authorization_code","refresh_token","password"],"redirect_uris":["%s"]}' "$SIGNIN_PASSWORD_ID" "$REDIRECT_URI")")" \
   "更新应用主表单（不带 access_mode）→ 200"
 expect_code 200 "$(code -b "$JAR" "$BASE/api/v1/applications/$TEST_APP_ID/access")" "回读访问授权 → 200"
 expect_ok "主表单更新后访问模式仍是 restricted" "
@@ -738,7 +751,7 @@ expect_code 400 "$(code -b "$JAR" -X PUT "$BASE/api/v1/applications/$TEST_APP_ID
 expect_code 200 "$(code -b "$JAR" -X PUT "$BASE/api/v1/applications/$TEST_APP_ID/access" -H 'Content-Type: application/json' \
   --data-raw '{"access_mode":"restricted","user_ids":[],"job_title_ids":[],"department_ids":[]}')" \
   "移出名单（受限 + 空名单）→ 200"
-AUTHORIZE_LOCATION="$(curl -sS -o /dev/null -w '%{redirect_url}' -b "$JAR_A" \
+AUTHORIZE_LOCATION="$(curl -sS -o /dev/null -w '%{redirect_url}' -b "$JAR" \
   "$BASE/oauth/authorize?client_id=$CLIENT_ID&redirect_uri=$REDIRECT_URI&response_type=code&scope=openid&state=smoke-denied")"
 case "$AUTHORIZE_LOCATION" in
   *"error=access_denied"*)
@@ -897,6 +910,11 @@ expect_code 201 "$(code -b "$JAR" -X POST "$BASE/api/v1/providers" -H 'Content-T
   "创建 OIDC 提供商（策略走 policy 桶）→ 201"
 OIDC_ID="$(json_field id)"
 TEST_PROVIDERS="$TEST_PROVIDERS $OIDC_ID"
+expect_code 201 "$(code -b "$JAR" -X POST "$BASE/api/v1/institutions/$ORG_ID/signin-methods" -H 'Content-Type: application/json' \
+  --data-raw "$(printf '{"name":"Provider","display_name":"冒烟 OIDC","provider_id":%s,"mfa_enabled":false,"sort_order":30}' "$OIDC_ID")")" \
+  "创建组织 Provider 登录方式 → 201"
+SIGNIN_OIDC_ID="$(json_field id)"
+if [ -z "$SIGNIN_OIDC_ID" ]; then red "FAIL  未取得 Provider 登录方式 id"; exit 1; fi
 # 响应不得回发明文密钥，只以 has_secret 表达
 OIDC_BODY="$(curl -sS -b "$JAR" "$BASE/api/v1/providers/$OIDC_ID")"
 case "$OIDC_BODY" in
@@ -928,7 +946,7 @@ esac
 # 应用显式配置该提供方后，登录页立即可见（无需重启），且必须带 type/icon
 TEST_LOGIN_APP="smoke-login-$RUN_ID"
 expect_code 201 "$(code -b "$JAR" -X POST "$BASE/api/v1/applications" -H 'Content-Type: application/json' \
-  --data-raw "$(printf '{"institution_id":%s,"code":"%s","name":"冒烟登录应用","grant_types":["password"],"signin_methods":[{"name":"Password","identifiers":["username"],"mfaEnabled":false,"mfaProviderIds":[]},{"name":"Provider","mfaEnabled":false,"mfaProviderIds":[]}],"providers":[{"name":"%s","canSignIn":true}]}' "$ORG_ID" "$TEST_LOGIN_APP" "$OIDC_NAME")")" \
+  --data-raw "$(printf '{"institution_id":%s,"code":"%s","name":"冒烟登录应用","grant_types":["password"],"signin_method_ids":[%s,%s]}' "$ORG_ID" "$TEST_LOGIN_APP" "$SIGNIN_PASSWORD_ID" "$SIGNIN_OIDC_ID")")" \
   "创建显式配置提供方的应用 → 201"
 LOGIN_APP_ID="$(json_field id)"
 LOGIN_APP_CLIENT_ID="$(json_field client_id)"
@@ -1031,6 +1049,7 @@ d = json.load(open('/tmp/polaris-smoke-body'))['data']['summary']
 print('OK' if d['created'] == 0 and d['skipped'] == 2 else 'summary=%r' % d)"
 
 step "24. 清理测试资源"
+expect_code 200 "$(code -b "$JAR" -X DELETE "$BASE/api/v1/institutions/$ORG_ID/signin-methods/$SIGNIN_OIDC_ID")" "删除 Provider 登录方式 → 200"
 for PID in ${TEST_PROVIDERS}; do
   expect_code 200 "$(code -b "$JAR" -X DELETE "$BASE/api/v1/providers/$PID")" "删除提供商 id=$PID → 200"
 done

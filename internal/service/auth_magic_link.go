@@ -74,14 +74,18 @@ func (s *AuthService) SendMagicLink(ctx context.Context, req MagicLinkRequest, h
 	if err != nil {
 		return err
 	}
-	app, err := s.resolveMagicLinkApp(ctx, resolvedOrg, req)
+	app, err := s.resolveMagicLinkApp(ctx, org.ID, req)
 	if err != nil {
 		return err
 	}
 	if err := s.enforceSigninPolicy(app, ip); err != nil {
 		return err
 	}
-	if app == nil || !app.HasSigninMethod(repository.SigninMethodMagicLink) {
+	method, ok, err := s.findSigninMethod(ctx, org.ID, app, repository.SigninMethodMagicLink)
+	if err != nil {
+		return err
+	}
+	if !ok || method.ProviderID == 0 {
 		return bizerrors.New(bizerrors.CodeForbidden, "magic link sign-in is disabled for this application")
 	}
 	if s.magicLinks == nil {
@@ -114,24 +118,20 @@ func (s *AuthService) SendMagicLink(ctx context.Context, req MagicLinkRequest, h
 	// 防用户枚举：账号不存在时静默返回成功，不投递、不泄露存在性。
 	if _, err := s.users.GetByEmail(ctx, org.ID, email); err != nil {
 		s.audits.Record(ctx, email, org.ID, "auth.magic_link.send", email,
-			map[string]interface{}{"delivered": false, "application": app.Code})
+			map[string]interface{}{"delivered": false, "application": applicationCode(app)})
 		return nil
 	}
 
-	method, ok := app.FindSigninMethod(repository.SigninMethodMagicLink)
-	if !ok || method.ProviderID == 0 {
-		return bizerrors.ErrProviderUnavailable.WithDetail("provider", "magic_link")
-	}
-	_, tpl, err := s.templates.ResolveNotification(ctx, app.InstitutionID, method.ProviderID, method.TemplateID,
+	_, tpl, err := s.templates.ResolveNotification(ctx, org.ID, method.ProviderID, method.TemplateID,
 		repository.TemplateSceneMagicLink, providerpkg.CategoryEmail)
 	if err != nil {
 		return err
 	}
-	ttl := appMagicLinkTTL(app)
+	ttl := durationFromSeconds(method.TTLSeconds)
 	token := randomBase64(32)
 	payload, err := json.Marshal(magicLinkPayload{
 		Institution: resolvedOrg,
-		Application: app.Code,
+		Application: applicationCode(app),
 		Email:       email,
 		From:        req.From,
 		ProviderID:  method.ProviderID,
@@ -145,7 +145,7 @@ func (s *AuthService) SendMagicLink(ctx context.Context, req MagicLinkRequest, h
 		return bizerrors.Wrap(bizerrors.CodeRedisError, "redis error", err)
 	}
 
-	provider, tpl, err := s.templates.ResolveNotification(ctx, app.InstitutionID, method.ProviderID, tpl.ID,
+	provider, tpl, err := s.templates.ResolveNotification(ctx, org.ID, method.ProviderID, tpl.ID,
 		repository.TemplateSceneMagicLink, providerpkg.CategoryEmail)
 	if err != nil {
 		return err
@@ -154,7 +154,11 @@ func (s *AuthService) SendMagicLink(ctx context.Context, req MagicLinkRequest, h
 	if err != nil {
 		return bizerrors.Wrap(bizerrors.CodeProviderUnavailable, "notification provider unavailable", err)
 	}
-	link := s.magicLinkURL(host, token, app.ClientID)
+	clientID := ""
+	if app != nil {
+		clientID = app.ClientID
+	}
+	link := s.magicLinkURL(host, token, clientID)
 	minutes := int(ttl.Minutes())
 	if minutes <= 0 {
 		minutes = 1
@@ -165,13 +169,13 @@ func (s *AuthService) SendMagicLink(ctx context.Context, req MagicLinkRequest, h
 			providerpkg.TemplateVarLink:        link,
 			providerpkg.TemplateVarMinutes:     strconv.Itoa(minutes),
 			providerpkg.TemplateVarInstitution: resolvedOrg,
-			providerpkg.TemplateVarApplication: orDefault(app.Name, app.Code),
+			providerpkg.TemplateVarApplication: applicationDisplayName(app, org),
 		},
 	}); err != nil {
 		return bizerrors.Wrap(bizerrors.CodeProviderUnavailable, "send notification failed", err)
 	}
 	s.audits.Record(ctx, email, org.ID, "auth.magic_link.send", email,
-		map[string]interface{}{"delivered": true, "application": app.Code})
+		map[string]interface{}{"delivered": true, "application": applicationCode(app)})
 	return nil
 }
 
@@ -208,18 +212,22 @@ func (s *AuthService) VerifyMagicLink(ctx context.Context, req MagicLinkVerifyRe
 	if err != nil {
 		return nil, "", err
 	}
-	app, err := s.resolveApplicationOptional(ctx, orgName, payload.Application)
+	app, err := s.resolveMagicLinkAppByCode(ctx, org.ID, payload.Application)
 	if err != nil {
 		return nil, "", err
 	}
 	if err := s.enforceSigninPolicy(app, ip); err != nil {
 		return nil, "", err
 	}
-	if app != nil && !app.HasSigninMethod(repository.SigninMethodMagicLink) {
+	method, ok, err := s.findSigninMethod(ctx, org.ID, app, repository.SigninMethodMagicLink)
+	if err != nil {
+		return nil, "", err
+	}
+	if !ok || method.ProviderID == 0 {
 		return nil, "", bizerrors.New(bizerrors.CodeForbidden, "magic link sign-in is disabled for this application")
 	}
-	if app != nil && payload.ProviderID > 0 {
-		if _, _, resolveErr := s.templates.ResolveNotification(ctx, app.InstitutionID, payload.ProviderID,
+	if payload.ProviderID > 0 {
+		if _, _, resolveErr := s.templates.ResolveNotification(ctx, org.ID, payload.ProviderID,
 			payload.TemplateID, repository.TemplateSceneMagicLink, providerpkg.CategoryEmail); resolveErr != nil {
 			return nil, "", resolveErr
 		}
@@ -237,7 +245,7 @@ func (s *AuthService) VerifyMagicLink(ctx context.Context, req MagicLinkVerifyRe
 	if err != nil {
 		return nil, "", err
 	}
-	challenge, _, _, err := s.applyMFA(ctx, session, app, repository.SigninMethodMagicLink, user, "", "", false)
+	challenge, _, _, err := s.applyMFA(ctx, session, method, user, "", "", false)
 	if err != nil {
 		_ = s.sessions.Delete(ctx, session)
 		return nil, "", err
@@ -256,17 +264,34 @@ func (s *AuthService) VerifyMagicLink(ctx context.Context, req MagicLinkVerifyRe
 	return resp, session.ID, nil
 }
 
-// resolveMagicLinkApp 解析目标应用：优先 client_id（应用驱动），否则按 organization+application。
-// 与验证码登录的差异：魔法链接必须落在某个应用上，故不宽松回退到 nil——组织无应用时直接报错。
-func (s *AuthService) resolveMagicLinkApp(ctx context.Context, institution string, req MagicLinkRequest) (*repository.Application, error) {
+// resolveMagicLinkApp 解析显式应用上下文；两者都空表示平台级魔法链接。
+func (s *AuthService) resolveMagicLinkApp(ctx context.Context, institutionID int64, req MagicLinkRequest) (*repository.Application, error) {
 	if clientID := strings.TrimSpace(req.ClientID); clientID != "" {
 		app, err := s.apps.GetByClientID(ctx, clientID)
 		if err != nil {
 			return nil, bizerrors.NewWithCode(bizerrors.CodeApplicationNotFound).WithDetail("client_id", clientID)
 		}
+		if app.InstitutionID != institutionID {
+			return nil, bizerrors.NewWithCode(bizerrors.CodeApplicationNotFound).WithDetail("client_id", clientID)
+		}
 		return app, nil
 	}
-	return s.resolveApplication(ctx, institution, req.Application)
+	if code := strings.TrimSpace(req.Application); code != "" {
+		return s.resolveMagicLinkAppByCode(ctx, institutionID, code)
+	}
+	return nil, nil
+}
+
+func (s *AuthService) resolveMagicLinkAppByCode(ctx context.Context, institutionID int64, code string) (*repository.Application, error) {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return nil, nil
+	}
+	app, err := s.apps.GetByCode(ctx, institutionID, code)
+	if err != nil {
+		return nil, bizerrors.NewWithCode(bizerrors.CodeApplicationNotFound).WithDetail("application", code)
+	}
+	return app, nil
 }
 
 // magicLinkURL 生成邮件中的落地链接（指向前端 /magic 页）。
@@ -290,14 +315,6 @@ func (s *AuthService) magicLinkURL(host, token, clientID string) string {
 		link += "&client_id=" + clientID
 	}
 	return link
-}
-
-// appMagicLinkTTL 取应用配置的魔法链接有效期，未配置时回退默认 10 分钟。
-func appMagicLinkTTL(app *repository.Application) time.Duration {
-	if app == nil || app.MagicLinkTTLSeconds <= 0 {
-		return 10 * time.Minute
-	}
-	return time.Duration(app.MagicLinkTTLSeconds) * time.Second
 }
 
 // applicationCode 取应用标识（应用可为 nil：登录链路允许无应用）。

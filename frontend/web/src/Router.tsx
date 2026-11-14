@@ -20,6 +20,7 @@ const MagicLinkPage = lazy(() => import('@/features/auth/magic-link-page'))
 const DashboardPage = lazy(() => import('@/pages/dashboard-page'))
 const InstitutionsPage = lazy(() => import('@/features/iam/pages/institutions-page'))
 const InstitutionEditPage = lazy(() => import('@/features/iam/pages/institution-edit-page'))
+const SigninMethodsPage = lazy(() => import('@/features/iam/pages/signin-methods-page'))
 const InstitutionOverviewPage = lazy(() => import('@/pages/institution-detail-page'))
 const UsersPage = lazy(() => import('@/features/iam/pages/users-page'))
 const UserDetailPage = lazy(() => import('@/features/iam/pages/user-detail-page'))
@@ -141,6 +142,7 @@ export function Router() {
               {/* 组织内（工作区）：左侧导航 + 内容 */}
               <Route path="/institutions/:inst" element={<WorkspaceLayout />}>
                 <Route index element={<InstitutionOverviewPage />} />
+                <Route path="signin-methods" element={<SigninMethodsPage />} />
                 <Route path="departments" element={<DepartmentsPage />} />
                 <Route path="users" element={<UsersPage />} />
                 <Route path="users/new" element={<UserEditPage />} />

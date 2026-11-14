@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { platformNav, securityTabs, settingsTabs } from './nav-config'
+import { platformNav, securityTabs, settingsTabs, workspaceSections } from './nav-config'
 
 /**
  * 回归：任务中心与审计日志**是「设置」下的二级页**，不是一级导航。
@@ -42,5 +42,18 @@ describe('平台级导航结构', () => {
     for (const path of ['/security/certs', '/security/tokens', '/security/sessions']) {
       expect(securityTabs.filter((tab) => tab.isActive(path))).toHaveLength(1)
     }
+  })
+})
+
+describe('工作区导航结构', () => {
+  it('「基础配置」只承载管理员可见的「认证方式」', () => {
+    const section = workspaceSections.find((item) => item.labelKey === 'nav.groupConfig')
+    expect(section?.items).toEqual([
+      expect.objectContaining({
+        to: '/signin-methods',
+        labelKey: 'nav.authentication',
+        adminOnly: true,
+      }),
+    ])
   })
 })

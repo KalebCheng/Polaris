@@ -45,6 +45,7 @@ type Application struct {
 	userRepo               *postgres.UserRepository
 	appRepo                *postgres.ApplicationRepository
 	appSubjectRepo         *postgres.ApplicationSubjectRepository
+	signinMethodRepo       *postgres.InstitutionSigninMethodRepository
 	providerRepo           *postgres.ProviderRepository
 	providerTemplateRepo   *postgres.ProviderTemplateRepository
 	userMFACredentialRepo  *postgres.UserMFACredentialRepository
@@ -79,34 +80,36 @@ type Application struct {
 	issuer          *oidc.Issuer
 
 	// 服务层
-	audits         *service.AuditRecorder
-	institutionSvc *service.InstitutionService
-	departmentSvc  *service.DepartmentService
-	userSvc        *service.UserService
-	userImportSvc  *service.UserImportService
-	lockoutSvc     *service.LoginLockoutService
-	applicationSvc *service.ApplicationService
-	appAccessSvc   *service.ApplicationAccessService
-	providerSvc    *service.ProviderService
-	templateSvc    *service.TemplateService
-	mfaSvc         *service.MFAService
-	roleSvc        *service.RoleService
-	permissionSvc  *service.PermissionService
-	jobTitleSvc    *service.JobTitleService
-	jobLevelSvc    *service.JobLevelService
-	certSvc        *service.CertService
-	tokenSvc       *service.TokenService
-	sessionSvc     *service.SessionService
-	recordSvc      *service.RecordService
-	syncerSvc      *service.SyncerService
-	provisionSvc   *service.ProvisioningService
-	authSvc        *service.AuthService
-	captchaSvc     *service.CaptchaService
-	storageSvc     *service.StorageService
-	codeStore      *redisrepo.CodeStore
-	magicLinkStore *redisrepo.MagicLinkStore
-	oidcSvc        *service.OIDCService
-	backchannelSvc *service.BackchannelLogoutService
+	audits          *service.AuditRecorder
+	institutionSvc  *service.InstitutionService
+	departmentSvc   *service.DepartmentService
+	userSvc         *service.UserService
+	userImportSvc   *service.UserImportService
+	lockoutSvc      *service.LoginLockoutService
+	applicationSvc  *service.ApplicationService
+	appAccessSvc    *service.ApplicationAccessService
+	providerSvc     *service.ProviderService
+	templateSvc     *service.TemplateService
+	signinMethodSvc *service.SigninMethodService
+	signinPolicy    *service.SigninPolicyResolver
+	mfaSvc          *service.MFAService
+	roleSvc         *service.RoleService
+	permissionSvc   *service.PermissionService
+	jobTitleSvc     *service.JobTitleService
+	jobLevelSvc     *service.JobLevelService
+	certSvc         *service.CertService
+	tokenSvc        *service.TokenService
+	sessionSvc      *service.SessionService
+	recordSvc       *service.RecordService
+	syncerSvc       *service.SyncerService
+	provisionSvc    *service.ProvisioningService
+	authSvc         *service.AuthService
+	captchaSvc      *service.CaptchaService
+	storageSvc      *service.StorageService
+	codeStore       *redisrepo.CodeStore
+	magicLinkStore  *redisrepo.MagicLinkStore
+	oidcSvc         *service.OIDCService
+	backchannelSvc  *service.BackchannelLogoutService
 
 	// HTTP
 	server       *server.Server
@@ -198,6 +201,13 @@ func (a *Application) initDB() error {
 			logger.Info("migrations applied", "versions", applied)
 		}
 	}
+	{
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		if err := postgres.BackfillLegacySigninMethods(ctx, a.db); err != nil {
+			return fmt.Errorf("回填组织登录方式失败: %w", err)
+		}
+	}
 	if a.cfg.Database.Seed {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
@@ -230,6 +240,7 @@ func (a *Application) initRepositories() {
 	a.userRepo = postgres.NewUserRepository(a.db)
 	a.appRepo = postgres.NewApplicationRepository(a.db)
 	a.appSubjectRepo = postgres.NewApplicationSubjectRepository(a.db)
+	a.signinMethodRepo = postgres.NewInstitutionSigninMethodRepository(a.db)
 	a.providerRepo = postgres.NewProviderRepository(a.db)
 	a.providerTemplateRepo = postgres.NewProviderTemplateRepository(a.db)
 	a.userMFACredentialRepo = postgres.NewUserMFACredentialRepository(a.db)
@@ -491,10 +502,18 @@ func (a *Application) initServices() {
 		postgres.NewAsyncdJobRunAttemptRepository(a.db),
 		postgres.NewAsyncdWorkerRepository(a.db),
 	)
+	a.templateSvc = service.NewTemplateService(
+		a.providerTemplateRepo, a.providerRepo, a.signinMethodRepo, a.providerRuntime, a.audits,
+	)
+	a.signinMethodSvc = service.NewSigninMethodService(
+		a.signinMethodRepo, a.providerRepo, a.templateSvc, a.audits,
+	)
+	a.signinPolicy = service.NewSigninPolicyResolver(a.signinMethodRepo, a.providerRepo, a.templateSvc)
 	a.institutionSvc = service.NewInstitutionService(service.InstitutionDeps{
 		Orgs: a.orgRepo, Users: a.userRepo, JobTitles: a.jobTitleRepo, Depts: a.deptRepo, JobLevels: a.jobLevelRepo, Roles: a.roleRepo,
 		Permissions: a.permRepo, Apps: a.appRepo, Providers: a.providerRepo,
-		Syncers: a.syncerRepo, Tokens: a.tokenRepo, Records: a.recordRepo, Audits: a.audits,
+		Syncers: a.syncerRepo, Tokens: a.tokenRepo, Records: a.recordRepo,
+		Signin: a.signinMethodSvc, Audits: a.audits,
 		Cipher: a.secretCipher,
 	})
 	a.departmentSvc = service.NewDepartmentService(a.deptRepo, a.orgRepo, a.userRepo, a.audits)
@@ -503,16 +522,15 @@ func (a *Application) initServices() {
 		int64(a.cfg.Auth.RateLimit.LoginMaxAttempts),
 		time.Duration(a.cfg.Auth.RateLimit.LoginWindowSeconds)*time.Second,
 	)
-	a.templateSvc = service.NewTemplateService(a.providerTemplateRepo, a.providerRepo, a.appRepo, a.providerRuntime, a.audits)
 	a.applicationSvc = service.NewApplicationServiceWithResources(
-		a.appRepo, a.orgRepo, a.providerRepo, a.templateSvc, a.audits,
+		a.appRepo, a.orgRepo, a.providerRepo, a.templateSvc, a.signinMethodSvc, a.signinPolicy, a.audits,
 	)
 	a.appAccessSvc = service.NewApplicationAccessService(
 		a.appSubjectRepo, a.userRepo, a.jobTitleRepo, a.deptRepo, a.userDeptRepo, a.sessionManager, a.audits,
 	)
 	a.storageSvc = service.NewStorageService(a.providerRuntime, a.userRepo, a.storageSettingsRepo, a.secretCipher, a.audits)
 	a.providerSvc = service.NewProviderService(
-		a.providerRepo, a.providerTemplateRepo, a.appRepo, a.orgRepo, a.syncerRepo,
+		a.providerRepo, a.providerTemplateRepo, a.signinMethodRepo, a.orgRepo, a.syncerRepo,
 		a.providerRuntime, a.oauthResolver, a.captchaSvc, a.storageSvc, a.audits,
 	)
 	a.jobLevelSvc = service.NewJobLevelService(a.jobLevelRepo, a.orgRepo, a.audits)
@@ -566,6 +584,7 @@ func (a *Application) initServices() {
 	a.backchannelSvc = service.NewBackchannelLogoutService(a.appRepo, a.tokenRepo, a.issuer, a.audits)
 	a.authSvc = service.NewAuthService(
 		a.orgRepo, a.userRepo, a.tokenRepo, a.appRepo, a.jobTitleRepo, a.providerRuntime, a.oauthResolver,
+		a.signinPolicy,
 		a.captchaSvc, a.mfaSvc, a.templateSvc, a.codeStore, a.magicLinkStore,
 		a.userSvc, a.sessionManager, a.jwtManager,
 		a.stateStore, a.rateLimitRepo, a.audits,
@@ -579,7 +598,8 @@ func (a *Application) initServices() {
 		},
 	)
 	a.oidcSvc = service.NewOIDCService(a.appRepo, a.userRepo, a.orgRepo, a.roleRepo, a.jobTitleRepo,
-		a.userDeptRepo, a.deptRepo, a.tokenRepo, a.issuer, a.audits, a.sessionManager, a.appAccessSvc)
+		a.userDeptRepo, a.deptRepo, a.tokenRepo, a.issuer, a.audits, a.sessionManager, a.appAccessSvc,
+		a.signinPolicy)
 	// 迁移期兜底：把 yaml 里的外部身份提供方种子写入提供商表（幂等）
 	a.seedOAuthProviders(context.Background())
 	logger.Info("services initialized")
@@ -594,27 +614,28 @@ func (a *Application) initServer() {
 	a.middleware.Register(a.server.Router())
 
 	handlers := &server.Handlers{
-		Auth:        handler.NewAuthHandler(a.authSvc, a.userSvc, a.applicationSvc),
-		OIDC:        handler.NewOIDCHandler(a.oidcSvc, a.authSvc),
-		Health:      handler.NewHealthHandler(a.db, a.redis),
-		User:        handler.NewUserHandler(a.userSvc, a.lockoutSvc, a.sessionSvc, a.provisionSvc, a.recordSvc, a.tokenSvc, a.storageSvc),
-		Institution: handler.NewInstitutionHandler(a.institutionSvc),
-		Department:  handler.NewDepartmentHandler(a.departmentSvc),
-		Application: handler.NewApplicationHandler(a.applicationSvc, a.appAccessSvc),
-		Provider:    handler.NewProviderHandler(a.providerSvc, a.templateSvc),
-		Storage:     handler.NewStorageHandler(a.storageSvc),
-		Role:        handler.NewRoleHandler(a.roleSvc),
-		Permission:  handler.NewPermissionHandler(a.permissionSvc),
-		JobTitle:    handler.NewJobTitleHandler(a.jobTitleSvc),
-		JobLevel:    handler.NewJobLevelHandler(a.jobLevelSvc),
-		Cert:        handler.NewCertHandler(a.certSvc),
-		Token:       handler.NewTokenHandler(a.tokenSvc),
-		Session:     handler.NewSessionHandler(a.sessionSvc),
-		Record:      handler.NewRecordHandler(a.recordSvc),
-		Syncer:      handler.NewSyncerHandler(a.syncerSvc),
-		Provision:   handler.NewProvisioningHandler(a.provisionSvc),
-		Connection:  handler.NewConnectionHandler(),
-		UserImport:  handler.NewUserImportHandler(a.userImportSvc, a.rateLimitRepo),
+		Auth:         handler.NewAuthHandler(a.authSvc, a.userSvc, a.applicationSvc),
+		OIDC:         handler.NewOIDCHandler(a.oidcSvc, a.authSvc),
+		Health:       handler.NewHealthHandler(a.db, a.redis),
+		User:         handler.NewUserHandler(a.userSvc, a.lockoutSvc, a.sessionSvc, a.provisionSvc, a.recordSvc, a.tokenSvc, a.storageSvc),
+		Institution:  handler.NewInstitutionHandler(a.institutionSvc),
+		SigninMethod: handler.NewSigninMethodHandler(a.signinMethodSvc),
+		Department:   handler.NewDepartmentHandler(a.departmentSvc),
+		Application:  handler.NewApplicationHandler(a.applicationSvc, a.appAccessSvc),
+		Provider:     handler.NewProviderHandler(a.providerSvc, a.templateSvc),
+		Storage:      handler.NewStorageHandler(a.storageSvc),
+		Role:         handler.NewRoleHandler(a.roleSvc),
+		Permission:   handler.NewPermissionHandler(a.permissionSvc),
+		JobTitle:     handler.NewJobTitleHandler(a.jobTitleSvc),
+		JobLevel:     handler.NewJobLevelHandler(a.jobLevelSvc),
+		Cert:         handler.NewCertHandler(a.certSvc),
+		Token:        handler.NewTokenHandler(a.tokenSvc),
+		Session:      handler.NewSessionHandler(a.sessionSvc),
+		Record:       handler.NewRecordHandler(a.recordSvc),
+		Syncer:       handler.NewSyncerHandler(a.syncerSvc),
+		Provision:    handler.NewProvisioningHandler(a.provisionSvc),
+		Connection:   handler.NewConnectionHandler(),
+		UserImport:   handler.NewUserImportHandler(a.userImportSvc, a.rateLimitRepo),
 		Asyncd: handler.NewAsyncdHandler(a.asyncdSvc, &jobOwnerResolver{
 			syncers: a.syncerRepo, connectors: a.connRepo,
 		}),

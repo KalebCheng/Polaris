@@ -15,11 +15,12 @@ interface WorkspaceNavProps {
 export function WorkspaceNav({ onNavigate }: WorkspaceNavProps) {
   const { t } = useTranslation()
   const { pathname } = useLocation()
-  const { can } = useAuth()
+  const { can, isAdmin } = useAuth()
   const { institutionId } = useCurrentInstitution()
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
 
-  const visible = (item: NavItem) => (!item.resource ? true : can(item.resource, 'read'))
+  const visible = (item: NavItem) =>
+    (!item.adminOnly || isAdmin) && (!item.resource || can(item.resource, 'read'))
   const disabled = !institutionId
 
   /** 选中判定与 `NavLink` 同口径（`end` 用于总览这类"前缀会命中子页"的条目） */
