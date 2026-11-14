@@ -10,10 +10,9 @@ import (
 
 type fakeSigninRepo struct {
 	repository.InstitutionSigninMethodRepository
-	items   []*repository.InstitutionSigninMethod
-	nextID  int64
-	apps    []*repository.Application
-	mfaByID map[int64][]int64
+	items  []*repository.InstitutionSigninMethod
+	nextID int64
+	apps   []*repository.Application
 }
 
 func (r *fakeSigninRepo) ensure() {

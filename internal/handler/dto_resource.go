@@ -290,13 +290,6 @@ func orEmptyTokenAttributes(v []repository.TokenAttribute) []repository.TokenAtt
 	return v
 }
 
-func orEmptyItems(v []repository.ProviderItem) []repository.ProviderItem {
-	if v == nil {
-		return []repository.ProviderItem{}
-	}
-	return v
-}
-
 func orEmptyMethods(v []repository.SigninMethod) []repository.SigninMethod {
 	if v == nil {
 		return []repository.SigninMethod{}
