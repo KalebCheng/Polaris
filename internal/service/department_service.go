@@ -33,28 +33,35 @@ func (s *DepartmentService) Create(ctx context.Context, actor string, d *reposit
 	if _, err := s.orgs.GetByID(ctx, d.InstitutionID); err != nil {
 		return nil, bizerrors.ErrNotFound.WithDetail("institution_id", d.InstitutionID)
 	}
-	if _, err := s.depts.GetByName(ctx, d.InstitutionID, d.Name); err == nil {
-		return nil, bizerrors.New(bizerrors.CodeConflict, "department already exists")
-	}
 
 	// 根节点只能由系统创建（组织创建时/迁移 040），不接受手工创建
 	d.IsRoot = false
 	// 未指定父部门时挂到组织根之下（Spec Q4.5：组织恒定作为部门树的根）
 	if d.ParentID == nil {
-		if root, err := s.depts.GetRoot(ctx, d.InstitutionID); err == nil {
-			d.ParentID = &root.ID
+		root, err := s.depts.GetRoot(ctx, d.InstitutionID)
+		if err != nil || root == nil {
+			return nil, bizerrors.New(bizerrors.CodeInternalError, "organization root department is missing")
 		}
+		d.ParentID = &root.ID
+	}
+	var parent *repository.Department
+	if d.ParentID != nil {
+		p, err := s.depts.GetByID(ctx, *d.ParentID)
+		if err != nil || p.InstitutionID != d.InstitutionID {
+			return nil, bizerrors.New(bizerrors.CodeInvalidParams, "invalid parent department")
+		}
+		parent = p
+	}
+	// 名称只在同一父级下唯一：不同父级允许同名。
+	if _, err := s.depts.GetByParentAndName(ctx, d.InstitutionID, d.ParentID, d.Name); err == nil {
+		return nil, bizerrors.New(bizerrors.CodeConflict, "department already exists under the same parent")
 	}
 	// 依据父部门补齐 code_path / name_path / level，并标记父节点 has_child
 	d.CodePath = d.Name
 	d.NamePath = defaultIfEmpty(d.DisplayName, d.Name)
 	d.ParentIDChain = []int64{}
 	d.Level = 0
-	if d.ParentID != nil {
-		parent, err := s.depts.GetByID(ctx, *d.ParentID)
-		if err != nil || parent.InstitutionID != d.InstitutionID {
-			return nil, bizerrors.New(bizerrors.CodeInvalidParams, "invalid parent department")
-		}
+	if parent != nil {
 		d.CodePath = parent.CodePath + "/" + d.Name
 		d.NamePath = parent.NamePath + "/" + defaultIfEmpty(d.DisplayName, d.Name)
 		d.ParentIDChain = append(append([]int64{}, parent.ParentIDChain...), parent.ID)
@@ -74,27 +81,36 @@ func (s *DepartmentService) Create(ctx context.Context, actor string, d *reposit
 	return d, nil
 }
 
-// Get 查询部门
-func (s *DepartmentService) Get(ctx context.Context, institutionID int64, name string) (*repository.Department, error) {
-	d, err := s.depts.GetByName(ctx, institutionID, name)
-	if err != nil {
-		return nil, bizerrors.ErrNotFound.WithDetail("department", name)
+// Get 按主键查询部门，并校验租户归属。
+func (s *DepartmentService) Get(ctx context.Context, institutionID, id int64) (*repository.Department, error) {
+	d, err := s.depts.GetByID(ctx, id)
+	if err != nil || d.InstitutionID != institutionID {
+		return nil, bizerrors.ErrNotFound.WithDetail("department", id)
 	}
 	return d, nil
 }
 
 // Update 更新部门：改展示字段，并支持"移动"（变更父级时重算自身与整棵子树的路径/层级）。
 func (s *DepartmentService) Update(ctx context.Context, actor string, d *repository.Department) error {
-	existing, err := s.depts.GetByName(ctx, d.InstitutionID, d.Name)
-	if err != nil {
-		return bizerrors.ErrNotFound.WithDetail("department", d.Name)
+	existing, err := s.depts.GetByID(ctx, d.ID)
+	if err != nil || existing.InstitutionID != d.InstitutionID {
+		return bizerrors.ErrNotFound.WithDetail("department", d.ID)
 	}
 	if existing.IsRoot {
 		// 组织根是"组织本身"的投影：改名/移动/删除都会让部门树失去根（Spec Q4.5）
-		return bizerrors.ErrProtectedObject.WithDetail("department", d.Name)
+		return bizerrors.ErrProtectedObject.WithDetail("department", existing.Name)
 	}
-	// 展示字段按入参，结构性字段以现有为准
-	d.ID = existing.ID
+	// 全名进入部门路径并被令牌引用，创建后不可改名；本次只更新展示字段与父级。
+	d.Name = existing.Name
+	// 清空上级即回到组织根，而不是制造一个 parent_id = NULL 的“伪根”
+	// （部门树只允许组织根自身没有父级）。
+	if d.ParentID == nil {
+		root, err := s.depts.GetRoot(ctx, d.InstitutionID)
+		if err != nil || root == nil {
+			return bizerrors.New(bizerrors.CodeInternalError, "organization root department is missing")
+		}
+		d.ParentID = &root.ID
+	}
 	d.CodePath = existing.CodePath
 	d.NamePath = defaultIfEmpty(d.DisplayName, d.Name)
 	d.ParentIDChain = existing.ParentIDChain
@@ -123,6 +139,9 @@ func (s *DepartmentService) Update(ctx context.Context, actor string, d *reposit
 			return bizerrors.New(bizerrors.CodeInvalidParams, "cannot move a department under itself or its descendants")
 		}
 		parent = p
+	}
+	if sibling, err := s.depts.GetByParentAndName(ctx, d.InstitutionID, d.ParentID, d.Name); err == nil && sibling.ID != d.ID {
+		return bizerrors.New(bizerrors.CodeConflict, "department already exists under the same parent")
 	}
 
 	newCodePath := d.Name
@@ -219,13 +238,13 @@ func indexOf(chain []int64, id int64) int {
 }
 
 // Delete 删除部门（存在子部门或归属用户时禁止）
-func (s *DepartmentService) Delete(ctx context.Context, actor string, institutionID int64, name string) error {
-	d, err := s.depts.GetByName(ctx, institutionID, name)
-	if err != nil {
-		return bizerrors.ErrNotFound.WithDetail("department", name)
+func (s *DepartmentService) Delete(ctx context.Context, actor string, institutionID, id int64) error {
+	d, err := s.depts.GetByID(ctx, id)
+	if err != nil || d.InstitutionID != institutionID {
+		return bizerrors.ErrNotFound.WithDetail("department", id)
 	}
 	if d.IsRoot {
-		return bizerrors.ErrProtectedObject.WithDetail("department", name)
+		return bizerrors.ErrProtectedObject.WithDetail("department", d.Name)
 	}
 	if d.HasChild {
 		return bizerrors.New(bizerrors.CodeConflict, "department still has child departments")
@@ -234,13 +253,13 @@ func (s *DepartmentService) Delete(ctx context.Context, actor string, institutio
 	if err == nil && count > 0 {
 		return bizerrors.New(bizerrors.CodeConflict, "department still has users")
 	}
-	if err := s.depts.Delete(ctx, institutionID, name); err != nil {
+	if err := s.depts.Delete(ctx, institutionID, d.ID); err != nil {
 		return err
 	}
 	// 删掉最后一个子部门后，父部门的 has_child 标记必须同步复位：
 	// Delete 正是靠该标记判断"还有下级"，不复位会让父部门**永远删不掉**（只能先移动一次层级）。
 	s.refreshHasChild(ctx, institutionID, d.ParentID)
-	s.audits.Record(ctx, actor, institutionID, "department.delete", name, nil)
+	s.audits.Record(ctx, actor, institutionID, "department.delete", d.Name, nil)
 	return nil
 }
 
@@ -258,27 +277,32 @@ func (s *DepartmentService) List(ctx context.Context, institutionID int64, keywo
 	return items, total, nil
 }
 
-// Members 返回归属某部门的用户（用于右侧详情面板展示成员）。
-func (s *DepartmentService) Members(ctx context.Context, institutionID int64, name string) ([]*repository.User, error) {
-	d, err := s.depts.GetByName(ctx, institutionID, name)
-	if err != nil {
-		return nil, bizerrors.ErrNotFound.WithDetail("department", name)
+// Members 分页返回归属某部门的用户（用于右侧详情面板展示成员）。
+func (s *DepartmentService) Members(
+	ctx context.Context, institutionID, id int64, offset, limit int,
+) ([]*repository.User, int64, error) {
+	d, err := s.depts.GetByID(ctx, id)
+	if err != nil || d.InstitutionID != institutionID {
+		return nil, 0, bizerrors.ErrNotFound.WithDetail("department", id)
 	}
-	users, err := s.users.List(ctx, repository.ListQuery{
-		InstitutionID: institutionID, DepartmentID: d.ID, Limit: 500,
-	})
+	q := repository.ListQuery{InstitutionID: institutionID, DepartmentID: d.ID, Offset: offset, Limit: limit}
+	users, err := s.users.List(ctx, q)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return users, nil
+	total, err := s.users.Count(ctx, q)
+	if err != nil {
+		return nil, 0, err
+	}
+	return users, total, nil
 }
 
 // Reorder 调整部门在其同级内的顺序（direction: "up" | "down"）。
 // 以父部门分组，按当前排序（sort_index, name）确定相邻节点并交换二者 sort_index。
-func (s *DepartmentService) Reorder(ctx context.Context, actor string, institutionID int64, name, direction string) error {
-	d, err := s.depts.GetByName(ctx, institutionID, name)
-	if err != nil {
-		return bizerrors.ErrNotFound.WithDetail("department", name)
+func (s *DepartmentService) Reorder(ctx context.Context, actor string, institutionID, id int64, direction string) error {
+	d, err := s.depts.GetByID(ctx, id)
+	if err != nil || d.InstitutionID != institutionID {
+		return bizerrors.ErrNotFound.WithDetail("department", id)
 	}
 	// 取同租户全部部门，按 (level, sort_index, name) 排序后挑出同级兄弟
 	all, err := s.depts.List(ctx, repository.ListQuery{InstitutionID: institutionID, Limit: 10000})
@@ -306,7 +330,7 @@ func (s *DepartmentService) Reorder(ctx context.Context, actor string, instituti
 		}
 	}
 	if idx < 0 {
-		return bizerrors.ErrNotFound.WithDetail("department", name)
+		return bizerrors.ErrNotFound.WithDetail("department", id)
 	}
 	var swapWith int
 	switch direction {
@@ -326,20 +350,20 @@ func (s *DepartmentService) Reorder(ctx context.Context, actor string, instituti
 		case idx:
 			target := swapWith
 			if node.SortIndex != target {
-				if err := s.depts.SetSortIndex(ctx, institutionID, node.Name, target); err != nil {
+				if err := s.depts.SetSortIndex(ctx, institutionID, node.ID, target); err != nil {
 					return err
 				}
 			}
 		case swapWith:
 			target := idx
 			if node.SortIndex != target {
-				if err := s.depts.SetSortIndex(ctx, institutionID, node.Name, target); err != nil {
+				if err := s.depts.SetSortIndex(ctx, institutionID, node.ID, target); err != nil {
 					return err
 				}
 			}
 		}
 	}
-	s.audits.Record(ctx, actor, institutionID, "department.reorder", name, map[string]interface{}{"direction": direction})
+	s.audits.Record(ctx, actor, institutionID, "department.reorder", d.Name, map[string]interface{}{"direction": direction})
 	return nil
 }
 
@@ -348,14 +372,4 @@ func defaultIfEmpty(v, fallback string) string {
 		return fallback
 	}
 	return v
-}
-
-// NameByID 按主键解析资源标识（对外 HTTP 路径统一用 id；内部仍以 name 语义访问存储）。
-// 同时校验租户归属，避免跨组织按 id 越权读取。
-func (s *DepartmentService) NameByID(ctx context.Context, institutionID int64, id int64) (string, error) {
-	item, err := s.depts.GetByID(ctx, id)
-	if err != nil || item == nil || (institutionID != 0 && item.InstitutionID != institutionID) {
-		return "", bizerrors.ErrNotFound.WithDetail("id", id)
-	}
-	return item.Name, nil
 }

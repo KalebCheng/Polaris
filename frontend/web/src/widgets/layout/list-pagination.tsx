@@ -11,6 +11,9 @@ interface ListPaginationProps {
   onPageChange: (page: number) => void
   /** 左侧范围文案的资源量词，如「条」「个组织」 */
   unit?: string
+  /** 是否吸底并让背景铺满页面；卡片内嵌的分页应关闭 */
+  sticky?: boolean
+  className?: string
 }
 
 /** 生成页码窗口：首尾 + 当前附近的省略号 */
@@ -27,7 +30,15 @@ function pageWindow(page: number, pages: number): (number | 'ellipsis')[] {
 }
 
 /** 列表分页：左侧显示范围与总数，右侧为页码 */
-export function ListPagination({ page, size, total, onPageChange, unit }: ListPaginationProps) {
+export function ListPagination({
+  page,
+  size,
+  total,
+  onPageChange,
+  unit,
+  sticky = true,
+  className,
+}: ListPaginationProps) {
   const { t } = useTranslation()
   const pages = Math.max(1, Math.ceil(total / size))
   const current = Math.min(Math.max(1, page), pages)
@@ -49,7 +60,15 @@ export function ListPagination({ page, size, total, onPageChange, unit }: ListPa
       分页吸底：长列表滚到中间时页码仍可见（不用先滚到底）。
       与页头同一套做法——负 margin 抵消布局内边距让背景铺满，blur 挡住底下的行。
     */
-    <div className="bg-canvas/85 sticky bottom-0 z-10 -mx-4 flex flex-col gap-3 px-4 py-3 backdrop-blur-sm sm:-mx-6 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:-mx-8 lg:px-8">
+    <div
+      className={cn(
+        'flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between',
+        sticky
+          ? 'bg-canvas/85 sticky bottom-0 z-10 -mx-4 px-4 py-3 backdrop-blur-sm sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8'
+          : 'py-1',
+        className,
+      )}
+    >
       <p className="text-muted-foreground text-[11px]">
         {t('common.rangeSummary', { from, to, total, unit: suffix })}
       </p>

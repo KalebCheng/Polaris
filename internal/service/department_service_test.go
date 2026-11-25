@@ -18,6 +18,23 @@ func (r *stubUserCountRepo) Count(context.Context, repository.ListQuery) (int64,
 	return r.count, nil
 }
 
+type stubDeptMemberRepo struct {
+	repository.UserRepository
+	lastList  repository.ListQuery
+	lastCount repository.ListQuery
+	total     int64
+}
+
+func (r *stubDeptMemberRepo) List(_ context.Context, q repository.ListQuery) ([]*repository.User, error) {
+	r.lastList = q
+	return []*repository.User{{ID: 1}}, nil
+}
+
+func (r *stubDeptMemberRepo) Count(_ context.Context, q repository.ListQuery) (int64, error) {
+	r.lastCount = q
+	return r.total, nil
+}
+
 // stubDeptRepo 仅实现测试所需方法（其余经嵌入接口置为 nil）。
 type stubDeptRepo struct {
 	repository.DepartmentRepository
@@ -25,13 +42,21 @@ type stubDeptRepo struct {
 	movedTo map[string]int
 }
 
+func (r *stubDeptRepo) Create(_ context.Context, d *repository.Department) (int64, error) {
+	d.ID = int64(len(r.items) + 1)
+	r.items = append(r.items, d)
+	return d.ID, nil
+}
+
 func (r *stubDeptRepo) List(context.Context, repository.ListQuery) ([]*repository.Department, error) {
 	return r.items, nil
 }
 
-func (r *stubDeptRepo) GetByName(_ context.Context, institutionID int64, name string) (*repository.Department, error) {
+func (r *stubDeptRepo) GetByParentAndName(
+	_ context.Context, institutionID int64, parentID *int64, name string,
+) (*repository.Department, error) {
 	for _, d := range r.items {
-		if d.InstitutionID == institutionID && d.Name == name {
+		if d.InstitutionID == institutionID && d.Name == name && sameParent(d.ParentID, parentID) {
 			return d, nil
 		}
 	}
@@ -70,9 +95,9 @@ func (r *stubDeptRepo) Update(_ context.Context, d *repository.Department) error
 	return errStubNotFound
 }
 
-func (r *stubDeptRepo) Delete(_ context.Context, institutionID int64, name string) error {
+func (r *stubDeptRepo) Delete(_ context.Context, institutionID, id int64) error {
 	for index, d := range r.items {
-		if d.InstitutionID == institutionID && d.Name == name {
+		if d.InstitutionID == institutionID && d.ID == id {
 			r.items = append(r.items[:index], r.items[index+1:]...)
 			return nil
 		}
@@ -80,21 +105,79 @@ func (r *stubDeptRepo) Delete(_ context.Context, institutionID int64, name strin
 	return errStubNotFound
 }
 
-func (r *stubDeptRepo) SetSortIndex(_ context.Context, institutionID int64, name string, sortIndex int) error {
+func (r *stubDeptRepo) SetSortIndex(_ context.Context, institutionID, id int64, sortIndex int) error {
 	if r.movedTo == nil {
 		r.movedTo = map[string]int{}
 	}
-	r.movedTo[name] = sortIndex
 	for _, d := range r.items {
-		if d.InstitutionID == institutionID && d.Name == name {
+		if d.InstitutionID == institutionID && d.ID == id {
 			d.SortIndex = sortIndex
+			r.movedTo[d.Name] = sortIndex
+			return nil
 		}
 	}
-	return nil
+	return errStubNotFound
 }
 
 func dept(id int64, name string, sort int) *repository.Department {
 	return &repository.Department{ID: id, InstitutionID: 1, Name: name, Level: 0, SortIndex: sort}
+}
+
+type stubDeptOrgRepo struct {
+	repository.InstitutionRepository
+}
+
+func (r *stubDeptOrgRepo) GetByID(_ context.Context, id int64) (*repository.Institution, error) {
+	return &repository.Institution{ID: id, Name: "acme"}, nil
+}
+
+// 部门全名只要求同一父级下唯一：不同父级允许同名，同一父级重复必须拒绝。
+func TestDepartmentNameUniquePerParent(t *testing.T) {
+	rootID := int64(1)
+	parentA := int64(2)
+	parentB := int64(3)
+	repo := &stubDeptRepo{items: []*repository.Department{
+		{ID: rootID, InstitutionID: 1, Name: "acme", IsRoot: true},
+		{ID: parentA, InstitutionID: 1, Name: "华东", ParentID: &rootID, Level: 1},
+		{ID: parentB, InstitutionID: 1, Name: "华南", ParentID: &rootID, Level: 1},
+		{ID: 4, InstitutionID: 1, Name: "市场部", ParentID: &parentA, Level: 2},
+	}}
+	svc := &DepartmentService{depts: repo, orgs: &stubDeptOrgRepo{}, audits: &AuditRecorder{}}
+
+	if _, err := svc.Create(context.Background(), "admin", &repository.Department{
+		InstitutionID: 1, Name: "市场部", ParentID: &parentB,
+	}); err != nil {
+		t.Fatalf("不同父级下同名部门应允许创建: %v", err)
+	}
+	if _, err := svc.Create(context.Background(), "admin", &repository.Department{
+		InstitutionID: 1, Name: "市场部", ParentID: &parentA,
+	}); err == nil {
+		t.Fatal("同一父级下重复部门名应被拒绝")
+	}
+}
+
+// 部门成员列表必须把分页参数原样下推到用户仓库，并返回总数。
+func TestDepartmentMembersPagination(t *testing.T) {
+	deptID := int64(2)
+	users := &stubDeptMemberRepo{total: 37}
+	repo := &stubDeptRepo{items: []*repository.Department{
+		{ID: deptID, InstitutionID: 1, Name: "研发部"},
+	}}
+	svc := &DepartmentService{depts: repo, users: users, audits: &AuditRecorder{}}
+
+	items, total, err := svc.Members(context.Background(), 1, deptID, 20, 10)
+	if err != nil {
+		t.Fatalf("Members: %v", err)
+	}
+	if len(items) != 1 || total != 37 {
+		t.Fatalf("items=%d total=%d, want 1/37", len(items), total)
+	}
+	if users.lastList.DepartmentID != deptID || users.lastList.Offset != 20 || users.lastList.Limit != 10 {
+		t.Fatalf("列表查询未带上分页/部门条件: %+v", users.lastList)
+	}
+	if users.lastCount.DepartmentID != deptID {
+		t.Fatalf("计数查询未带上部门条件: %+v", users.lastCount)
+	}
 }
 
 // 回归：同级下移交换两节点的 sort_index（b 与 c 交换）。
@@ -103,7 +186,7 @@ func TestDepartmentReorderDown(t *testing.T) {
 		dept(1, "a", 0), dept(2, "b", 1), dept(3, "c", 2),
 	}}
 	svc := &DepartmentService{depts: repo, audits: &AuditRecorder{}}
-	if err := svc.Reorder(context.Background(), "admin", 1, "b", "down"); err != nil {
+	if err := svc.Reorder(context.Background(), "admin", 1, 2, "down"); err != nil {
 		t.Fatalf("Reorder: %v", err)
 	}
 	// b 应落到序号 2，c 落到 1
@@ -120,7 +203,7 @@ func TestDepartmentReorderDown(t *testing.T) {
 func TestDepartmentReorderUpAtTop(t *testing.T) {
 	repo := &stubDeptRepo{items: []*repository.Department{dept(1, "a", 0), dept(2, "b", 1)}}
 	svc := &DepartmentService{depts: repo, audits: &AuditRecorder{}}
-	if err := svc.Reorder(context.Background(), "admin", 1, "a", "up"); err != nil {
+	if err := svc.Reorder(context.Background(), "admin", 1, 1, "up"); err != nil {
 		t.Fatalf("Reorder: %v", err)
 	}
 	if len(repo.movedTo) != 0 {
@@ -132,7 +215,7 @@ func TestDepartmentReorderUpAtTop(t *testing.T) {
 func TestDepartmentReorderInvalidDirection(t *testing.T) {
 	repo := &stubDeptRepo{items: []*repository.Department{dept(1, "a", 0), dept(2, "b", 1)}}
 	svc := &DepartmentService{depts: repo, audits: &AuditRecorder{}}
-	if err := svc.Reorder(context.Background(), "admin", 1, "a", "sideways"); err == nil {
+	if err := svc.Reorder(context.Background(), "admin", 1, 1, "sideways"); err == nil {
 		t.Fatal("非法 direction 应报错")
 	}
 }
@@ -151,14 +234,14 @@ func TestDepartmentMoveUsesParentIDChain(t *testing.T) {
 
 	// 把 a 挂到 b 下会成环。
 	if err := svc.Update(context.Background(), "admin", &repository.Department{
-		InstitutionID: 1, Name: "a", DisplayName: "A", ParentID: &b,
+		ID: 2, InstitutionID: 1, Name: "a", DisplayName: "A", ParentID: &b,
 	}); err == nil {
 		t.Fatal("移动到自己的后代下应被拒绝")
 	}
 
 	// 把 b 挂回根下：链应为 [1]，层级为 1。
 	if err := svc.Update(context.Background(), "admin", &repository.Department{
-		InstitutionID: 1, Name: "b", DisplayName: "B", ParentID: &root,
+		ID: 3, InstitutionID: 1, Name: "b", DisplayName: "B", ParentID: &root,
 	}); err != nil {
 		t.Fatalf("移动到根下失败: %v", err)
 	}
@@ -184,7 +267,7 @@ func TestDepartmentDeleteRefreshesParentHasChild(t *testing.T) {
 	}}
 	svc := &DepartmentService{depts: repo, users: &stubUserCountRepo{}, audits: &AuditRecorder{}}
 
-	if err := svc.Delete(context.Background(), "admin", 1, "fe"); err != nil {
+	if err := svc.Delete(context.Background(), "admin", 1, 2); err != nil {
 		t.Fatalf("删除子部门: %v", err)
 	}
 	for _, d := range repo.items {
@@ -192,7 +275,7 @@ func TestDepartmentDeleteRefreshesParentHasChild(t *testing.T) {
 			t.Fatal("删掉最后一个子部门后父部门 has_child 应为 false")
 		}
 	}
-	if err := svc.Delete(context.Background(), "admin", 1, "tech"); err != nil {
+	if err := svc.Delete(context.Background(), "admin", 1, 1); err != nil {
 		t.Fatalf("父部门此时应可删除: %v", err)
 	}
 }

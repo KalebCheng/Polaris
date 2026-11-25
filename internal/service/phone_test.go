@@ -47,3 +47,12 @@ func TestPhoneLookupCandidates(t *testing.T) {
 		t.Fatalf("phoneLookupCandidates() = %v, want %v", got, want)
 	}
 }
+
+func TestPhoneLookupCandidatesForInput(t *testing.T) {
+	want := []string{"+8613800000000", "8613800000000", "13800000000"}
+	for _, input := range []string{"13800000000", "138 0000 0000", "8613800000000", "+8613800000000"} {
+		if got := phoneLookupCandidatesForInput(input); !reflect.DeepEqual(got, want) {
+			t.Fatalf("phoneLookupCandidatesForInput(%q) = %v, want %v", input, got, want)
+		}
+	}
+}

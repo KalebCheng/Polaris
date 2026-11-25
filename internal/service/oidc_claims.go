@@ -186,7 +186,8 @@ func setNonEmptyClaim(claims map[string]interface{}, key, value string) {
 	}
 }
 
-// departmentPaths 返回用户全部部门的展示路径（与 user_departments 顺序一致）。
+// departmentPaths 返回用户全部部门的全名路径（与 user_departments 顺序一致）。
+// 令牌声明只认部门全名 name；display_name 仅用于界面展示，不进入 claims。
 // 部门仓库未装配时返回空集合：标准模式/未启用部门字段的调用方不应因此失败。
 func (s *OIDCService) departmentPaths(ctx context.Context, user *repository.User) ([]string, error) {
 	if s.userDepts == nil || s.depts == nil {
@@ -206,8 +207,7 @@ func (s *OIDCService) departmentPaths(ctx context.Context, user *repository.User
 		return nil, bizerrors.Wrap(bizerrors.CodeInternalError, "读取部门目录失败", err)
 	}
 	for _, dept := range items {
-		label := firstNonEmptyStr(dept.DisplayName, dept.Name)
-		labels[dept.ID] = label
+		labels[dept.ID] = dept.Name
 		byID[dept.ID] = dept
 	}
 	paths := make([]string, 0, len(ids))
@@ -216,7 +216,7 @@ func (s *OIDCService) departmentPaths(ctx context.Context, user *repository.User
 		if dept == nil {
 			continue
 		}
-		// 显式沿 parent_id_chain（根→父）拼部门名称，最后追加自身。
+		// 显式沿 parent_id_chain（根→父）拼部门全名，最后追加自身。
 		parts := make([]string, 0, len(dept.ParentIDChain)+1)
 		for _, ancestorID := range dept.ParentIDChain {
 			if label := labels[ancestorID]; label != "" {

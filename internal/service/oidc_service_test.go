@@ -164,7 +164,7 @@ func (r *tokenJobTitleRepo) JobTitlesForUser(context.Context, int64, string) ([]
 }
 
 // 回归：NetBird 的 JWT group sync 读 access_token 的 groups claim；
-// 本系统的 groups 对应「部门」，取部门展示路径。
+// 本系统的 groups 对应「部门」，取部门全名路径（不取 display_name）。
 func TestTokenExtraGroupsComeFromDepartments(t *testing.T) {
 	svc := &OIDCService{
 		userDepts: &tokenUserDeptRepo{ids: []int64{2, 3}},
@@ -189,8 +189,8 @@ func TestTokenExtraGroupsComeFromDepartments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tokenExtra: %v", err)
 	}
-	if got, ok := extra["groups"].([]string); !ok || len(got) != 2 || got[0] != "Polaris / 前端组" {
-		t.Fatalf("groups = %#v, want 部门路径列表", extra["groups"])
+	if got, ok := extra["groups"].([]string); !ok || len(got) != 2 || got[0] != "built-in / fe" {
+		t.Fatalf("groups = %#v, want 部门全名路径列表", extra["groups"])
 	}
 	if got, ok := extra["job_titles"].([]string); !ok || len(got) != 1 || got[0] != "CEO" {
 		t.Fatalf("job_titles = %#v, want 职务列表", extra["job_titles"])
@@ -245,8 +245,8 @@ func TestTokenExtraGroupsComeFromDepartments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("idTokenClaims: %v", err)
 	}
-	if got, ok := idClaims["groups"].([]string); !ok || len(got) != 2 || got[0] != "Polaris / 前端组" {
-		t.Fatalf("id_token groups = %#v, want 部门路径列表", idClaims["groups"])
+	if got, ok := idClaims["groups"].([]string); !ok || len(got) != 2 || got[0] != "built-in / fe" {
+		t.Fatalf("id_token groups = %#v, want 部门全名路径列表", idClaims["groups"])
 	}
 
 	standardClaims, err := svc.idTokenClaims(context.Background(), &repository.Application{TokenFormat: TokenFormatStandard}, user, "openid profile")

@@ -174,7 +174,7 @@ export const tokenFieldOptions: SelectOption[] = [
   { value: 'phone_verified', label: 'phone_verified', hint: 'boolean' },
   { value: 'institution', label: 'institution', hint: '组织主键' },
   { value: 'department_ids', label: 'department_ids', hint: '部门主键（数组）' },
-  { value: 'departments', label: 'departments', hint: '部门路径（数组）' },
+  { value: 'departments', label: 'departments', hint: '部门全名路径（数组）' },
   { value: 'job_titles', label: 'job_titles', hint: '职务（数组）' },
   { value: 'title', label: 'title' },
   { value: 'is_admin', label: 'is_admin', hint: 'boolean' },

@@ -76,10 +76,18 @@ func (r *DepartmentRepository) GetByID(ctx context.Context, id int64) (*reposito
 	return d, nil
 }
 
-// GetByName 按租户 + 名称查询
-func (r *DepartmentRepository) GetByName(ctx context.Context, institutionID int64, name string) (*repository.Department, error) {
-	d, err := scanDepartment(r.db.QueryRow(ctx,
-		deptSelect+` WHERE d.institution_id=$1 AND d.name=$2`, institutionID, name))
+// GetByParentAndName 按「父部门 + 名称」查询。
+// 名称唯一性只到父级：不同父级下允许同名，因此路径操作必须带父级条件。
+func (r *DepartmentRepository) GetByParentAndName(
+	ctx context.Context, institutionID int64, parentID *int64, name string,
+) (*repository.Department, error) {
+	query := deptSelect + ` WHERE d.institution_id=$1 AND d.parent_id IS NULL AND d.name=$2`
+	args := []interface{}{institutionID, name}
+	if parentID != nil {
+		query = deptSelect + ` WHERE d.institution_id=$1 AND d.parent_id=$2 AND d.name=$3`
+		args = []interface{}{institutionID, *parentID, name}
+	}
+	d, err := scanDepartment(r.db.QueryRow(ctx, query, args...))
 	if err != nil {
 		return nil, mapError(err, "department not found")
 	}
@@ -95,14 +103,14 @@ func (r *DepartmentRepository) Update(ctx context.Context, d *repository.Departm
 	const q = `UPDATE departments SET
 		display_name=$3, description=$4, parent_id=$5, parent_id_chain=$6,
 		has_child=$7, sort_index=$8, updated_at=NOW()
-		WHERE institution_id=$1 AND name=$2`
-	return mapError(r.db.Exec(ctx, q, d.InstitutionID, d.Name, d.DisplayName, d.Description,
+		WHERE institution_id=$1 AND id=$2`
+	return mapError(r.db.Exec(ctx, q, d.InstitutionID, d.ID, d.DisplayName, d.Description,
 		d.ParentID, chain, d.HasChild, d.SortIndex), "department not found")
 }
 
 // Delete 删除部门（子部门通过 parent 外键 ON DELETE SET NULL 处理）
-func (r *DepartmentRepository) Delete(ctx context.Context, institutionID int64, name string) error {
-	return mapError(r.db.Exec(ctx, `DELETE FROM departments WHERE institution_id=$1 AND name=$2`, institutionID, name), "department not found")
+func (r *DepartmentRepository) Delete(ctx context.Context, institutionID, id int64) error {
+	return mapError(r.db.Exec(ctx, `DELETE FROM departments WHERE institution_id=$1 AND id=$2`, institutionID, id), "department not found")
 }
 
 // GetRoot 返回组织根部门（每个组织恰好一行 is_root = TRUE；见迁移 040）
@@ -116,10 +124,10 @@ func (r *DepartmentRepository) GetRoot(ctx context.Context, institutionID int64)
 }
 
 // SetSortIndex 仅更新排序序号（同层内排序用；不触碰路径/层级等结构字段）
-func (r *DepartmentRepository) SetSortIndex(ctx context.Context, institutionID int64, name string, sortIndex int) error {
+func (r *DepartmentRepository) SetSortIndex(ctx context.Context, institutionID, id int64, sortIndex int) error {
 	return mapError(r.db.Exec(ctx,
-		`UPDATE departments SET sort_index=$3, updated_at=NOW() WHERE institution_id=$1 AND name=$2`,
-		institutionID, name, sortIndex), "department not found")
+		`UPDATE departments SET sort_index=$3, updated_at=NOW() WHERE institution_id=$1 AND id=$2`,
+		institutionID, id, sortIndex), "department not found")
 }
 
 // RecomputeParentIDChains 按 parent_id 重算祖先链（根→父，不含自身）。
@@ -147,7 +155,7 @@ func (r *DepartmentRepository) List(ctx context.Context, q repository.ListQuery)
 		p := "$" + strconv.Itoa(len(args))
 		sql += ` AND (d.name ILIKE ` + p + ` OR d.display_name ILIKE ` + p + `)`
 	}
-	sql += ` ORDER BY level ASC, sort_index ASC, name ASC`
+	sql += ` ORDER BY level ASC, sort_index ASC, name ASC, id ASC`
 	if q.Limit > 0 {
 		args = append(args, q.Limit, q.Offset)
 		sql += ` LIMIT $` + strconv.Itoa(len(args)-1) + ` OFFSET $` + strconv.Itoa(len(args))

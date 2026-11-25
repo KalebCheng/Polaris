@@ -230,7 +230,7 @@ func TestTokenExtraClaimMapping(t *testing.T) {
 	if !reflect.DeepEqual(got["departments"], []int64{2, 3}) {
 		t.Fatalf("departments 应为数组，实际 %#v", got["departments"])
 	}
-	if !reflect.DeepEqual(got["department_paths"], []string{"Polaris / 前端组", "Polaris / 技术部"}) {
+	if !reflect.DeepEqual(got["department_paths"], []string{"built-in / fe", "built-in / tech"}) {
 		t.Fatalf("department_paths 应为数组，实际 %#v", got["department_paths"])
 	}
 	if got["admin"] != true {

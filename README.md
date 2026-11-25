@@ -121,9 +121,10 @@ See [deployment documentation](docs/deployment.md) for the complete list.
 The repository applies migrations in version order:
 
 - `migrations/001_init.up.sql` creates the baseline schema.
-- `migrations/002_*` through `migrations/005_*` add the user-import ledger,
+- `migrations/002_*` through `migrations/008_*` add the user-import ledger,
   split user credentials/login stats/registration provenance into dedicated
-  1:1 tables, and add password-history invalidation plus forced password changes.
+  1:1 tables, add password-history invalidation plus forced password changes,
+  and scope department-name uniqueness to the parent department.
 - Every `NNNN_name.up.sql` has a matching `NNNN_name.down.sql`.
 
 Existing deployments must apply the new migrations before starting a binary

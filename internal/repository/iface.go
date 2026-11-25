@@ -63,15 +63,16 @@ type StorageSettingsRepository interface {
 type DepartmentRepository interface {
 	Create(ctx context.Context, d *Department) (int64, error)
 	GetByID(ctx context.Context, id int64) (*Department, error)
-	GetByName(ctx context.Context, institutionID int64, name string) (*Department, error)
+	// GetByParentAndName 按「父部门 + 名称」查询：部门名称只要求同一父级下唯一。
+	GetByParentAndName(ctx context.Context, institutionID int64, parentID *int64, name string) (*Department, error)
 	Update(ctx context.Context, d *Department) error
-	Delete(ctx context.Context, institutionID int64, name string) error
+	Delete(ctx context.Context, institutionID, id int64) error
 	List(ctx context.Context, q ListQuery) ([]*Department, error)
 	Count(ctx context.Context, q ListQuery) (int64, error)
 	// GetRoot 返回组织根部门（Spec Q4.5：每个组织恰好一行 is_root = TRUE）
 	GetRoot(ctx context.Context, institutionID int64) (*Department, error)
 	// SetSortIndex 仅更新排序序号（同层内拖拽/上下移动用）
-	SetSortIndex(ctx context.Context, institutionID int64, name string, sortIndex int) error
+	SetSortIndex(ctx context.Context, institutionID, id int64, sortIndex int) error
 	// RecomputeParentIDChains 按当前 parent_id 重算某组织的全部祖先链（同步器批量改层级后调用）
 	RecomputeParentIDChains(ctx context.Context, institutionID int64) error
 

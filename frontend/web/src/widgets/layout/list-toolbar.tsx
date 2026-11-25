@@ -86,7 +86,11 @@ export function ListToolbar({
                       <ChevronDown className="size-3.5 opacity-60" />
                     </button>
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start" className="min-w-40">
+                  <DropdownMenuContent
+                    align="start"
+                    collisionPadding={8}
+                    className="max-h-[var(--radix-dropdown-menu-content-available-height)] min-w-40 overflow-y-auto"
+                  >
                     <DropdownMenuLabel className="text-muted-foreground text-[11px] font-medium">
                       {filter.label}
                     </DropdownMenuLabel>

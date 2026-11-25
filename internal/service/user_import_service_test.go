@@ -67,8 +67,17 @@ type importDeptRepo struct {
 	depts map[string]*repository.Department
 }
 
-func (r *importDeptRepo) GetByName(_ context.Context, _ int64, name string) (*repository.Department, error) {
-	if d, ok := r.depts[name]; ok {
+func (r *importDeptRepo) GetRoot(_ context.Context, _ int64) (*repository.Department, error) {
+	if d, ok := r.depts["acme"]; ok {
+		return d, nil
+	}
+	return nil, bizerrors.New(bizerrors.CodeDBNotFound, "department not found")
+}
+
+func (r *importDeptRepo) GetByParentAndName(
+	_ context.Context, _ int64, parentID *int64, name string,
+) (*repository.Department, error) {
+	if d, ok := r.depts[name]; ok && sameParent(d.ParentID, parentID) {
 		return d, nil
 	}
 	return nil, bizerrors.New(bizerrors.CodeDBNotFound, "department not found")
@@ -169,7 +178,8 @@ func newImportFixture() *importFixture {
 	userSvc := NewUserService(users, &importOrgRepo{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	records := &importRecordRepo{}
 	depts := &importDeptRepo{depts: map[string]*repository.Department{
-		"研发部": {ID: 11, Name: "研发部", NamePath: "研发部"},
+		"acme": {ID: 1, Name: "acme", IsRoot: true},
+		"研发部":  {ID: 11, Name: "研发部", NamePath: "研发部", ParentID: int64Ptr(1)},
 	}}
 	svc := NewUserImportService(
 		userSvc, users, depts, &importDeptSvc{repo: depts},
@@ -353,8 +363,59 @@ func TestImportNormalizesPhone(t *testing.T) {
 	if len(f.users.created) != 1 {
 		t.Fatalf("应创建 1 个用户，实际 %d", len(f.users.created))
 	}
-	if got := f.users.created[0].User.Phone; got != "+8613800000000" {
-		t.Fatalf("phone = %q, want canonical E.164", got)
+	created := f.users.created[0].User
+	if created.Phone != "13800000000" || created.CountryCode != "+86" {
+		t.Fatalf("phone = %q country_code = %q, want national phone + separate dialing code", created.Phone, created.CountryCode)
+	}
+}
+
+func TestImportedPhoneStorage(t *testing.T) {
+	cases := []struct {
+		name        string
+		countryCode string
+		canonical   string
+		wantPhone   string
+		wantCode    string
+	}{
+		{name: "mainland national", countryCode: "+86", canonical: "+8613800000000", wantPhone: "13800000000", wantCode: "+86"},
+		{name: "mainland without column", canonical: "+8613800000000", wantPhone: "13800000000", wantCode: "+86"},
+		{name: "international", countryCode: "+1", canonical: "+14155552671", wantPhone: "4155552671", wantCode: "+1"},
+		{name: "mismatched code", countryCode: "+86", canonical: "+14155552671", wantPhone: "+14155552671", wantCode: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			phone, code := importedPhoneStorage(tc.countryCode, tc.canonical)
+			if phone != tc.wantPhone || code != tc.wantCode {
+				t.Fatalf("importedPhoneStorage(%q, %q) = (%q, %q), want (%q, %q)",
+					tc.countryCode, tc.canonical, phone, code, tc.wantPhone, tc.wantCode)
+			}
+		})
+	}
+}
+
+func TestNormalizeImportedPhoneDoesNotDuplicateDialCode(t *testing.T) {
+	cases := []struct {
+		name        string
+		countryCode string
+		phone       string
+		want        string
+	}{
+		{name: "national", countryCode: "+86", phone: "138 0000 0000", want: "+8613800000000"},
+		{name: "already prefixed", countryCode: "+86", phone: "8613800000000", want: "+8613800000000"},
+		{name: "plus prefixed", countryCode: "+86", phone: "+8613800000000", want: "+8613800000000"},
+		{name: "international prefix", countryCode: "+1", phone: "14155552671", want: "+14155552671"},
+		{name: "zero zero prefix", countryCode: "+86", phone: "008613800000000", want: "+8613800000000"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := normalizeImportedPhone(tc.countryCode, tc.phone)
+			if err != nil {
+				t.Fatalf("normalizeImportedPhone(%q, %q): %v", tc.countryCode, tc.phone, err)
+			}
+			if got != tc.want {
+				t.Fatalf("normalizeImportedPhone(%q, %q) = %q, want %q", tc.countryCode, tc.phone, got, tc.want)
+			}
+		})
 	}
 }
 

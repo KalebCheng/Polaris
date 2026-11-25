@@ -549,14 +549,14 @@ erDiagram
 
 - 主键：`id`
 - 外键：`institution_id` → `institutions(id)` ON DELETE CASCADE；`parent_id` → `departments(id)` ON DELETE SET NULL
-- 唯一约束：`UNIQUE (institution_id, name)`
-- 索引：`departments_inst_name_key` UNIQUE (institution_id, name)；`departments_institution_id_idx` (institution_id)；`departments_parent_idx` (parent_id)；`departments_pkey` UNIQUE (id)；`departments_root_key` UNIQUE (institution_id) WHERE is_root
+- 唯一规则：同一父部门下 `name` 不可重复；不同父部门允许同名。组织根（`parent_id IS NULL`）仍按 `(institution_id, name)` 唯一。
+- 索引：`departments_parent_name_key` UNIQUE (institution_id, parent_id, name) WHERE parent_id IS NOT NULL；`departments_root_name_key` UNIQUE (institution_id, name) WHERE parent_id IS NULL；`departments_institution_id_idx` (institution_id)；`departments_parent_idx` (parent_id)；`departments_pkey` UNIQUE (id)；`departments_root_key` UNIQUE (institution_id) WHERE is_root
 
 | 字段 | 类型 | 可空 | 默认 | 说明 |
 |---|---|---|---|---|
 | `id` **PK** | BIGINT | 否 | 自增 | 主键 |
-| `name` | TEXT | 否 | — | 名称 / 标识 |
-| `display_name` | TEXT | 否 | '' | 展示名称 |
+| `name` | TEXT | 否 | — | 部门全名（进入路径与令牌声明；同一父级下唯一，创建后不可修改） |
+| `display_name` | TEXT | 否 | '' | 显示名称（仅用于界面展示，不进入令牌声明） |
 | `description` | TEXT | 否 | '' | 描述 |
 | `created_at` | TIMESTAMPTZ | 否 | NOW() | 创建时间 |
 | `updated_at` | TIMESTAMPTZ | 否 | NOW() | 更新时间 |

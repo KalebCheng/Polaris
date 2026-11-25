@@ -331,6 +331,7 @@ func (p *importRun) precheckRow(
 		w.result.Status = repository.UserImportRowFailed
 		return nil
 	}
+	storedPhone, storedCountryCode := importedPhoneStorage(r.CountryCode, phone)
 
 	// 2) 冲突：库内已存在 → 跳过；文件内重复 → 跳过并指向首次出现的行
 	if existingNames[r.Name] {
@@ -384,8 +385,8 @@ func (p *importRun) precheckRow(
 			FirstName:      r.FirstName,
 			LastName:       r.LastName,
 			Email:          r.Email,
-			Phone:          phone,
-			CountryCode:    r.CountryCode,
+			Phone:          storedPhone,
+			CountryCode:    storedCountryCode,
 			Title:          r.Title,
 			RegisterType:   "import",
 			RegisterSource: p.record.FileName,
@@ -453,8 +454,12 @@ func normalizeImportedPhone(countryCode, phone string) (string, error) {
 	if phone == "" {
 		return "", nil
 	}
+	// A leading + or 00 already carries the dialing code; do not prefix it again.
+	if strings.HasPrefix(phone, "+") || strings.HasPrefix(phone, "00") {
+		return normalizePhone(phone)
+	}
 	countryCode = strings.TrimSpace(countryCode)
-	if countryCode != "" && !strings.HasPrefix(phone, "+") {
+	if countryCode != "" {
 		countryCode = strings.TrimPrefix(strings.TrimPrefix(countryCode, "00"), "+")
 		for _, r := range countryCode {
 			if r < '0' || r > '9' {
@@ -464,9 +469,52 @@ func normalizeImportedPhone(countryCode, phone string) (string, error) {
 		if countryCode == "" {
 			return "", fmt.Errorf("invalid country code")
 		}
-		phone = "+" + countryCode + phone
+		compact := strings.NewReplacer(" ", "", "-", "", "(", "", ")", "", ".", "").Replace(phone)
+		if strings.HasPrefix(compact, countryCode) {
+			phone = "+" + compact
+		} else {
+			phone = "+" + countryCode + compact
+		}
 	}
 	return normalizePhone(phone)
+}
+
+// importedPhoneStorage keeps the phone column free of the dialing code: the
+// template declares "phone without country code" plus a separate country_code
+// column. The canonical form is used only for validation and conflict lookup.
+func importedPhoneStorage(countryCode, canonical string) (string, string) {
+	if canonical == "" {
+		if code := normalizeDialCode(countryCode); code != "" {
+			return "", "+" + code
+		}
+		return "", strings.TrimSpace(countryCode)
+	}
+	code := normalizeDialCode(countryCode)
+	if code == "" && strings.HasPrefix(canonical, "+86") && len(canonical) == 14 {
+		code = "86"
+	}
+	if code != "" && strings.HasPrefix(canonical, "+"+code) {
+		return strings.TrimPrefix(canonical, "+"+code), "+" + code
+	}
+	// The supplied dialing code does not match a fully qualified phone; keep
+	// the canonical value and avoid attaching a misleading country code.
+	if strings.HasPrefix(canonical, "+86") && len(canonical) == 14 {
+		return strings.TrimPrefix(canonical, "+86"), "+86"
+	}
+	return canonical, ""
+}
+
+func normalizeDialCode(raw string) string {
+	raw = strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(raw), "00"), "+")
+	if raw == "" {
+		return ""
+	}
+	for _, r := range raw {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return raw
 }
 
 // validatePassword 按组织密码策略校验（与手工建号同一规则；新用户没有密码历史故不查重）。
@@ -481,7 +529,7 @@ func (p *importRun) validatePassword(password string) error {
 	return auth.FromOptions(p.org.PasswordOptions).Validate(password)
 }
 
-// resolveDepartment 解析部门路径 "a/b/c"（按名称逐级匹配，校验父子关系）。
+// resolveDepartment 解析部门路径 "a/b/c"（按父级逐级匹配；不同父级允许同名）。
 // 默认严格：任一级不存在即失败；auto_create_departments=true 时逐级补建（新建路径记入报告）。
 func (p *importRun) resolveDepartment(path string) (*int64, error) {
 	s := p.svc
@@ -493,10 +541,19 @@ func (p *importRun) resolveDepartment(path string) (*int64, error) {
 			return nil, fmt.Errorf("invalid department path: %s", path)
 		}
 	}
-	var parent *repository.Department
+	root, err := s.depts.GetRoot(p.ctx, p.opts.InstitutionID)
+	if err != nil || root == nil {
+		return nil, fmt.Errorf("organization root department not found")
+	}
+	parent := root
 	missingAt := len(segments)
 	for i, name := range segments {
-		d, err := s.depts.GetByName(p.ctx, p.opts.InstitutionID, name)
+		// 模板约定路径从顶层部门开始；兼容历史上把组织根也写进路径的导入文件。
+		if i == 0 && name == root.Name {
+			continue
+		}
+		parentID := parent.ID
+		d, err := s.depts.GetByParentAndName(p.ctx, p.opts.InstitutionID, &parentID, name)
 		if err != nil && !isLookupMiss(err) {
 			return nil, err
 		}
@@ -504,45 +561,19 @@ func (p *importRun) resolveDepartment(path string) (*int64, error) {
 			missingAt = i
 			break
 		}
-		// 同名部门在路径中间出现时，必须真的挂在上一级之下（同组织内部门名允许重复）
-		if parent != nil && !inAncestorChain(d, parent.ID) {
-			return nil, fmt.Errorf("department path mismatch: %s is not under %s", name, parent.NamePath)
-		}
 		parent = d
 	}
 	if missingAt == len(segments) {
-		if parent == nil {
-			return nil, nil
-		}
 		id := parent.ID
 		return &id, nil
 	}
 	if !p.opts.AutoCreateDepts {
 		return nil, fmt.Errorf("department not found: %s", clean)
 	}
-	// Validate the existing suffix before creating anything: a later name that
-	// already sits elsewhere makes this path ambiguous and must not leave a
-	// partially-created prefix behind.
-	for _, name := range segments[missingAt+1:] {
-		d, err := s.depts.GetByName(p.ctx, p.opts.InstitutionID, name)
-		if err != nil {
-			if !isLookupMiss(err) {
-				return nil, err
-			}
-			continue
-		}
-		if d != nil {
-			return nil, fmt.Errorf("department path mismatch: %s already exists outside the requested path", name)
-		}
-	}
 	for _, name := range segments[missingAt:] {
-		var parentID *int64
-		if parent != nil {
-			id := parent.ID
-			parentID = &id
-		}
+		id := parent.ID
 		created, cerr := s.deptSvc.Create(p.ctx, p.opts.Operator, &repository.Department{
-			InstitutionID: p.opts.InstitutionID, Name: name, DisplayName: name, ParentID: parentID,
+			InstitutionID: p.opts.InstitutionID, Name: name, DisplayName: name, ParentID: &id,
 		})
 		if cerr != nil {
 			return nil, fmt.Errorf("create department %s failed", name)
@@ -556,24 +587,8 @@ func (p *importRun) resolveDepartment(path string) (*int64, error) {
 		}
 		parent = created
 	}
-	if parent == nil {
-		return nil, nil
-	}
 	id := parent.ID
 	return &id, nil
-}
-
-// inAncestorChain 判断 parentID 是否在 d 的祖先链中（含直接父级；祖先链不含自身）。
-func inAncestorChain(d *repository.Department, parentID int64) bool {
-	if d.ParentID != nil && *d.ParentID == parentID {
-		return true
-	}
-	for _, id := range d.ParentIDChain {
-		if id == parentID {
-			return true
-		}
-	}
-	return false
 }
 
 func emptyStrings(v []string) []string {
