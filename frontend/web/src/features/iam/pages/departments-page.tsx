@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ChevronDown, ChevronRight, ChevronUp, Network, Pencil, Plus, Trash2, Users } from 'lucide-react'
 import {
@@ -23,6 +23,7 @@ import {
 } from '@/shared/ui'
 import { PageShell } from '@/widgets/layout/page-shell'
 import { ListToolbar } from '@/widgets/layout/list-toolbar'
+import { ListPagination } from '@/widgets/layout/list-pagination'
 import { ConfirmDialog } from '@/shared/components/confirm-dialog'
 import type { Department, User } from '@/shared/api/types'
 import { departmentApi } from '../api'
@@ -39,6 +40,7 @@ interface DepartmentForm {
 }
 
 const emptyForm: DepartmentForm = { name: '', display_name: '', description: '', parent_id: null }
+const MEMBER_PAGE_SIZE = 10
 
 /** 树节点（含展开态与子节点） */
 interface TreeNode extends Department {
@@ -67,7 +69,10 @@ export default function DepartmentsPage() {
   const [selected, setSelected] = useState<Department | null>(null)
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set())
   const [members, setMembers] = useState<User[]>([])
+  const [memberPage, setMemberPage] = useState(1)
+  const [memberTotal, setMemberTotal] = useState(0)
   const [membersLoading, setMembersLoading] = useState(false)
+  const memberRequest = useRef(0)
 
   // 构建树：按 parent_id 归并，父先于子（后端已按 level 排序）
   const tree = useMemo(() => buildTree(list.items), [list.items])
@@ -77,8 +82,8 @@ export default function DepartmentsPage() {
   const parentOptions: SelectOption[] = useMemo(
     () =>
       list.items
-        .filter((d) => d.name !== editing?.name)
-        .map((d) => ({ value: String(d.id), label: d.name_path || d.name })),
+        .filter((d) => d.id !== editing?.id && !(editing && (d.parent_id_chain ?? []).includes(editing.id)))
+        .map((d) => ({ value: String(d.id), label: d.code_path || d.name })),
     [list.items, editing],
   )
 
@@ -91,27 +96,41 @@ export default function DepartmentsPage() {
 
   // 载入选中部门的成员
   const loadMembers = useCallback(
-    async (dept: Department | null) => {
+    async (dept: Department | null, page: number) => {
+      const request = ++memberRequest.current
       if (!dept || !institution) {
         setMembers([])
+        setMemberTotal(0)
+        setMembersLoading(false)
         return
       }
       setMembersLoading(true)
       try {
-        const result = await departmentApi.members(dept.id, institution)
+        const result = await departmentApi.members(dept.id, institution, {
+          page,
+          size: MEMBER_PAGE_SIZE,
+        })
+        if (request !== memberRequest.current) return
         setMembers(result.items ?? [])
+        setMemberTotal(result.total)
       } catch {
+        if (request !== memberRequest.current) return
         setMembers([])
+        setMemberTotal(0)
       } finally {
-        setMembersLoading(false)
+        if (request === memberRequest.current) setMembersLoading(false)
       }
     },
     [institution],
   )
 
   useEffect(() => {
-    void loadMembers(selected)
-  }, [selected, loadMembers])
+    setMemberPage(1)
+  }, [selected?.id])
+
+  useEffect(() => {
+    void loadMembers(selected, memberPage)
+  }, [selected, memberPage, loadMembers])
 
   const openCreate = () => {
     setEditing(null)
@@ -309,7 +328,11 @@ export default function DepartmentsPage() {
                 <dl className="grid grid-cols-2 gap-2 text-sm">
                   <dt className="text-muted-foreground">{t('departments.name')}</dt>
                   <dd className="font-mono">{selected.name}</dd>
-                  <dt className="text-muted-foreground">{t('departments.path')}</dt>
+                  <dt className="text-muted-foreground">{t('departments.displayName')}</dt>
+                  <dd className="truncate">{selected.display_name || '-'}</dd>
+                  <dt className="text-muted-foreground">{t('departments.codePath')}</dt>
+                  <dd className="truncate font-mono">{selected.code_path || '-'}</dd>
+                  <dt className="text-muted-foreground">{t('departments.displayPath')}</dt>
                   <dd className="truncate">{selected.name_path || '-'}</dd>
                   <dt className="text-muted-foreground">{t('departments.level')}</dt>
                   <dd>{selected.level}</dd>
@@ -319,7 +342,7 @@ export default function DepartmentsPage() {
                 <div className="flex items-center justify-between gap-2">
                   <span className="flex items-center gap-2 text-sm font-medium">
                     <Users className="size-4" /> {t('departments.members')}
-                    <Badge variant="secondary">{members.length}</Badge>
+                    <Badge variant="secondary">{memberTotal}</Badge>
                   </span>
                   <Button variant="outline" size="sm" onClick={() => openEdit(selected)}>
                     <Pencil className="size-3.5" /> {t('common.edit')}
@@ -327,17 +350,26 @@ export default function DepartmentsPage() {
                 </div>
                 {membersLoading ? (
                   <Skeleton className="h-20 rounded-md" />
-                ) : members.length === 0 ? (
+                ) : memberTotal === 0 ? (
                   <p className="text-muted-foreground text-sm">{t('departments.noMembers')}</p>
                 ) : (
-                  <ul className="divide-y rounded-md border">
-                    {members.map((user) => (
-                      <li key={user.id} className="flex items-center justify-between px-3 py-2 text-sm">
-                        <span className="truncate">{user.display_name || user.name}</span>
-                        <span className="text-muted-foreground truncate">{user.email || user.name}</span>
-                      </li>
-                    ))}
-                  </ul>
+                  <>
+                    <ul className="divide-y rounded-md border">
+                      {members.map((user) => (
+                        <li key={user.id} className="flex items-center justify-between px-3 py-2 text-sm">
+                          <span className="truncate">{user.display_name || user.name}</span>
+                          <span className="text-muted-foreground truncate">{user.email || user.name}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    <ListPagination
+                      page={memberPage}
+                      size={MEMBER_PAGE_SIZE}
+                      total={memberTotal}
+                      onPageChange={setMemberPage}
+                      sticky={false}
+                    />
+                  </>
                 )}
               </>
             )}
@@ -352,7 +384,7 @@ export default function DepartmentsPage() {
             <DialogDescription>{t('departments.subtitle')}</DialogDescription>
           </DialogHeader>
           <form className="space-y-4" onSubmit={submit}>
-            <Field id="dept-name" labelKey="departments.name">
+            <Field id="dept-name" labelKey="departments.name" hint={t('departments.nameHint')}>
               <Input
                 id="dept-name"
                 value={form.name}
@@ -361,7 +393,11 @@ export default function DepartmentsPage() {
                 required
               />
             </Field>
-            <Field id="dept-display" labelKey="departments.displayName">
+            <Field
+              id="dept-display"
+              labelKey="departments.displayName"
+              hint={t('departments.displayNameHint')}
+            >
               <Input
                 id="dept-display"
                 value={form.display_name}

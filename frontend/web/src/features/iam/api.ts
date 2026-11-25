@@ -134,8 +134,8 @@ export const departmentApi = {
   create: (body: Partial<Department>) => api.post<Department>('/departments', body, orgQ()),
   update: (id: number, body: Partial<Department>) => api.put<void>(`/departments/${id}`, body, orgQ()),
   remove: (id: number) => api.del<void>(`/departments/${id}`, orgQ()),
-  members: (id: number, institution?: string) =>
-    api.get<{ items: User[] }>(`/departments/${id}/members`, orgQ({ institution })),
+  members: (id: number, institution?: string, params?: Pick<ListParams, 'page' | 'size'>) =>
+    api.get<PageData<User>>(`/departments/${id}/members`, orgQ({ ...toQuery(params), institution })),
   reorder: (id: number, direction: 'up' | 'down') =>
     api.post<void>(`/departments/${id}/reorder`, { direction }, orgQ()),
 }

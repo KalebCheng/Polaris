@@ -48,7 +48,7 @@ func (s *SyncerService) applyPlan(ctx context.Context, sy *repository.Syncer, pl
 			continue
 		}
 		plan.deptByID[dept.ID] = dept
-		plan.deptByName[dept.Name] = dept
+		plan.deptByParentName[deptParentNameKey(dept.ParentID, dept.Name)] = dept
 		plan.deptLinks[ext.ID] = dept.ID
 		counts.Created++
 	}

@@ -72,12 +72,12 @@ func TestPlanDepartmentsSkipsRootPlaceholder(t *testing.T) {
 	svc := &SyncerService{}
 	root := &repository.Department{ID: 9, InstitutionID: 1, Name: "built-in", DisplayName: "Polaris", IsRoot: true, CodePath: "built-in"}
 	plan := &syncPlan{
-		deptByName:  map[string]*repository.Department{root.Name: root},
-		deptByID:    map[int64]*repository.Department{root.ID: root},
-		deptLinks:   map[string]int64{},
-		deptNames:   map[string]string{},
-		deptRootIDs: map[string]bool{},
-		rootID:      root.ID,
+		deptByParentName: map[string]*repository.Department{deptParentNameKey(root.ParentID, root.Name): root},
+		deptByID:         map[int64]*repository.Department{root.ID: root},
+		deptLinks:        map[string]int64{},
+		deptNames:        map[string]string{},
+		deptRootIDs:      map[string]bool{},
+		rootID:           root.ID,
 	}
 	groups := []syncer.ExternalGroup{
 		{ID: "1", Name: "1", IsRoot: true},
@@ -108,42 +108,33 @@ func TestPlanDepartmentsSkipsRootPlaceholder(t *testing.T) {
 	}
 }
 
-// 回归（Spec FR-1）：本地标识名冲突时（同组织内不同父级下存在同名部门）以源端 ID 消歧，
-// 保证"本地名唯一（迁移 039 的唯一约束）"且结果确定、幂等。
-func TestPlanDepartmentsDisambiguatesDuplicateNames(t *testing.T) {
+// 回归：部门全名只要求同一父级下唯一，源端不同父级下的同名部门必须原样保留。
+func TestPlanDepartmentsKeepsSameNameUnderDifferentParents(t *testing.T) {
 	svc := &SyncerService{}
-	existing := &repository.Department{ID: 5, InstitutionID: 1, Name: "市场部", DisplayName: "市场部"}
 	plan := &syncPlan{
-		deptByName:  map[string]*repository.Department{existing.Name: existing},
-		deptByID:    map[int64]*repository.Department{existing.ID: existing},
-		deptLinks:   map[string]int64{},
-		deptNames:   map[string]string{},
-		deptRootIDs: map[string]bool{},
+		deptByParentName: map[string]*repository.Department{},
+		deptByID:         map[int64]*repository.Department{},
+		deptLinks:        map[string]int64{},
+		deptNames:        map[string]string{},
+		deptRootIDs:      map[string]bool{},
 	}
 	groups := []syncer.ExternalGroup{
+		{ID: "123", Name: "华东", ParentID: ""},
+		{ID: "125", Name: "华南", ParentID: ""},
 		{ID: "138", Name: "市场部", ParentID: "123"},
 		{ID: "143", Name: "市场部", ParentID: "125"},
 	}
 	svc.planDepartments(plan, groups)
 
-	names := map[string]bool{}
-	for _, g := range plan.deptCreate {
-		names[plan.deptNames[g.ID]] = true
-	}
-	if len(names) != 2 {
-		t.Fatalf("两个同名外部部门应消歧为不同的本地标识名，实际 %v", plan.deptNames)
-	}
-	for name := range names {
-		if name == "市场部" {
-			t.Fatalf("与既有部门重名时不得直接沿用原名，实际 %v", plan.deptNames)
-		}
+	if plan.deptNames["138"] != "市场部" || plan.deptNames["143"] != "市场部" {
+		t.Fatalf("不同父级下的同名部门应原样保留，实际 %v", plan.deptNames)
 	}
 }
 
 func TestDepartmentEntityNameMapping(t *testing.T) {
 	plan := &syncPlan{
 		departmentMapping: map[string]string{"name": "name"},
-		deptByName:        map[string]*repository.Department{},
+		deptByParentName:  map[string]*repository.Department{},
 		deptLinks:         map[string]int64{},
 		deptNames:         map[string]string{},
 	}
@@ -229,19 +220,19 @@ func TestPlanUsersAdoptsSSOCreatedUserByIdentityLink(t *testing.T) {
 
 func newTestSyncPlan() *syncPlan {
 	return &syncPlan{
-		deptByName:    map[string]*repository.Department{},
-		deptByID:      map[int64]*repository.Department{},
-		deptLinks:     map[string]int64{},
-		deptNames:     map[string]string{},
-		deptRootIDs:   map[string]bool{},
-		userByName:    map[string]*repository.User{},
-		userByID:      map[int64]*repository.User{},
-		userLinks:     map[string]int64{},
-		userDepts:     map[int64][]int64{},
-		jobTitleByKey: map[string]*repository.JobTitle{},
-		jobTitleByID:  map[int64]*repository.JobTitle{},
-		jobTitleLinks: map[string]int64{},
-		jobTitleRaw:   map[string]string{},
-		userJobTitles: map[string][]string{},
+		deptByParentName: map[string]*repository.Department{},
+		deptByID:         map[int64]*repository.Department{},
+		deptLinks:        map[string]int64{},
+		deptNames:        map[string]string{},
+		deptRootIDs:      map[string]bool{},
+		userByName:       map[string]*repository.User{},
+		userByID:         map[int64]*repository.User{},
+		userLinks:        map[string]int64{},
+		userDepts:        map[int64][]int64{},
+		jobTitleByKey:    map[string]*repository.JobTitle{},
+		jobTitleByID:     map[int64]*repository.JobTitle{},
+		jobTitleLinks:    map[string]int64{},
+		jobTitleRaw:      map[string]string{},
+		userJobTitles:    map[string][]string{},
 	}
 }

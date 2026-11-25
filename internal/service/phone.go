@@ -86,3 +86,14 @@ func phoneLookupCandidates(canonical string) []string {
 	}
 	return out
 }
+
+// phoneLookupCandidatesForInput derives storage spellings from a user-entered
+// phone number. Login input may be the national form while rows store the
+// country-code form, so normalize before expanding the candidates.
+func phoneLookupCandidatesForInput(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if normalized, err := normalizePhone(raw); err == nil {
+		return phoneLookupCandidates(normalized)
+	}
+	return phoneLookupCandidates(raw)
+}

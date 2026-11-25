@@ -462,7 +462,7 @@ func (s *AuthService) findUserByCodeTarget(
 
 // findUserByPhone 按手机号查找用户（同组织内）
 func (s *AuthService) findUserByPhone(ctx context.Context, institutionID int64, phone string) (*repository.User, error) {
-	for _, candidate := range phoneLookupCandidates(phone) {
+	for _, candidate := range phoneLookupCandidatesForInput(phone) {
 		users, err := s.users.List(ctx, repository.ListQuery{
 			InstitutionID: institutionID, Field: "phone", Value: candidate, Limit: 1,
 		})

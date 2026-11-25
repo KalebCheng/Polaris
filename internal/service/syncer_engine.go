@@ -62,12 +62,13 @@ type syncPlan struct {
 	// deptCreate / deptUpdate 待落地的部门变更
 	deptCreate []syncer.ExternalGroup
 	deptUpdate []syncer.ExternalGroup
-	// deptByName / deptByID 本地部门索引（规划期一次读入，避免逐条查库）
-	deptByName map[string]*repository.Department
-	deptByID   map[int64]*repository.Department
+	// deptByParentName / deptByID 本地部门索引（规划期一次读入，避免逐条查库）。
+	// 名称只在同一父级下唯一，索引键必须带父部门主键。
+	deptByParentName map[string]*repository.Department
+	deptByID         map[int64]*repository.Department
 	// deptLinks 源端组织 ID → 本地部门 ID（含本次新建；落地阶段随创建补齐）
 	deptLinks map[string]int64
-	// deptNames 源端组织 ID → 本地部门标识（重名时以源端 ID 消歧，保证同组织内唯一）
+	// deptNames 源端组织 ID → 本地部门全名（不同父级下允许同名）
 	deptNames map[string]string
 	// deptRootIDs 源端根占位节点（钉钉/企微 1、飞书 0）：不落库，其子节点挂到同步目标/组织根
 	deptRootIDs map[string]bool
@@ -118,7 +119,7 @@ func (s *SyncerService) buildPlan(ctx context.Context, sy *repository.Syncer, co
 	plan := &syncPlan{
 		departmentMapping: work.DepartmentMapping,
 		jobTitleMapping:   work.JobTitleMapping,
-		deptByName:        map[string]*repository.Department{},
+		deptByParentName:  map[string]*repository.Department{},
 		deptByID:          map[int64]*repository.Department{},
 		deptLinks:         map[string]int64{},
 		deptNames:         map[string]string{},
@@ -138,7 +139,7 @@ func (s *SyncerService) buildPlan(ctx context.Context, sy *repository.Syncer, co
 	if root, err := s.departments.GetRoot(ctx, sy.InstitutionID); err == nil && root != nil {
 		plan.rootID = root.ID
 		plan.deptByID[root.ID] = root
-		plan.deptByName[root.Name] = root
+		plan.deptByParentName[deptParentNameKey(root.ParentID, root.Name)] = root
 	}
 	if sy.TargetDepartmentID != nil {
 		if target, err := s.departments.GetByID(ctx, *sy.TargetDepartmentID); err == nil && target.InstitutionID == sy.InstitutionID {
@@ -151,7 +152,7 @@ func (s *SyncerService) buildPlan(ctx context.Context, sy *repository.Syncer, co
 		return nil, err
 	}
 	for _, d := range existing {
-		plan.deptByName[d.Name] = d
+		plan.deptByParentName[deptParentNameKey(d.ParentID, d.Name)] = d
 		plan.deptByID[d.ID] = d
 	}
 
@@ -262,8 +263,12 @@ func (s *SyncerService) planDepartment(
 
 	local := plan.deptByID[plan.deptLinks[g.ID]]
 	if local == nil {
-		// 兼容存量：接入映射表之前同步进来的部门只有本地标识名可比对
-		local = plan.deptByName[name]
+		// 兼容存量：接入映射表之前同步进来的部门没有映射行，
+		// 只能按「父级 + 全名」比对（不同父级必要时允许同名）。
+		// 父级本次才创建时还没有本地主键，不能退化成按名称跨父级模糊命中。
+		if parent := s.desiredDeptParent(plan, byExternalID, g); parent != nil {
+			local = plan.deptByParentName[deptParentNameKey(&parent.ID, name)]
+		}
 	}
 	if local == nil {
 		plan.deptCreate = append(plan.deptCreate, g)
@@ -278,24 +283,25 @@ func (s *SyncerService) planDepartment(
 	return name
 }
 
-// localDeptName 计算某外部组织在本地应使用的标识名。
+// localDeptName 计算某外部组织在本地应使用的全名。
 //
-// 本地 `(institution_id, name)` 自迁移 039 起唯一，而源端不同父级下可能存在同名部门
-// （实测：钉钉里两个不同的"市场部"）——因此名称冲突时以源端 ID 消歧，保证结果确定且幂等。
+// 名称只要求同一父级下唯一：源端不同父级下的同名部门（实测：钉钉里两个"市场部"）
+// 应原样保留同名，不再用源端 ID 加后缀，避免把可读名称污染成 `市场部-138`。
 func (p *syncPlan) localDeptName(g syncer.ExternalGroup) string {
 	base := sanitizeName(firstNonEmptyStr(p.mappedDepartmentName(g.Raw), g.Name, g.ID))
 	if base == "" {
 		return "dept-" + sanitizeName(g.ID)
 	}
-	if existing, ok := p.deptByName[base]; ok && existing.ID != p.deptLinks[g.ID] {
-		return sanitizeName(base + "-" + g.ID)
-	}
-	for otherID, otherName := range p.deptNames {
-		if otherName == base && otherID != g.ID {
-			return sanitizeName(base + "-" + g.ID)
-		}
-	}
 	return base
+}
+
+// deptParentNameKey 构造「父部门主键 + 全名」索引键；根部门的父主键记为 0。
+func deptParentNameKey(parentID *int64, name string) string {
+	id := int64(0)
+	if parentID != nil {
+		id = *parentID
+	}
+	return fmt.Sprintf("%d/%s", id, name)
 }
 
 func (p *syncPlan) mappedDepartmentName(raw map[string]string) string {
